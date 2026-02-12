@@ -59,13 +59,14 @@ class Terraform:
     def import_(self, resource, id):
         return self._run_cmd(["terraform", "import", resource, id])
 
-    def plan(self):
-        res = self._run_cmd(["terraform", "plan", "-out", self.plan_bin])
+    def plan(self, file=None):
+        plan_bin = file or self.plan_bin
+        res = self._run_cmd(["terraform", "plan", "-out", plan_bin])
         if res.returncode != 0:
             err = res.stderr if res.stderr.strip() else res.stdout
             raise Exception(f"Terraform Plan Failed:\n{err}")
 
-        show_res = self._run_cmd(["terraform", "show", "-json", self.plan_bin])
+        show_res = self._run_cmd(["terraform", "show", "-json", plan_bin])
         if show_res.returncode == 0:
             self.tf_plan = json.loads(show_res.stdout)
             with open(os.path.join(self.wd, "tfplan.json"), "w") as f:
