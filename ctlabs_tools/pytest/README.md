@@ -25,3 +25,14 @@ vault_login -a https://<VAULT_IP>:8081 -u <USER> -m 2
 ```
 
 
+# Test requiring Vault
+
+```py
+tf = Terraform(wd="./infra/vault-stuff")
+```
+
+# Test that works offline/without Vault
+
+```py
+tf_offline = Terraform(wd="./infra/local-test", skip_vault=True)
+```
