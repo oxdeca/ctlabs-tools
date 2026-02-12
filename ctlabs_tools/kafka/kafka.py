@@ -14,8 +14,6 @@ import base64
 from hashlib import sha256
 import tempfile
 import glob
-import sys
-from streamlit.web import cli as stcli
 
 try:
     from confluent_kafka import Producer, Consumer
@@ -662,7 +660,7 @@ class KafkaView:
                 finally:
                     c.close()
 
-def run_app():
+def main():
     cleanup_old_certs()
     st.set_page_config(page_title=f"Kafka Explorer v{APP_VERSION}", layout="wide")
     if "model" not in st.session_state:
@@ -682,13 +680,6 @@ def run_app():
         KafkaView.producer(model, conf)
     elif page == "4. Consumer":
         KafkaView.consumer(model, conf)
-
-def main():
-    if st.runtime.exists():
-        run_app()
-    else:
-        sys.argv = ["streamlit", "run", __file__]
-        sys.exit(stcli.main())
 
 if __name__ == "__main__":
     main()
