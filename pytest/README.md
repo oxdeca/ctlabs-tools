@@ -1,12 +1,8 @@
 # Install directly from GitHub
-# If the repo is public:
 
 ```py
-pip install git+https://github.com/your-username/ctlabs-tools.git
+pip install git+https://github.com/oxdeca/ctlabs-tools.git
 ```
-
-# If the repo is private (using a Personal Access Token):
-# pip install git+https://<TOKEN>@github.com/your-username/ctlabs-tools.git
 
 Importing in your Tests
 Once installed via pip, your imports become clean and location-independent. In your VM's test files, you simply write:
