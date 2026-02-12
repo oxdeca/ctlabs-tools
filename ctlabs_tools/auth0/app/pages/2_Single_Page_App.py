@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/auth0/app/pages/1_Single_Page_App.py
+# File    : ctlabs-tools/ctlabs_tools/auth0/app/pages/1_Single_Page_App.py
 # License : MIT
 # -----------------------------------------------------------------------------
 
