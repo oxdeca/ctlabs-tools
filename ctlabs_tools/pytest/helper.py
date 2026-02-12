@@ -42,7 +42,7 @@ def load_vault_secrets(expiry_seconds=28800):
         raise Exception(f"Failed to decrypt secrets: {res.stderr}")
 
 class Terraform:
-    def __init__(self, wd=".", skip_vault=False):
+    def __init__(self, wd=".", skip_vault=True):
         self.wd = wd
         self.tf_plan = {}
         self.tf_state = {}
@@ -50,10 +50,7 @@ class Terraform:
             load_vault_secrets()
 
     def _run_cmd(self, args, capture=True):
-        return subprocess.run(
-            args, cwd=self.wd, capture_output=capture, 
-            text=True, env=os.environ
-        )
+        return subprocess.run(args, cwd=self.wd, capture_output=capture, text=True, env=os.environ)
 
     def init(self):
         return self._run_cmd(["terraform", "init", "-upgrade"], capture=False)
