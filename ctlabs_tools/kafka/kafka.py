@@ -660,7 +660,7 @@ class KafkaView:
                 finally:
                     c.close()
 
-def main():
+def run_app():
     cleanup_old_certs()
     st.set_page_config(page_title=f"Kafka Explorer v{APP_VERSION}", layout="wide")
     if "model" not in st.session_state:
@@ -680,6 +680,13 @@ def main():
         KafkaView.producer(model, conf)
     elif page == "4. Consumer":
         KafkaView.consumer(model, conf)
+
+def main():
+    if st.runtime.exists():
+        run_app()
+    else:
+        sys.argv = ["streamlit", "run", __file__]
+        sys.exit(stcli.main())
 
 if __name__ == "__main__":
     main()
