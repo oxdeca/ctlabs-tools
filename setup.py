@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.1.3",
+    version="0.1.4",
     description="ctlabs tools and helpers",
     packages=find_packages(),
     install_requires=[
