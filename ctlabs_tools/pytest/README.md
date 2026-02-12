@@ -2,6 +2,10 @@
 
 ```py
 pip install git+https://github.com/oxdeca/ctlabs-tools.git
+#
+# or from branch dev
+#
+pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
 ```
 
 Importing in your Tests
