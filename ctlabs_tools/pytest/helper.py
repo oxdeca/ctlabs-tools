@@ -43,9 +43,10 @@ def load_vault_secrets(expiry_seconds=28800):
 
 class Terraform:
     def __init__(self, wd=".", skip_vault=True):
-        self.wd = wd
-        self.tf_plan = {}
+        self.wd       = wd
+        self.tf_plan  = {}
         self.tf_state = {}
+        self.plan_bin = "tfplan.bin"
         if not skip_vault:
             load_vault_secrets()
 
@@ -58,18 +59,22 @@ class Terraform:
     def import_(self, resource, id):
         return self._run_cmd(["terraform", "import", resource, id])
 
-    def plan(self, file="./tfplan.bin"):
-        res = self._run_cmd(["terraform", "plan", "-out", file])
+    def plan(self):
+        res = self._run_cmd(["terraform", "plan", "-out", self.plan_bin])
         if res.returncode != 0:
             err = res.stderr if res.stderr.strip() else res.stdout
             raise Exception(f"Terraform Plan Failed:\n{err}")
 
-        show_res = self._run_cmd(["terraform", "show", "-json", file])
+        show_res = self._run_cmd(["terraform", "show", "-json", self.plan_bin])
         if show_res.returncode == 0:
             self.tf_plan = json.loads(show_res.stdout)
             with open(os.path.join(self.wd, "tfplan.json"), "w") as f:
-                json.dump(self.tf_plan, f)
+                json.dump(self.tf_plan, f, indent=2)
         return res
+
+    def get_planned_output(self, name):
+        outputs = self.tf_plan.get("planned_values", {}).get("outputs", {})
+        return outputs.get(name)
 
     def apply(self):
         res = self._run_cmd(["terraform", "apply", "-auto-approve"], capture=False)
