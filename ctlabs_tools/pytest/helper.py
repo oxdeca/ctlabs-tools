@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/ctlabs_tools/pytest/helper.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 import os
 import subprocess
 import json
@@ -103,29 +108,23 @@ class Terraform:
             if os.path.exists(p): os.remove(p)
 
 class Ansible:
-    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", 
-                 playbook="./playbooks/init.yml", roles="up,setup,base", skip_vault=True):
-        self.wd = wd
+    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", skip_vault=True):
+        self.wd        = wd
         self.inventory = inventory
-        self.playbook = playbook
-        self.roles = roles
+        self.playbook  = playbook
+        self.roles     = roles
         if not skip_vault:
             load_vault_secrets()
 
-    def run(self):
-        return subprocess.run([
-            "ansible-playbook", "-i", self.inventory, self.playbook, 
-            "-t", self.roles, "-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"
-        ], cwd=self.wd, env=os.environ)
+    def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
+        return subprocess.run(["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts, cwd=self.wd, env=os.environ)
 
 class ConfTest:
     def __init__(self, wd=".", input="tfplan.json", skip_vault=True):
-        self.wd = wd
+        self.wd    = wd
         self.input = input
         if not skip_vault:
             load_vault_secrets()
 
     def test(self, ns="main"):
-        return subprocess.run([
-            'conftest', 'test', self.input, "-n", ns
-        ], cwd=self.wd, env=os.environ)
+        return subprocess.run(['conftest', 'test', self.input, "-n", ns], cwd=self.wd, env=os.environ)
