@@ -14,6 +14,8 @@ import base64
 from hashlib import sha256
 import tempfile
 import glob
+import sys
+from streamlit.web import cli as stcli
 
 try:
     from confluent_kafka import Producer, Consumer
