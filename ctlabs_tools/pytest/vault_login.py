@@ -17,7 +17,7 @@ from getpass import getpass
 warnings.filterwarnings('ignore')
 
 # Store secrets in a persistent hidden folder in the root or user home
-SECURE_DIR = os.path.expanduser("~/.vault_cache")
+SECURE_DIR = os.path.expanduser("~/.ctlabs_vault")
 os.makedirs(SECURE_DIR, mode=0o700, exist_ok=True)
 
 KEY_FILE = os.path.join(SECURE_DIR, ".vault_key")

@@ -15,7 +15,6 @@ setup(
     entry_points={
         'console_scripts': [
             'vault-login=ctlabs_tools.pytest.vault_login:main',
-            'ctlabs-kafka=ctlabs_tools.kafka.cli:main',
         ],
     },
 )

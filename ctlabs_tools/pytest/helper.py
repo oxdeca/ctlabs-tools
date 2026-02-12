@@ -15,7 +15,7 @@ def load_vault_secrets(expiry_seconds=28800):
     files are deleted and an error is raised.
     """
     # Use a hidden directory in the user's home folder for cross-tool access
-    base_path = os.path.expanduser("~/.vault_cache")
+    base_path = os.path.expanduser("~/.ctlabs_vault")
     key_path = os.path.join(base_path, ".vault_key")
     gpg_path = os.path.join(base_path, ".env.gpg")
 
