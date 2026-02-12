@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/smbadc/app.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 """
 Samba AD-DC Administration Tool - FULL CRUD IMPLEMENTATION
 Version: 2.3

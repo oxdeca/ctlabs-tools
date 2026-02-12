@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/slapd/app.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 import json

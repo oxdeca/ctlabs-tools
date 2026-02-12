@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/auth0/app/pages/1_Single_Page_App.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 """
 🌐 Single Page Application - PKCE Flow (No client_secret)
 ✅ Uses PKCE (Proof Key for Code Exchange)

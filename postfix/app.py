@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/postfix/app.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 import json, base64, os, socket, ssl, smtplib, re, hashlib

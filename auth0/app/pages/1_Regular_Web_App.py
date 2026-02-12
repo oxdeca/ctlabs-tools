@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/auth0/app/pages/1_Regular_Web_App.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 """
 🔐 Regular Web Application - Server-Side Authentication
 ✅ Uses client_secret (safe on server)

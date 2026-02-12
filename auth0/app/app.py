@@ -1,3 +1,8 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/auth0/app/app.py
+# License : MIT
+# -----------------------------------------------------------------------------
+
 """
 Auth0 Integration Education Suite - Main Dashboard
 Demonstrates secure patterns for all 4 Auth0 application types
