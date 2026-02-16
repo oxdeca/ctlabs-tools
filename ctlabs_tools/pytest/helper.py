@@ -47,12 +47,12 @@ def load_vault_secrets(expiry_seconds=28800):
         raise Exception(f"Failed to decrypt secrets: {res.stderr}")
 
 class Terraform:
-    def __init__(self, wd=".", skip_vault=True):
+    def __init__(self, wd=".", use_vault=False):
         self.wd       = wd
         self.tf_plan  = {}
         self.tf_state = {}
         self.plan_bin = "tfplan.bin"
-        if not skip_vault:
+        if use_vault:
             load_vault_secrets()
 
     def _run_cmd(self, args, capture=True):
@@ -108,22 +108,22 @@ class Terraform:
             if os.path.exists(p): os.remove(p)
 
 class Ansible:
-    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", skip_vault=True):
+    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", use_vault=False):
         self.wd        = wd
         self.inventory = inventory
         self.playbook  = playbook
         self.roles     = roles
-        if not skip_vault:
+        if use_vault:
             load_vault_secrets()
 
     def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
         return subprocess.run(["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts, cwd=self.wd, env=os.environ)
 
 class ConfTest:
-    def __init__(self, wd=".", input="tfplan.json", skip_vault=True):
+    def __init__(self, wd=".", input="tfplan.json", use_vault=False):
         self.wd    = wd
         self.input = input
-        if not skip_vault:
+        if use_vault:
             load_vault_secrets()
 
     def test(self, ns="main"):
