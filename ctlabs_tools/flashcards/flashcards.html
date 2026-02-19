@@ -171,7 +171,7 @@
   <div class="toolbar-group">
     <button class="w3-button" onclick="app.toggleTheme()" title="Toggle Theme"><i id="theme-icon" class="fa fa-moon btn-orange"></i></button>
     <div class="w3-dropdown-click">
-      <button class="w3-button" title="File Operations"><i class="fa fa-file btn-blue"></i></button>
+        <button class="w3-button" onclick="app.toggleDropdown(event)" title="File Operations"> <i class="fa fa-file btn-blue"></i> </button>
       <div class="w3-dropdown-content w3-bar-block w3-border" style="right:0">
         <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.newSet()"><i class="fa fa-folder-plus w3-margin-right"></i>New Set</a>
         <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.triggerFileImport()"><i class="fa fa-file-import w3-margin-right"></i>Import JSON</a>
@@ -182,7 +182,7 @@
       </div>
     </div>
     <div class="w3-dropdown-click">
-      <button class="w3-button" title="Cloud Storage"><i class="fa fa-cloud btn-purple"></i></button>
+      <button class="w3-button" onclick="app.toggleDropdown(event)" title="Cloud Storage"> <i class="fa fa-cloud btn-purple"></i> </button>
       <div class="w3-dropdown-content w3-bar-block w3-border" style="right:0">
         <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.loginToServer()"><i class="fa fa-sign-in-alt w3-margin-right"></i>Login</a>
         <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.listServerSets()"><i class="fa fa-cloud-download-alt w3-margin-right"></i>Load from Server</a>
@@ -1230,6 +1230,23 @@
           console.error('Login error:', error);
           alert('Login failed: ' + error.message);
         });
+      }
+
+      // Add to FlashCardsController class
+      toggleDropdown(event) {
+        event.stopPropagation();
+        const dropdownContent = event.currentTarget.nextElementSibling;
+        const allDropdowns = document.querySelectorAll('.w3-dropdown-content');
+        
+        // Close all other dropdowns
+        allDropdowns.forEach(dropdown => {
+          if (dropdown !== dropdownContent && dropdown.classList.contains('w3-show')) {
+            dropdown.classList.remove('w3-show');
+          }
+        });
+        
+        // Toggle the clicked dropdown
+        dropdownContent.classList.toggle('w3-show');
       }
 
     }

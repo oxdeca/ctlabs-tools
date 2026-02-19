@@ -158,7 +158,7 @@ def list_cardsets():
 def save_cardset():
     """Save or update a cardset with better error reporting"""
     current_user = get_jwt_identity()
-    user_id = current_user["id"]
+    user_id      = current_user["id"]
     
     try:
         data = request.get_json()
