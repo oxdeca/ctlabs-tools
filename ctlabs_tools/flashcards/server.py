@@ -1,24 +1,25 @@
 import argparse
 import webbrowser
 import sys
-from flask import Flask, send_from_directory, abort
-from importlib import resources
+from pathlib import Path
+from flask import Flask, send_from_directory, abort, redirect, url_for
 
 # Package configuration
 PACKAGE_NAME = "ctlabs_tools.flashcards"
-HTML_FILE    = "flashcards.html"
+HTML_FILE = "flashcards.html"
 
-# Create Flask app - static files served from the package directory
-app = Flask(__name__, static_folder=resources.files(PACKAGE_NAME), static_url_path='')
+# Resolve the package directory as a filesystem path
+# This works for both editable installs and regular installs (when not zipped)
+PACKAGE_DIR = Path(__file__).parent
+
+# Create Flask app - serve static files directly from the package directory
+app = Flask(__name__, static_folder=str(PACKAGE_DIR), static_url_path='')
 
 @app.route('/')
 @app.route('/index.html')
 def serve_flashcards():
-    """Serve the flashcards HTML file"""
-    try:
-        return send_from_directory(app.static_folder, HTML_FILE)
-    except FileNotFoundError:
-        abort(404, description=f"Flashcard app file '{HTML_FILE}' not found in package")
+    """Redirect root requests to the actual flashcards file"""
+    return redirect(url_for('static', filename=HTML_FILE))
 
 @app.errorhandler(404)
 def not_found(e):
@@ -52,6 +53,7 @@ def main():
 
     print(f"Serving flashcards at {url}")
     print(f"Listening on {args.host}:{args.port}")
+    print(f"Static files served from: {PACKAGE_DIR}")
     print("Press Ctrl+C to stop")
     
     if not args.no_browser:
