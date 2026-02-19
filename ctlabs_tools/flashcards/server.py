@@ -156,50 +156,83 @@ def list_cardsets():
 @app.route('/api/cardsets', methods=['POST'])
 @jwt_required()
 def save_cardset():
-    """Save or update a cardset"""
+    """Save or update a cardset with better error reporting"""
     current_user = get_jwt_identity()
     user_id = current_user["id"]
     
-    data = request.get_json()
-    if not data or 'set' not in data:
-        return jsonify({"error": "Invalid cardset data"}), 400
-    
-    cardset_data = data['set']
-    meta = cardset_data.get('meta', {})
-    
-    # Create new cardset or update existing
-    if 'id' in meta and meta['id']:
-        # Update existing
-        cardset_id = meta['id']
-        cardset = find_cardset(user_id, cardset_id)
-        if not cardset:
-            return jsonify({"error": "Cardset not found"}), 404
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "error": "No JSON data", 
+                "details": "Request body is empty or not properly formatted as JSON"
+            }), 400
         
-        # Update the cardset
-        cardset['meta'] = {
-            **meta,
-            "modified": datetime.utcnow().isoformat()
-        }
-        cardset['cards'] = cardset_data['cards']
-    else:
-        # Create new
-        cardset_id = str(uuid.uuid4())
-        cardset = {
-            "id": cardset_id,
-            "meta": {
+        if 'set' not in data:
+            return jsonify({
+                "error": "Missing 'set' field", 
+                "received_keys": list(data.keys()) if data else "No data"
+            }), 400
+        
+        cardset_data = data['set']
+        
+        # Check required structure
+        if 'meta' not in cardset_data:
+            return jsonify({
+                "error": "Missing 'meta'", 
+                "details": "Cardset must contain 'meta' object"
+            }), 400
+        
+        if 'cards' not in cardset_data:
+            return jsonify({
+                "error": "Missing 'cards'", 
+                "details": "Cardset must contain 'cards' array"
+            }), 400
+        
+        meta = cardset_data.get('meta', {})
+        
+        # Create new cardset or update existing
+        if 'id' in meta and meta['id']:
+            # Update existing
+            cardset_id = meta['id']
+            cardset = find_cardset(user_id, cardset_id)
+            if not cardset:
+                return jsonify({
+                    "error": "Cardset not found", 
+                    "id": cardset_id
+                }), 404
+            
+            # Update the cardset
+            cardset['meta'] = {
                 **meta,
-                "id": cardset_id,
-                "created": datetime.utcnow().isoformat(),
                 "modified": datetime.utcnow().isoformat()
-            },
-            "cards": cardset_data['cards']
-        }
-        get_user_cardsets(user_id).append(cardset)
-    
-    return jsonify({
-        "id": cardset_id,
-        "message": "Cardset saved successfully"
-    })
+            }
+            cardset['cards'] = cardset_data['cards']
+        else:
+            # Create new
+            cardset_id = str(uuid.uuid4())
+            cardset = {
+                "id": cardset_id,
+                "meta": {
+                    **meta,
+                    "id": cardset_id,
+                    "created": datetime.utcnow().isoformat(),
+                    "modified": datetime.utcnow().isoformat()
+                },
+                "cards": cardset_data['cards']
+            }
+            get_user_cardsets(user_id).append(cardset)
+        
+        return jsonify({
+            "id": cardset_id,
+            "message": "Cardset saved successfully"
+        })
+    except Exception as e:
+        app.logger.error(f"Error in save_cardset: {str(e)}")
+        return jsonify({
+            "error": "Server processing error", 
+            "details": str(e)
+        }), 500
 
 @app.route('/api/cardsets/<cardset_id>', methods=['GET'])
 @jwt_required()

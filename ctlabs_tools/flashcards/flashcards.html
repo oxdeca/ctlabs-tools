@@ -910,7 +910,6 @@
         document.getElementById('theme-icon').className = (t === 'dark' ? 'fa fa-sun btn-orange' : 'fa fa-moon btn-orange');
       }
 
-      // Save current cardset to server
       saveToServer() {
         if (!this.cardset.meta.name || this.cardset.meta.name === "New Set") {
           const name = prompt("Enter a name for your card set:");
@@ -919,11 +918,33 @@
         }
         
         const authToken = localStorage.getItem('flashcards_auth_token');
-        const payload = {
-          set: {
-            meta: this.cardset.meta,
-            cards: this.cardset.cards
+        if (!authToken) {
+          this.loginToServer();
+          return;
+        }
+        
+        // Convert class instances to plain JavaScript objects
+        const plainCardset = {
+          meta: {
+            ...this.cardset.meta,
+            name: this.cardset.meta.name,
+            created: this.cardset.meta.created,
+            modified: getISOString()
           },
+          cards: this.cardset.cards.map(card => ({
+            id: card.id,
+            question: card.question,
+            info: card.info,
+            answers: card.answers.map(answer => ({
+              id: answer.id,
+              txt: answer.txt,
+              type: answer.type
+            }))
+          }))
+        };
+        
+        const payload = {
+          set: plainCardset,
           version: VERSION
         };
         
@@ -936,7 +957,18 @@
           body: JSON.stringify(payload)
         })
         .then(response => {
-          if (!response.ok) throw new Error('Server save failed');
+          if (response.status === 401) {
+            this.loginToServer();
+            throw new Error('Authentication required');
+          }
+          if (!response.ok) {
+            // Get the specific error message from the server
+            return response.json().then(err => {
+              throw new Error(err.error || 'Server save failed: ' + response.status + ' ' + err.details);
+            }).catch(() => {
+              throw new Error('Server save failed: ' + response.status);
+            });
+          }
           return response.json();
         })
         .then(data => {
@@ -951,7 +983,9 @@
         })
         .catch(error => {
           console.error('Save error:', error);
-          alert('Failed to save to server: ' + error.message);
+          if (error.message !== 'Authentication required') {
+            alert('Failed to save to server: ' + error.message);
+          }
         });
       }
       
