@@ -13,8 +13,8 @@ class FlashcardHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path == "/index.html":
             try:
-                # Read the HTML file from the package resources
-                html_content = resources.read_bytes(PACKAGE_NAME, HTML_FILE)
+                # Python 3.9+ API (required for Python 3.13)
+                html_content = resources.files(PACKAGE_NAME).joinpath(HTML_FILE).read_bytes()
                 
                 self.send_response(200)
                 self.send_header("Content-type", "text/html; charset=utf-8")
