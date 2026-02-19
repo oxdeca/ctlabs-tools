@@ -26,6 +26,7 @@ app.config['JWT_HEADER_TYPE'] = 'Bearer'
 
 # Initialize JWT
 jwt = JWTManager(app)
+create_demo_user()
 
 # In-memory storage for demo purposes (replace with database in production)
 USERS = {
@@ -54,10 +55,6 @@ def create_demo_user():
         }
         print(f"\nDemo user created: {email} / {password}")
         print("In production, remove this function and use proper user registration")
-
-@app.before_first_request
-def setup():
-    create_demo_user()
 
 def get_user_cardsets(user_id):
     """Get all cardsets for a user"""
