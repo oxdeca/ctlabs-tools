@@ -16,18 +16,6 @@ HTML_FILE    = "flashcards.html"
 # Resolve the package directory as a filesystem path
 PACKAGE_DIR = Path(__file__).parent
 
-# Create Flask app
-app = Flask(__name__, static_folder=str(PACKAGE_DIR), static_url_path='')
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-here')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
-app.config['JWT_TOKEN_LOCATION'] = ['headers']
-app.config['JWT_HEADER_NAME'] = 'Authorization'
-app.config['JWT_HEADER_TYPE'] = 'Bearer'
-
-# Initialize JWT
-jwt = JWTManager(app)
-create_demo_user()
-
 # In-memory storage for demo purposes (replace with database in production)
 USERS = {
     # Format: { "email": { "id": str, "password": str, "cardsets": [] } }
@@ -55,6 +43,18 @@ def create_demo_user():
         }
         print(f"\nDemo user created: {email} / {password}")
         print("In production, remove this function and use proper user registration")
+
+# Create Flask app
+app = Flask(__name__, static_folder=str(PACKAGE_DIR), static_url_path='')
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-here')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
+app.config['JWT_TOKEN_LOCATION'] = ['headers']
+app.config['JWT_HEADER_NAME'] = 'Authorization'
+app.config['JWT_HEADER_TYPE'] = 'Bearer'
+
+# Initialize JWT
+jwt = JWTManager(app)
+create_demo_user()
 
 def get_user_cardsets(user_id):
     """Get all cardsets for a user"""
