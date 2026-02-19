@@ -149,6 +149,10 @@
         <button id="btn-import" class="w3-button admin-tool" onclick="app.triggerFileImport()" title="Import JSON"><i class="fa fa-file-upload btn-green"></i></button>
         <button class="w3-button admin-tool" onclick="app.exportSet()" title="Export"><i class="fa fa-file-download btn-purple"></i></button>
         <button class="w3-button admin-tool" onclick="app.clearCache()" title="Clear Data"><i class="fa fa-eraser btn-red"></i></button>
+        <!-- Add these buttons to the toolbar-group section -->
+        <button class="w3-button admin-tool" onclick="app.loginToServer()" title="Cloud Login"><i class="fa fa-cloud btn-blue"></i></button>
+        <button class="w3-button admin-tool" onclick="app.listServerSets()" title="Load from Server"><i class="fa fa-cloud-download-alt btn-green"></i></button>
+        <button class="w3-button admin-tool" onclick="app.saveToServer()" title="Save to Server"><i class="fa fa-cloud-upload-alt btn-purple"></i></button>
       </div>
       <div class="toolbar-group">
         <div id="counter" class="text-accent" style="font-weight:700;">0 / 0</div>
@@ -565,6 +569,9 @@
         } else {
             this.view.renderStudy(null, false, false);
         }
+          // Update server button states based on auth status
+          const hasAuthToken = !!localStorage.getItem('flashcards_auth_token');
+          document.querySelector('[onclick="app.loginToServer()"]').innerHTML = hasAuthToken ? '<i class="fa fa-user-check btn-blue"></i>' : '<i class="fa fa-cloud btn-blue"></i>';
       }
 
       handleAction() { if (this.isEditing) this.saveCard(); else this.check(); }
@@ -902,6 +909,187 @@
         localStorage.setItem('theme', t);
         document.getElementById('theme-icon').className = (t === 'dark' ? 'fa fa-sun btn-orange' : 'fa fa-moon btn-orange');
       }
+
+      // Save current cardset to server
+      saveToServer() {
+        if (!this.cardset.meta.name || this.cardset.meta.name === "New Set") {
+          const name = prompt("Enter a name for your card set:");
+          if (!name) return;
+          this.cardset.meta.name = name;
+        }
+        
+        const authToken = localStorage.getItem('flashcards_auth_token');
+        const payload = {
+          set: {
+            meta: this.cardset.meta,
+            cards: this.cardset.cards
+          },
+          version: VERSION
+        };
+        
+        fetch('/api/cardsets', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify(payload)
+        })
+        .then(response => {
+          if (!response.ok) throw new Error('Server save failed');
+          return response.json();
+        })
+        .then(data => {
+          // Update meta with server ID if new set
+          if (!this.cardset.meta.serverId) {
+            this.cardset.meta.serverId = data.id;
+            this.cardset.meta.created = getISOString();
+          }
+          this.cardset.meta.modified = getISOString();
+          this.saveSession();
+          alert(`Card set saved successfully! ID: ${data.id}`);
+        })
+        .catch(error => {
+          console.error('Save error:', error);
+          alert('Failed to save to server: ' + error.message);
+        });
+      }
+      
+      // Load cardset from server
+      loadFromServer(setId = null) {
+        const authToken = localStorage.getItem('flashcards_auth_token');
+        
+        // If no ID provided, show selection dialog
+        if (!setId) {
+          this.listServerSets();
+          return;
+        }
+        
+        fetch(`/api/cardsets/${setId}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        })
+        .then(response => {
+          if (!response.ok) throw new Error('Set not found');
+          return response.json();
+        })
+        .then(data => {
+          // Initialize cardset from server data
+          this.cardset = new CardSet(data.set.meta.name, `Server: ${data.id}`);
+          this.cardset.meta = {
+            ...data.set.meta,
+            serverId: data.id,
+            loadedAt: getISOString()
+          };
+          this.cardset.cards = data.set.cards.map(c => 
+            new Card(c.id, c.question, c.answers, c.info)
+          );
+          this.cardset.index = 0;
+          
+          this.saveSession();
+          this.update();
+          alert(`Loaded card set "${data.set.meta.name}" from server`);
+        })
+        .catch(error => {
+          console.error('Load error:', error);
+          alert('Failed to load from server: ' + error.message);
+        });
+      }
+      
+      // List available cardsets on server
+      listServerSets() {
+        const authToken = localStorage.getItem('flashcards_auth_token');
+        
+        fetch('/api/cardsets', {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        })
+        .then(response => response.json())
+        .then(sets => {
+          if (sets.length === 0) {
+            alert('No card sets found on server');
+            return;
+          }
+          
+          let html = '<div class="w3-container">';
+          html += '<p>Select a card set to load:</p>';
+          html += '<div class="w3-ul">';
+          
+          sets.forEach(set => {
+            const created = new Date(set.meta.created).toLocaleDateString();
+            html += `
+              <li class="w3-padding w3-hover-light-grey" 
+                  onclick="app.loadFromServer('${set.id}')" 
+                  style="cursor:pointer; margin-bottom:5px; border-radius:4px;">
+                <div><strong>${set.meta.name}</strong></div>
+                <div class="w3-small w3-text-grey">${set.cards.length} cards • Created: ${created}</div>
+              </li>
+            `;
+          });
+          
+          html += '</div></div>';
+          
+          this.view.showModal("Server Card Sets", html);
+        })
+        .catch(error => {
+          console.error('List error:', error);
+          alert('Failed to fetch card sets: ' + error.message);
+        });
+      }
+      
+      // Handle user login/authentication
+      loginToServer() {
+        const html = `
+          <div class="w3-container">
+            <p>Sign in to access your cloud storage:</p>
+            <div class="w3-section">
+              <label><b>Email</b></label>
+              <input class="w3-input w3-border" type="email" id="login-email" placeholder="Enter Email">
+            </div>
+            <div class="w3-section">
+              <label><b>Password</b></label>
+              <input class="w3-input w3-border" type="password" id="login-password" placeholder="Enter Password">
+            </div>
+          </div>
+        `;
+        
+        this.view.showModal("Cloud Storage Login", html, `
+          <button class="w3-button w3-blue w3-round" onclick="app.processLogin()">Sign In</button>
+          <button class="w3-button w3-white w3-border w3-round w3-margin-left" onclick="app.closeModal()">Cancel</button>
+        `);
+      }
+      
+      processLogin() {
+        const email = document.getElementById('login-email').value;
+        const password = document.getElementById('login-password').value;
+        
+        if (!email || !password) {
+          alert('Please enter both email and password');
+          return;
+        }
+        
+        fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
+        .then(response => {
+          if (!response.ok) throw new Error('Authentication failed');
+          return response.json();
+        })
+        .then(data => {
+          localStorage.setItem('flashcards_auth_token', data.token);
+          app.closeModal();
+          alert('Successfully logged in to cloud storage!');
+        })
+        .catch(error => {
+          console.error('Login error:', error);
+          alert('Login failed: ' + error.message);
+        });
+      }
+
     }
 
     let app; window.onload = () => { app = new FlashCardsController(new FlashCardsView()); };
