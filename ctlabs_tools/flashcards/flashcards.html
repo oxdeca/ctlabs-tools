@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Flashcards Build (v1.20)</title>
+  <title>Flashcards MVC - Pro Build (v1.16)</title>
   
   <link rel="stylesheet" href="https://www.w3schools.com/w3css/4/w3.css">
   <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css">
@@ -135,79 +135,35 @@
     .ans-id-badge { min-width: 25px; height: 25px; line-height: 25px; border-radius: 50%; background: var(--border-color); color: var(--text-muted); display: inline-block; text-align: center; font-weight: bold; font-size: 0.8em; margin-right: 5px; }
     .w3-check { transform: scale(1.2); cursor: pointer; }
     .hidden { display: none !important; }
-
-    .w3-dropdown-click { position: relative; display: inline-block; }
-    .w3-dropdown-content {
-      display: none;
-      position: absolute;
-      background-color: var(--card-bg);
-      min-width: 220px;
-      box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
-      z-index: 1;
-      border-radius: 8px;
-      overflow: hidden;
-      right: 0;
-      top: 100%;
-    }
-    .w3-dropdown-content a {
-      color: var(--text-main);
-      padding: 12px 16px;
-      text-decoration: none;
-      display: block;
-    }
-    .w3-dropdown-content a:hover {
-      background-color: var(--answer-bg);
-    }
-    .w3-show { display: block !important; }
   </style>
 </head>
-<body data-theme="dark">
+<body data-theme="light">
 
   <div id="card-app">
     <div class="progress-container"><div id="progress-bar"></div></div>
     
     <div class="card-toolbar w3-card-2">
-  <!-- Left group: Theme and main actions -->
-  <div class="toolbar-group">
-    <button class="w3-button" onclick="app.toggleTheme()" title="Toggle Theme"><i id="theme-icon" class="fa fa-moon btn-orange"></i></button>
-    <div class="w3-dropdown-click">
-        <button class="w3-button" onclick="app.toggleDropdown(event)" title="File Operations"> <i class="fa fa-file btn-blue"></i> </button>
-      <div class="w3-dropdown-content w3-bar-block w3-border" style="right:0">
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.newSet()"><i class="fa fa-folder-plus w3-margin-right"></i>New Set</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.triggerFileImport()"><i class="fa fa-file-import w3-margin-right"></i>Import JSON</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.exportSet()"><i class="fa fa-file-export w3-margin-right"></i>Export</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.openRawImport()"><i class="fa fa-paste w3-margin-right"></i>Paste Import</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.clearCache()"><i class="fa fa-eraser w3-margin-right"></i>Clear Data</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.showSetInfo()"><i class="fa fa-info-circle w3-margin-right"></i>Set Info</a>
+      <div class="toolbar-group">
+        <button class="w3-button" onclick="app.toggleTheme()"><i id="theme-icon" class="fa fa-moon btn-orange"></i></button>
+        <button id="btn-newset" class="w3-button admin-tool" onclick="app.newSet()" title="New Set"><i class="fa fa-folder-plus btn-blue"></i></button>
+        <button id="btn-import" class="w3-button admin-tool" onclick="app.triggerFileImport()" title="Import JSON"><i class="fa fa-file-upload btn-green"></i></button>
+        <button class="w3-button admin-tool" onclick="app.exportSet()" title="Export"><i class="fa fa-file-download btn-purple"></i></button>
+        <button class="w3-button admin-tool" onclick="app.clearCache()" title="Clear Data"><i class="fa fa-eraser btn-red"></i></button>
+      </div>
+      <div class="toolbar-group">
+        <div id="counter" class="text-accent" style="font-weight:700;">0 / 0</div>
+        <div id="quiz-timer" class="text-accent" style="display:none; margin-left:10px;"><i class="fa fa-clock"></i> <span id="timer-display">00:00</span></div>
+      </div>
+      <div class="toolbar-group">
+        <button class="w3-button" onclick="app.showSetInfo()" title="Cardset Info"><i class="fa fa-info-circle btn-blue"></i></button>
+        <button class="w3-button" id="btn-stats" onclick="app.showLiveStats()" style="display:none;" title="Live Stats"><i class="fa fa-chart-bar btn-green"></i></button>
+        <button class="w3-button" id="btn-quiz" onclick="app.toggleQuiz()" title="Quiz Mode"><i class="fa fa-graduation-cap"></i></button>
+        <button class="w3-button admin-tool" onclick="app.deleteCard()" title="Delete"><i class="fa fa-trash btn-red"></i></button>
+        <button id="btn-add" class="w3-button admin-tool" onclick="app.addCard()" title="Add"><i class="fa fa-plus-circle btn-blue"></i></button>
+        <button id="btn-raw" class="w3-button admin-tool" onclick="app.openRawImport()" title="Import Paste"><i class="fa fa-paste btn-blue"></i></button>
+        <button class="w3-button admin-tool" onclick="app.toggleEditMode()" title="Edit"><i class="fa fa-edit btn-orange"></i></button>
       </div>
     </div>
-    <div class="w3-dropdown-click">
-      <button class="w3-button" onclick="app.toggleDropdown(event)" title="Cloud Storage"> <i class="fa fa-cloud btn-purple"></i> </button>
-      <div class="w3-dropdown-content w3-bar-block w3-border" style="right:0">
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.loginToServer()"><i class="fa fa-sign-in-alt w3-margin-right"></i>Login</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.listServerSets()"><i class="fa fa-cloud-download-alt w3-margin-right"></i>Load from Server</a>
-        <a href="javascript:void(0)" class="w3-bar-item w3-button" onclick="app.saveToServer()"><i class="fa fa-cloud-upload-alt w3-margin-right"></i>Save to Server</a>
-      </div>
-    </div>
-  </div>
-  
-  <!-- Center group: Counter and timer -->
-  <div class="toolbar-group">
-    <div id="counter" class="text-accent" style="font-weight:700;">0 / 0</div>
-    <div id="quiz-timer" class="text-accent" style="display:none; margin-left:10px;"><i class="fa fa-clock"></i> <span id="timer-display">00:00</span></div>
-  </div>
-  
-  <!-- Right group: Card actions -->
-  <div class="toolbar-group">
-    <button class="w3-button" id="btn-quiz" onclick="app.toggleQuiz()" title="Quiz Mode"><i class="fa fa-graduation-cap"></i></button>
-    <button class="w3-button" id="btn-stats" onclick="app.showLiveStats()" style="display:none;" title="Live Stats"><i class="fa fa-chart-bar btn-green"></i></button>
-    <button id="btn-add" class="w3-button" onclick="app.addCard()" title="Add Card"><i class="fa fa-plus-circle btn-blue"></i></button>
-    <button class="w3-button" onclick="app.toggleEditMode()" title="Toggle Edit Mode"><i class="fa fa-edit btn-orange"></i></button>
-    <button class="w3-button" onclick="app.deleteCard()" title="Delete Card" style="display:none;"><i class="fa fa-trash btn-red"></i></button>
-    <button class="w3-button" id="btn-prev" onclick="app.prev()" title="Previous Card" style="display:none;"><i class="fa fa-chevron-left btn-blue"></i></button>
-    <button class="w3-button" id="btn-next" onclick="app.next()" title="Next Card" style="display:none;"><i class="fa fa-chevron-right btn-blue"></i></button>
-  </div>
-</div>
 
     <div id="ccard">
       <div id="display-area">
@@ -547,32 +503,6 @@
           this.highlightCode(document.getElementById('modal-body'));
       }
       closeModal() { document.getElementById('modal-container').style.display = 'none'; }
-
-      toggleDropdown(element) {
-        const dropdowns = document.getElementsByClassName("w3-dropdown-content");
-        let i;
-        for (i = 0; i < dropdowns.length; i++) {
-          const openDropdown = dropdowns[i];
-          if (openDropdown.classList.contains('w3-show') && openDropdown !== element) {
-            openDropdown.classList.remove('w3-show');
-          }
-        }
-        element.classList.toggle("w3-show");
-      }
-      
-      // Add this to your window.onload function
-      document.addEventListener('click', function(event) {
-        if (!event.target.matches('.w3-button') && 
-            !event.target.closest('.w3-dropdown-click')) {
-          const dropdowns = document.getElementsByClassName("w3-dropdown-content");
-          for (let i = 0; i < dropdowns.length; i++) {
-            const openDropdown = dropdowns[i];
-            if (openDropdown.classList.contains('w3-show')) {
-              openDropdown.classList.remove('w3-show');
-            }
-          }
-        }
-      });
     }
 
     /** CONTROLLER CLASS **/
@@ -635,9 +565,6 @@
         } else {
             this.view.renderStudy(null, false, false);
         }
-          // Update server button states based on auth status
-          const hasAuthToken = !!localStorage.getItem('flashcards_auth_token');
-          document.querySelector('[onclick="app.loginToServer()"]').innerHTML = hasAuthToken ? '<i class="fa fa-user-check btn-blue"></i>' : '<i class="fa fa-cloud btn-blue"></i>';
       }
 
       handleAction() { if (this.isEditing) this.saveCard(); else this.check(); }
@@ -975,280 +902,6 @@
         localStorage.setItem('theme', t);
         document.getElementById('theme-icon').className = (t === 'dark' ? 'fa fa-sun btn-orange' : 'fa fa-moon btn-orange');
       }
-
-      // Save current cardset to server
-      saveToServer() {
-        if (!this.cardset.meta.name || this.cardset.meta.name === "New Set") {
-          const name = prompt("Enter a name for your card set:");
-          if (!name) return;
-          this.cardset.meta.name = name;
-        }
-        
-        const authToken = localStorage.getItem('flashcards_auth_token');
-        if (!authToken) {
-          this.loginToServer();
-          return;
-        }
-        
-        // Convert to plain objects for proper serialization
-        const plainCardset = {
-          meta: {
-            ...this.cardset.meta,
-            name: this.cardset.meta.name,
-            created: this.cardset.meta.created,
-            modified: getISOString()
-          },
-          cards: this.cardset.cards.map(card => ({
-            id: card.id,
-            question: card.question,
-            info: card.info,
-            answers: card.answers.map(answer => ({
-              id: answer.id,
-              txt: answer.txt,
-              type: answer.type
-            }))
-          }))
-        };
-        
-        const payload = {
-          set: plainCardset,
-          version: VERSION
-        };
-        
-        fetch('/api/cardsets', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
-          body: JSON.stringify(payload)
-        })
-        .then(response => {
-          if (response.status === 401) {
-            this.loginToServer();
-            throw new Error('Authentication required');
-          }
-          if (!response.ok) {
-            return response.json().then(err => {
-              console.error('Server error details:', err);
-              throw new Error(err.error || `Server error ${response.status}`);
-            }).catch(() => {
-              throw new Error(`Server error ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          // Update meta with server ID
-          this.cardset.meta.serverId = data.id;
-          this.cardset.meta.created = getISOString();
-          this.cardset.meta.modified = getISOString();
-          this.saveSession();
-          alert(`Card set saved successfully! ID: ${data.id}`);
-        })
-        .catch(error => {
-          console.error('Save error:', error);
-          if (error.message !== 'Authentication required') {
-            alert('Failed to save to server: ' + error.message);
-          }
-        });
-      }
-      
-      // Load cardset from server
-      loadFromServer(setId = null) {
-        const authToken = localStorage.getItem('flashcards_auth_token');
-        if (!authToken) {
-          this.loginToServer();
-          return;
-        }
-        
-        // If no ID provided, show selection dialog
-        if (!setId) {
-          this.listServerSets();
-          return;
-        }
-        
-        fetch(`/api/cardsets/${setId}`, {
-          headers: {
-            'Authorization': `Bearer ${authToken}`
-          }
-        })
-        .then(response => {
-          if (response.status === 401) {
-            this.loginToServer();
-            throw new Error('Authentication required');
-          }
-          if (!response.ok) {
-            return response.json().then(err => {
-              console.error('Server error details:', err);
-              throw new Error(err.error || `Server error ${response.status}`);
-            }).catch(() => {
-              throw new Error(`Server error ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          // Initialize cardset from server data
-          this.cardset = new CardSet(data.meta.name, `Server: ${data.id}`);
-          this.cardset.meta = {
-            ...data.meta,
-            serverId: data.id,
-            loadedAt: getISOString()
-          };
-          this.cardset.cards = data.cards.map(c => 
-            new Card(c.id, c.question, c.answers, c.info)
-          );
-          this.cardset.index = 0;
-          
-          this.saveSession();
-          this.update();
-          alert(`Loaded card set "${data.meta.name}" from server`);
-        })
-        .catch(error => {
-          console.error('Load error:', error);
-          if (error.message !== 'Authentication required') {
-            alert('Failed to load from server: ' + error.message);
-          }
-        });
-      }
-      
-      // List available cardsets on server
-      listServerSets() {
-        const authToken = localStorage.getItem('flashcards_auth_token');
-        if (!authToken) {
-          this.loginToServer();
-          return;
-        }
-        
-        fetch('/api/cardsets', {
-          headers: {
-            'Authorization': `Bearer ${authToken}`
-          }
-        })
-        .then(response => {
-          if (response.status === 401) {
-            this.loginToServer();
-            throw new Error('Authentication required');
-          }
-          if (!response.ok) {
-            return response.json().then(err => {
-              console.error('Server error details:', err);
-              throw new Error(err.error || `Server error ${response.status}`);
-            }).catch(() => {
-              throw new Error(`Server error ${response.status}`);
-            });
-          }
-          return response.json();
-        })
-        .then(sets => {
-          if (sets.length === 0) {
-            alert('No card sets found on server');
-            return;
-          }
-          
-          let html = '<div class="w3-container">';
-          html += '<p>Select a card set to load:</p>';
-          html += '<div class="w3-ul">';
-          
-          sets.forEach(set => {
-            const created = new Date(set.meta.created).toLocaleDateString();
-            html += `
-              <li class="w3-padding w3-hover-light-grey" 
-                  onclick="app.loadFromServer('${set.id}')" 
-                  style="cursor:pointer; margin-bottom:5px; border-radius:4px;">
-                <div><strong>${set.meta.name}</strong></div>
-                <div class="w3-small w3-text-grey">${set.cards.length} cards • Created: ${created}</div>
-              </li>
-            `;
-          });
-          
-          html += '</div></div>';
-          
-          this.view.showModal("Server Card Sets", html);
-        })
-        .catch(error => {
-          console.error('List error:', error);
-          if (error.message !== 'Authentication required') {
-            alert('Failed to fetch card sets: ' + error.message);
-          }
-        });
-      }
-      
-      // Handle user login/authentication
-      loginToServer() {
-        const html = `
-          <div class="w3-container">
-            <p>Sign in to access your cloud storage:</p>
-            <div class="w3-section">
-              <label><b>Email</b></label>
-              <input class="w3-input w3-border" type="email" id="login-email" placeholder="Enter Email" value="demo@example.com">
-            </div>
-            <div class="w3-section">
-              <label><b>Password</b></label>
-              <input class="w3-input w3-border" type="password" id="login-password" placeholder="Enter Password" value="demo123">
-            </div>
-          </div>
-        `;
-        
-        this.view.showModal("Cloud Storage Login", html, `
-          <button class="w3-button w3-blue w3-round" onclick="app.processLogin()">Sign In</button>
-          <button class="w3-button w3-white w3-border w3-round w3-margin-left" onclick="app.closeModal()">Cancel</button>
-        `);
-      }
-      
-      processLogin() {
-        const email = document.getElementById('login-email').value;
-        const password = document.getElementById('login-password').value;
-        
-        if (!email || !password) {
-          alert('Please enter both email and password');
-          return;
-        }
-        
-        fetch('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        })
-        .then(response => {
-          if (!response.ok) {
-            return response.json().then(err => {
-              throw new Error(err.error || 'Authentication failed');
-            }).catch(() => {
-              throw new Error('Authentication failed');
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          localStorage.setItem('flashcards_auth_token', data.token);
-          app.closeModal();
-          alert('Successfully logged in to cloud storage!');
-        })
-        .catch(error => {
-          console.error('Login error:', error);
-          alert('Login failed: ' + error.message);
-        });
-      }
-
-      // Add to FlashCardsController class
-      toggleDropdown(event) {
-        event.stopPropagation();
-        const dropdownContent = event.currentTarget.nextElementSibling;
-        const allDropdowns = document.querySelectorAll('.w3-dropdown-content');
-        
-        // Close all other dropdowns
-        allDropdowns.forEach(dropdown => {
-          if (dropdown !== dropdownContent && dropdown.classList.contains('w3-show')) {
-            dropdown.classList.remove('w3-show');
-          }
-        });
-        
-        // Toggle the clicked dropdown
-        dropdownContent.classList.toggle('w3-show');
-      }
-
     }
 
     let app; window.onload = () => { app = new FlashCardsController(new FlashCardsView()); };
