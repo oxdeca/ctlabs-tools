@@ -1,33 +1,28 @@
-import http.server
-import socketserver
+import argparse
 import webbrowser
 import sys
-import argparse
+from flask import Flask, send_from_directory, abort
 from importlib import resources
 
-# Adjust this to match your package structure
-PACKAGE_NAME = "ctlabs_tools.flashcards" 
+# Package configuration
+PACKAGE_NAME = "ctlabs_tools.flashcards"
 HTML_FILE    = "flashcards.html"
 
-class FlashcardHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
-            try:
-                # Python 3.9+ API (required for Python 3.13)
-                html_content = resources.files(PACKAGE_NAME).joinpath(HTML_FILE).read_bytes()
-                
-                self.send_response(200)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(html_content)
-            except FileNotFoundError:
-                self.send_error(404, "Flashcard app file not found in package")
-        else:
-            self.send_error(404, "Not Found")
+# Create Flask app - static files served from the package directory
+app = Flask(__name__, static_folder=resources.files(PACKAGE_NAME), static_url_path='')
 
-# Custom server to allow address reuse (prevents "Address already in use" errors)
-class ReusableTCPServer(socketserver.TCPServer):
-    allow_reuse_address = True
+@app.route('/')
+@app.route('/index.html')
+def serve_flashcards():
+    """Serve the flashcards HTML file"""
+    try:
+        return send_from_directory(app.static_folder, HTML_FILE)
+    except FileNotFoundError:
+        abort(404, description=f"Flashcard app file '{HTML_FILE}' not found in package")
+
+@app.errorhandler(404)
+def not_found(e):
+    return {"error": "Not Found", "message": str(e.description)}, 404
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Flashcards app locally")
@@ -50,29 +45,20 @@ def main():
     )
     
     args = parser.parse_args()
-
-    # Determine the URL for the browser
-    # If host is 0.0.0.0, browsers usually can't connect to that specific address, so use localhost
+    
+    # Browser URL: use localhost even if binding to 0.0.0.0
     browser_host = "localhost" if args.host == "0.0.0.0" else args.host
     url = f"http://{browser_host}:{args.port}"
 
-    try:
-        with ReusableTCPServer((args.host, args.port), FlashcardHandler) as httpd:
-            print(f"Serving flashcards at {url}")
-            print(f"Listening on {args.host}:{args.port}")
-            print("Press Ctrl+C to stop")
-            
-            if not args.no_browser:
-                webbrowser.open(url)
-            
-            try:
-                httpd.serve_forever()
-            except KeyboardInterrupt:
-                print("\nShutting down server...")
-                sys.exit(0)
-    except OSError as e:
-        print(f"Error starting server: {e}")
-        sys.exit(1)
+    print(f"Serving flashcards at {url}")
+    print(f"Listening on {args.host}:{args.port}")
+    print("Press Ctrl+C to stop")
+    
+    if not args.no_browser:
+        webbrowser.open(url)
+    
+    # Run Flask (debug=False for production safety)
+    app.run(host=args.host, port=args.port, debug=False)
 
 if __name__ == "__main__":
     main()
