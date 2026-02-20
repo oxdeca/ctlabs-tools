@@ -449,12 +449,43 @@
           this.highlightCode(qBox);
           
           let iText = document.getElementById('edit-info').value || "_No info_";
-          iText = iText.replace(/\$\{\s*answer\s*(\d+)\s*\}/gi, (match, idStr) => {
-            const id = parseInt(idStr, 10);
-            const input = document.querySelector(`textarea[data-id="${id}"]`);
-            return input ? input.value : match;
+          
+          // Build position map for idx:X replacement
+          // In preview mode, answers are shown in original order (not shuffled)
+          const positionMap = new Map();
+          document.querySelectorAll('.edit-row textarea[data-id]').forEach((textarea, index) => {
+              const id = parseInt(textarea.dataset.id, 10);
+              positionMap.set(id, index);
           });
-
+          
+          // Replace ${answer:X} or ${answer:X|N} → answer text (optionally truncated)
+          iText = iText.replace(/\$\{\s*answer[:]?\s*(\d+)(?:\s*\|\s*(\d+))?\s*\}/gi, (match, idStr, lenStr) => {
+              const id = parseInt(idStr, 10);
+              const input = document.querySelector(`textarea[data-id="${id}"]`);
+              if (!input) return match;
+              
+              let text = input.value;
+              // Truncate if length parameter provided
+              if (lenStr) {
+                  const maxLength = parseInt(lenStr, 10);
+                  if (text.length > maxLength) {
+                      text = text.substring(0, maxLength) + '...';
+                  }
+              }
+              return text;
+          });
+          
+          // Replace ${idx:X} → position in the current order (1-based)
+          iText = iText.replace(/\$\{\s*idx[:]?\s*(\d+)\s*\}/gi, (match, idStr) => {
+              const id = parseInt(idStr, 10);
+              const position = positionMap.get(id);
+              if (position !== undefined) {
+                  const displayNumber = position + 1;
+                  return `<span class="ans-id-badge">${displayNumber}</span>`;
+              }
+              return match;
+          });
+          
           const iBox = document.getElementById('preview-i-box');
           iBox.innerHTML = this.marked.parse(iText);
           this.highlightCode(iBox);
