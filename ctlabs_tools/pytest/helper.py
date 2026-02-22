@@ -23,7 +23,8 @@ def load_vault_secrets(grace_period=300):
         os.makedirs(base_path, mode=0o700, exist_ok=True)
 
     if not os.path.exists(key_path) or not os.path.exists(gpg_path):
-        raise Exception("Vault secrets not found. Please run vault_login.py first.")
+        print("❌ Vault secrets not found locally.")
+        return False
 
     with open(key_path, "r") as f:
         passphrase = f.read().strip()
@@ -47,17 +48,20 @@ def load_vault_secrets(grace_period=300):
             expiry_timestamp = int(secrets.get("CREATED_AT", 0)) + 28800
 
         if (current_time + grace_period) > expiry_timestamp:
+            print("❌ Vault secrets not found locally.")
             if os.path.exists(key_path): os.remove(key_path)
             if os.path.exists(gpg_path): os.remove(gpg_path)
             
             remaining = expiry_timestamp - current_time
             msg = "expired" if remaining <= 0 else f"expiring in {remaining}s (buffer is {grace_period}s)"
-            raise Exception(f"Vault session {msg}. Please run vault_login.py again.")
+            return False
 
         os.environ.update(secrets)
         os.environ["VAULT_SKIP_VERIFY"] = "true" 
+        return True
     else:
-        raise Exception(f"Failed to decrypt secrets: {res.stderr}")
+        print(f"❌ GPG Decryption failed: {res.stderr}")
+        return False
 
 class Terraform:
     def __init__(self, wd=".", use_vault=False):
@@ -70,6 +74,50 @@ class Terraform:
             load_vault_secrets()
 
     def _run_cmd(self, args, capture=True, interactive=False):
+    while True:
+        try:
+            # 1. THE VAULT CHECK: Loop here until the user fixes the token
+            if self.use_vault:
+                while not load_vault_secrets():
+                    print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
+                    print("Please run 'vault_login.py' in a separate terminal.")
+                    choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
+                    if choice == 'q':
+                        pytest.fail("User aborted due to Vault expiry.")
+                    print("🔄 Checking for new Vault secrets...")
+
+            is_json_req = "show" in args and "-json" in args
+            current_capture = True if is_json_req else (False if interactive else capture)
+            
+            res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
+
+            # 2. THE CTRL+C HANDLER: Signal -2 (SIGINT) comes back as a negative return code
+            if res.returncode < 0:
+                raise KeyboardInterrupt
+
+            if res.returncode == 0:
+                return res
+            
+            if not interactive:
+                return res 
+
+        except KeyboardInterrupt:
+            print("\n\n🛑 [STOP] User triggered exit. Killing pytest session...")
+            sys.exit(1) # This stops pytest from jumping to the next test
+
+        except Exception as e:
+            print(f"\n⚠️ Execution Error: {e}")
+            if not interactive: raise
+
+        # 3. THE FAILURE LOOP: Standard command failure
+        print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
+        choice = input("Action: [r]etry (fix issue first), [q]uit: ").strip().lower()
+        if choice != 'r':
+            pytest.fail("User aborted.")
+        print("🔄 Retrying command...")
+
+
+    def _run_cmd_old(self, args, capture=True, interactive=False):
         """
         Internal engine. 
         If interactive=True, it forces capture=False to show output and enters the retry loop.
@@ -167,6 +215,47 @@ class Ansible:
             load_vault_secrets()
 
     def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"], interactive=False):
+        while True:
+            try:
+                # 1. Handle Vault check interactively
+                if self.use_vault:
+                    while not load_vault_secrets():
+                        print("\n🔑 Vault Token missing/expired!")
+                        choice = input("Action: [l]ogin now and retry, [q]uit: ").lower().strip()
+                        if choice != 'l':
+                            pytest.fail("User aborted due to Vault expiry.")
+                        # After user runs vault_login.py in another terminal, loop continues
+
+                cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
+                res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)
+                
+                # 2. Handle Ctrl+C (SIGINT)
+                if res.returncode < 0: 
+                    raise KeyboardInterrupt
+                    
+                if res.returncode == 0:
+                    print("✅ Ansible run completed successfully.")
+                    return res
+
+                if not interactive:
+                    pytest.fail("Ansible failed.")
+
+            except KeyboardInterrupt:
+                print("\n\n🛑 [STOP] Manual escape triggered. Exiting suite...")
+                import sys
+                sys.exit(1) # Hard exit so pytest doesn't try to run next tests
+
+            except Exception as e:
+                print(f"\n⚠️ Execution Error: {e}")
+                if not interactive: pytest.fail(str(e))
+
+            # 3. Standard Failure Loop
+            print("\n" + "!" * 40 + "\n--- ANSIBLE FAILURE ---\n" + "!" * 40)
+            if input("Action: [r]etry, [q]uit: ").lower() != 'r':
+                pytest.fail("User aborted after task failure.")
+
+
+    def run_old(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"], interactive=False):
         while True:
             try:
                 if self.use_vault:
