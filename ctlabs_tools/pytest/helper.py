@@ -74,47 +74,47 @@ class Terraform:
             load_vault_secrets()
 
     def _run_cmd(self, args, capture=True, interactive=False):
-    while True:
-        try:
-            # 1. THE VAULT CHECK: Loop here until the user fixes the token
-            if self.use_vault:
-                while not load_vault_secrets():
-                    print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
-                    print("Please run 'vault_login.py' in a separate terminal.")
-                    choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
-                    if choice == 'q':
-                        pytest.fail("User aborted due to Vault expiry.")
-                    print("🔄 Checking for new Vault secrets...")
-
-            is_json_req = "show" in args and "-json" in args
-            current_capture = True if is_json_req else (False if interactive else capture)
-            
-            res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
-
-            # 2. THE CTRL+C HANDLER: Signal -2 (SIGINT) comes back as a negative return code
-            if res.returncode < 0:
-                raise KeyboardInterrupt
-
-            if res.returncode == 0:
-                return res
-            
-            if not interactive:
-                return res 
-
-        except KeyboardInterrupt:
-            print("\n\n🛑 [STOP] User triggered exit. Killing pytest session...")
-            sys.exit(1) # This stops pytest from jumping to the next test
-
-        except Exception as e:
-            print(f"\n⚠️ Execution Error: {e}")
-            if not interactive: raise
-
-        # 3. THE FAILURE LOOP: Standard command failure
-        print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
-        choice = input("Action: [r]etry (fix issue first), [q]uit: ").strip().lower()
-        if choice != 'r':
-            pytest.fail("User aborted.")
-        print("🔄 Retrying command...")
+        while True:
+            try:
+                # 1. THE VAULT CHECK: Loop here until the user fixes the token
+                if self.use_vault:
+                    while not load_vault_secrets():
+                        print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
+                        print("Please run 'vault_login.py' in a separate terminal.")
+                        choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
+                        if choice == 'q':
+                            pytest.fail("User aborted due to Vault expiry.")
+                        print("🔄 Checking for new Vault secrets...")
+    
+                is_json_req = "show" in args and "-json" in args
+                current_capture = True if is_json_req else (False if interactive else capture)
+                
+                res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
+    
+                # 2. THE CTRL+C HANDLER: Signal -2 (SIGINT) comes back as a negative return code
+                if res.returncode < 0:
+                    raise KeyboardInterrupt
+    
+                if res.returncode == 0:
+                    return res
+                
+                if not interactive:
+                    return res 
+    
+            except KeyboardInterrupt:
+                print("\n\n🛑 [STOP] User triggered exit. Killing pytest session...")
+                sys.exit(1) # This stops pytest from jumping to the next test
+    
+            except Exception as e:
+                print(f"\n⚠️ Execution Error: {e}")
+                if not interactive: raise
+    
+            # 3. THE FAILURE LOOP: Standard command failure
+            print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
+            choice = input("Action: [r]etry (fix issue first), [q]uit: ").strip().lower()
+            if choice != 'r':
+                pytest.fail("User aborted.")
+            print("🔄 Retrying command...")
 
 
     def _run_cmd_old(self, args, capture=True, interactive=False):
