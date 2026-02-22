@@ -209,10 +209,9 @@ class Ansible:
                 if self.use_vault:
                     while not load_vault_secrets():
                         print("\n🔑 Vault Token missing/expired!")
-                        choice = input("Action: [l]ogin now and retry, [q]uit: ").lower().strip()
-                        if choice != 'l':
+                        choice = input("Action: [r]etry, [q]uit: ").lower().strip()
+                        if choice != 'r':
                             pytest.fail("User aborted due to Vault expiry.")
-                        # After user runs vault_login.py in another terminal, loop continues
 
                 cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
                 res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)

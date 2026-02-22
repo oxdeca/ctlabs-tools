@@ -36,7 +36,7 @@ from ctlabs_tools.pytest.vault_login import get_args # etc.
 To login into vault run:
 
 ```bash
-vault_login -a https://<VAULT_IP>:8081 -u <USER> -m 2
+vault_login -a https://<VAULT_IP>:8081 -u <USER>
 ```
 
 ## Usage Examples
@@ -83,18 +83,63 @@ def tf(is_interactive):
     return Terraform(wd="./terraform", use_vault=True)
 ```
 
-### Using the flag in tests
+2. Use in Test Files
+Your test files now stay clean. Passing --interactive on the command line will automatically trigger retry loops on failures.
+
 ```python
-def test_deploy(tf, is_interactive):
-    # Commands will loop on failure if --interactive is passed to pytest
+def test_infrastructure(tf, is_interactive):
+    # If a command fails and --interactive is set, the test pauses for manual fix/retry
     tf.init(interactive=is_interactive)
     tf.plan(interactive=is_interactive)
     tf.apply(interactive=is_interactive)
+    
+    assert tf.get_planned_output("instance_ip") is not None
 ```
 
----
+## Manual Usage
+If you prefer not to use conftest.py, you can import and instantiate the helpers directly.
+
+### Terraform
+
+```py
+from ctlabs_tools.pytest.helper import Terraform
+
+# With Vault (Verify/Refresh token on every command)
+tf = Terraform(wd="./infra/vault-stuff", use_vault=True)
+
+# Offline/Local (No Vault interaction)
+tf_offline = Terraform(wd="./infra/local-test", use_vault=False)
+
+tf.init()
+tf.plan()
+```
+
+### Ansible
+
+```py
+from ctlabs_tools.pytest.helper import Ansible
+
+ansible = Ansible(
+    wd="./ansible", 
+    inventory="./inventories/prod.ini", 
+    use_vault=True
+)
+
+ansible.run(interactive=True)
+```
+
+### ConfTest (Policy Checks)
+
+```py
+from ctlabs_tools.pytest.helper import ConfTest
+
+ct = ConfTest(wd=".", input="tfplan.json")
+ct.test(ns="security_policies", interactive=True)
+```
+
 
 ## Interactive Mode Features
+
 When running with pytest --interactive:
 * **Live Logs:** Standard output is shown in real-time.
 * **Auto-Retry:** On failure, the process pauses for manual fix/retry: Action: [r]etry, [q]uit.
