@@ -1,3 +1,19 @@
+# CTLabs Tools
+
+A collection of helpers for infrastructure testing with Terraform, Ansible, and Vault.
+
+## Installation
+
+Install directly from GitHub:
+
+```bash
+# Install latest from main
+pip install git+https://github.com/oxdeca/ctlabs-tools.git
+
+# or from dev branch
+pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
+```
+
 # Install directly from GitHub
 
 ```bash
@@ -37,8 +53,11 @@ tf_offline = Terraform(wd="./infra/local-test", use_vault=False)
 
 ---
 
-## Pytest Integration (conftest.py)
-To enable the --interactive flag and shared fixtures globally, create a conftest.py in your tests root:
+## Pytest Integration (Recommended)
+To enable the --interactive flag and shared fixtures across your entire test suite, create a conftest.py in your tests root directory.
+
+1. Configure conftest.py
+This setup registers the global flag and creates reusable fixtures.
 
 ```python
 import pytest
@@ -46,7 +65,7 @@ from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest
 
 def pytest_addoption(parser):
     """Register the --interactive flag for the entire test suite."""
-    parser.add_option(
+    parser.addoption(
         "--interactive", 
         action="store_true", 
         default=False, 

@@ -64,16 +64,18 @@ def load_vault_secrets(grace_period=300):
         return False
 
 class Terraform:
-    def __init__(self, wd=".", use_vault=False):
-        self.wd        = wd
-        self.tf_plan   = {}
-        self.tf_state  = {}
-        self.plan_bin  = "tfplan.bin"
-        self.use_vault = use_vault
+    def __init__(self, wd=".", use_vault=False, interactive=False):
+        self.wd          = wd
+        self.tf_plan     = {}
+        self.tf_state    = {}
+        self.plan_bin    = "tfplan.bin"
+        self.use_vault   = use_vault
+        self.interactive = interactive
+
         if use_vault:
             load_vault_secrets()
 
-    def _run_cmd(self, args, capture=True, interactive=False):
+    def _run_cmd(self, args, capture=True):
         while True:
             try:
                 # 1. THE VAULT CHECK: Loop here until the user fixes the token
@@ -87,7 +89,7 @@ class Terraform:
                         print("🔄 Checking for new Vault secrets...")
     
                 is_json_req = "show" in args and "-json" in args
-                current_capture = True if is_json_req else (False if interactive else capture)
+                current_capture = True if is_json_req else (False if self.interactive else capture)
                 
                 res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
     
@@ -98,7 +100,7 @@ class Terraform:
                 if res.returncode == 0:
                     return res
                 
-                if not interactive:
+                if not self.interactive:
                     return res 
     
             except KeyboardInterrupt:
@@ -107,7 +109,7 @@ class Terraform:
     
             except Exception as e:
                 print(f"\n⚠️ Execution Error: {e}")
-                if not interactive: raise
+                if not self.interactive: raise
     
             # 3. THE FAILURE LOOP: Standard command failure
             print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
@@ -117,53 +119,18 @@ class Terraform:
             print("🔄 Retrying command...")
 
 
-    def _run_cmd_old(self, args, capture=True, interactive=False):
-        """
-        Internal engine. 
-        If interactive=True, it forces capture=False to show output and enters the retry loop.
-        """
-        while True:
-            try:
-                if self.use_vault:
-                    load_vault_secrets()
-                
-                is_json_req = "show" in args and "-json" in args
-                current_capture = True if is_json_req else (False if interactive else capture)
-                
-                res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
+    def init(self):
+        return self._run_cmd(["terraform", "init", "-upgrade"], capture=False)
 
-                if res.returncode == 0:
-                    return res
-                
-                if res.returncode < 0:
-                    raise KeyboardInterrupt
+    def import_(self, resource, id):
+        return self._run_cmd(["terraform", "import", resource, id], capture=False)
 
-                if not interactive:
-                    return res 
-
-            except Exception as e:
-                print(f"\n⚠️ Vault/Execution Error: {e}")
-                if not interactive:
-                    raise
-
-            print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
-            choice = input("Action: [r]etry (fix issue/login first), [q]uit: ").strip().lower()
-            if choice != 'r':
-                pytest.fail("User aborted.")
-            print("🔄 Retrying...")
-
-    def init(self, interactive=False):
-        return self._run_cmd(["terraform", "init", "-upgrade"], capture=False, interactive=interactive)
-
-    def import_(self, resource, id, interactive=False):
-        return self._run_cmd(["terraform", "import", resource, id], capture=False, interactive=interactive)
-
-    def plan(self, file=None, interactive=False):
+    def plan(self, file=None):
         plan_bin = file or self.plan_bin
-        res = self._run_cmd(["terraform", "plan", "-out", plan_bin], capture=False, interactive=interactive)
+        res = self._run_cmd(["terraform", "plan", "-out", plan_bin], capture=False)
 
         if res.returncode == 0:
-            show_res = self._run_cmd(["terraform", "show", "-json", plan_bin], capture=True, interactive=False)
+            show_res = self._run_cmd(["terraform", "show", "-json", plan_bin], capture=True)
             if show_res.returncode == 0:
                 self.tf_plan = json.loads(show_res.stdout)
                 with open(os.path.join(self.wd, "tfplan.json"), "w") as f:
@@ -174,20 +141,39 @@ class Terraform:
         outputs = self.tf_plan.get("planned_values", {}).get("outputs", {})
         return outputs.get(name)
 
-    def apply(self, interactive=False):
-        res = self._run_cmd(["terraform", "apply", "-auto-approve"], capture=False, interactive=interactive)
+    def apply(self):
+        res = self._run_cmd(["terraform", "apply", "-auto-approve"], capture=False)
         if res.returncode == 0:
             self.show_state()
         else:
-            if not interactive:
+            if not self.interactive:
                 pytest.fail("Terraform Apply failed.")
         return res
 
-    def destroy(self, interactive=False):
-        return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False, interactive=interactive)
+    def destroy(self):
+        return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
+
+    def destroy(self, force=False):
+        """
+        Destroys infrastructure. 
+        Prompts for confirmation if interactive=True and force=False.
+        """
+        if self.interactive and not force:
+            print("\n" + "!" * 40)
+            print("🛑 DESTROY CONFIRMATION REQUIRED")
+            print("!" * 40)
+            response = input(">>> Do you want to destroy the Terraform stack? (y/n): ").lower().strip()
+            
+            if response != 'y':
+                print(">>> Skipping destruction. Infrastructure remains active.")
+                return None # Return early without running the command
+
+        print(">>> Destroying infrastructure...")
+        return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
+
 
     def show_state(self):
-        res = self._run_cmd(["terraform", "show", "-json"], capture=True, interactive=False)
+        res = self._run_cmd(["terraform", "show", "-json"], capture=True)
         if res.returncode == 0:
             self.tf_state = json.loads(res.stdout)
         return self.tf_state
@@ -205,16 +191,18 @@ class Terraform:
 
 
 class Ansible:
-    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", use_vault=False):
-        self.wd        = wd
-        self.inventory = inventory
-        self.playbook  = playbook
-        self.roles     = roles
-        self.use_vault = use_vault
+    def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", use_vault=False, interactive=False):
+        self.wd          = wd
+        self.inventory   = inventory
+        self.playbook    = playbook
+        self.roles       = roles
+        self.use_vault   = use_vault
+        self.interactive = interactive
+
         if use_vault:
             load_vault_secrets()
 
-    def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"], interactive=False):
+    def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
         while True:
             try:
                 # 1. Handle Vault check interactively
@@ -237,7 +225,7 @@ class Ansible:
                     print("✅ Ansible run completed successfully.")
                     return res
 
-                if not interactive:
+                if not self.interactive:
                     pytest.fail("Ansible failed.")
 
             except KeyboardInterrupt:
@@ -247,55 +235,24 @@ class Ansible:
 
             except Exception as e:
                 print(f"\n⚠️ Execution Error: {e}")
-                if not interactive: pytest.fail(str(e))
+                if not self.interactive: pytest.fail(str(e))
 
             # 3. Standard Failure Loop
             print("\n" + "!" * 40 + "\n--- ANSIBLE FAILURE ---\n" + "!" * 40)
             if input("Action: [r]etry, [q]uit: ").lower() != 'r':
                 pytest.fail("User aborted after task failure.")
 
-
-    def run_old(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"], interactive=False):
-        while True:
-            try:
-                if self.use_vault:
-                    load_vault_secrets()
-
-                cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
-                res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)
-                
-                if res.returncode < 0:
-                    raise KeyboardInterrupt
-                    
-                if res.returncode == 0:
-                    print("✅ Ansible run completed successfully.")
-                    return res
-
-                if not interactive:
-                    pytest.fail("Ansible failed.")
-
-            except Exception as e:
-                print(f"\n⚠️ Vault/Auth Error: {e}")
-                if not interactive: pytest.fail(str(e))
-
-            print("\n" + "!" * 40)
-            print("--- ANSIBLE FAILURE ---")
-            print("!" * 40)
-            if input("Action: [r]etry, [q]uit: ").lower() != 'r':
-                pytest.fail("User aborted.")
-            else:
-                print("🔄 Retrying Ansible playbook...")
-
-
 class ConfTest:
-    def __init__(self, wd=".", input="tfplan.json", use_vault=False):
-        self.wd        = wd
-        self.input     = input
-        self.use_vault = use_vault
+    def __init__(self, wd=".", input="tfplan.json", use_vault=False, interactive=False):
+        self.wd          = wd
+        self.input       = input
+        self.use_vault   = use_vault
+        self.interactive = interactive
+
         if use_vault:
             load_vault_secrets()
 
-    def test(self, ns="main", interactive=False):
+    def test(self, ns="main"):
         """Runs conftest with the same retry logic as Terraform/Ansible."""
         while True:
             try:
@@ -311,12 +268,12 @@ class ConfTest:
                     print(f"✅ Policy check '{ns}' passed.")
                     return res
                 
-                if not interactive:
+                if not self.interactive:
                     pytest.fail(f"Policy check '{ns}' failed.")
 
             except Exception as e:
                 print(f"\n⚠️ Policy/Vault Error: {e}")
-                if not interactive: raise
+                if not self.interactive: raise
 
             print(f"\n" + "!" * 40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---")
             if input("Action: [r]etry (after fixing .rego), [q]uit: ").lower() != 'r':
