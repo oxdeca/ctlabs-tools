@@ -7,9 +7,15 @@ import os
 import subprocess
 import json
 import time
+import pytest
 
-def load_vault_secrets(expiry_seconds=28800):
-    """Decrypts secrets and enforces a TTL."""
+
+def load_vault_secrets(grace_period=300):
+    """
+    Decrypts secrets and enforces a TTL based on Vault's actual expiry.
+    :param grace_period: Buffer in seconds (default 5m). 
+                         If the token expires in less than this, it's treated as expired.
+    """
     base_path = os.path.expanduser("~/.ctlabs_vault")
     key_path = os.path.join(base_path, ".vault_key")
     gpg_path = os.path.join(base_path, ".env.gpg")
@@ -35,11 +41,23 @@ def load_vault_secrets(expiry_seconds=28800):
                 key, val = line.split("=", 1)
                 secrets[key] = val.strip()
         
-        created_at = int(secrets.get("CREATED_AT", 0))
-        if (int(time.time()) - created_at) > expiry_seconds:
+        current_time = int(time.time())
+        # 1. Check for the new EXPIRES_AT (Absolute timestamp from Vault)
+        # 2. Fallback to CREATED_AT + 8h if EXPIRES_AT isn't found (Legacy support)
+        if "EXPIRES_AT" in secrets:
+            expiry_timestamp = int(secrets["EXPIRES_AT"])
+        else:
+            expiry_timestamp = int(secrets.get("CREATED_AT", 0)) + 28800
+
+        # Enforce the Grace Period
+        # If (current time + 5 minutes) is past the expiry, we stop now.
+        if (current_time + grace_period) > expiry_timestamp:
             if os.path.exists(key_path): os.remove(key_path)
             if os.path.exists(gpg_path): os.remove(gpg_path)
-            raise Exception(f"Vault session expired. Run vault_login.py.")
+            
+            remaining = expiry_timestamp - current_time
+            msg = "expired" if remaining <= 0 else f"expiring in {remaining}s (buffer is {grace_period}s)"
+            raise Exception(f"Vault session {msg}. Please run vault_login.py again.")
 
         os.environ.update(secrets)
         os.environ["VAULT_SKIP_VERIFY"] = "true" 
@@ -48,15 +66,67 @@ def load_vault_secrets(expiry_seconds=28800):
 
 class Terraform:
     def __init__(self, wd=".", use_vault=False):
-        self.wd       = wd
-        self.tf_plan  = {}
-        self.tf_state = {}
-        self.plan_bin = "tfplan.bin"
+        self.wd        = wd
+        self.tf_plan   = {}
+        self.tf_state  = {}
+        self.plan_bin  = "tfplan.bin"
+        self.use_vault = use_vault
         if use_vault:
             load_vault_secrets()
 
     def _run_cmd(self, args, capture=True):
-        return subprocess.run(args, cwd=self.wd, capture_output=capture, text=True, env=os.environ)
+        """Internal wrapper to run TF commands with automatic Vault sync."""
+        if self.use_vault:
+            # Refresh/Verify token before every single command
+            load_vault_secrets()
+            
+        return subprocess.run(args, cwd=self.wd, capture_output=capture, text=True, env=os.environ )
+
+    def run_interactive(self, command="apply"):
+        """
+        Runs a Terraform command (default: apply) interactively.
+        Retries on failure, allowing manual fixes in between.
+        """
+        valid_cmds = {
+            "apply": ["terraform", "apply", "-auto-approve"],
+            "plan": ["terraform", "plan", "-out", self.plan_bin],
+            "init": ["terraform", "init", "-upgrade"]
+        }
+        
+        tf_args = valid_cmds.get(command, ["terraform", command])
+
+        try:
+            while True:
+                # We use capture=False here so the user sees the live TF output
+                res = subprocess.run(tf_args, cwd=self.wd, capture_output=False, text=True, env=os.environ)
+
+                if res.returncode < 0:
+                    raise KeyboardInterrupt
+
+                if res.returncode == 0:
+                    print(f"✅ Terraform {command} successful.")
+                    return res
+
+                print("\n" + "!" * 40)
+                print(f"--- TERRAFORM {command.upper()} FAILURE ---")
+                print("!" * 40)
+                
+                choice = input("Action: [r]etry, [q]uit: ").strip().lower()
+                
+                if choice == 'q':
+                    pytest.fail(f"User quit after Terraform {command} failed.")
+                elif choice == 'r':
+                    print(f"🔄 Re-running terraform {command}...")
+                    # We call load_vault_secrets specifically here just in case 
+                    # the failure was a timeout and we want to catch it before the next run
+                    if self.use_vault:
+                        load_vault_secrets()
+                    continue
+
+        except KeyboardInterrupt:
+            print("\n[BAILING OUT] Manual escape triggered.")
+            pytest.exit("User aborted test.")
+
 
     def init(self):
         return self._run_cmd(["terraform", "init", "-upgrade"], capture=False)
@@ -113,11 +183,49 @@ class Ansible:
         self.inventory = inventory
         self.playbook  = playbook
         self.roles     = roles
+        self.use_vault = use_vault
         if use_vault:
             load_vault_secrets()
 
     def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
+        # Always ensure environment is fresh before execution
+        if self.use_vault:
+            load_vault_secrets()
+            
         return subprocess.run(["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts, cwd=self.wd, env=os.environ)
+
+    def run_interactive(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
+        """Runs Ansible in a loop, allowing the user to retry on failure."""
+        try:
+            while True:
+                res = self.run(opts=opts)
+
+                # Return code < 0 usually means a signal (like SIGINT) hit the subprocess
+                if res.returncode < 0:
+                    raise KeyboardInterrupt
+
+                if res.returncode == 0:
+                    print("✅ Ansible run completed successfully.")
+                    return res
+
+                # If we get here, the playbook failed
+                print("\n" + "!" * 40)
+                print("--- ANSIBLE FAILURE ---")
+                print("!" * 40)
+                
+                choice = input("Action: [r]etry current task, [q]uit and fail test: ").strip().lower()
+                
+                if choice == 'q':
+                    pytest.fail("User opted to quit after Ansible failure.")
+                elif choice == 'r':
+                    print("🔄 Retrying Ansible playbook...")
+                    continue 
+                else:
+                    print("Invalid choice. Please enter 'r' or 'q'.")
+
+        except KeyboardInterrupt:
+            print("\n\n[BAILING OUT] Manual escape triggered.")
+            pytest.exit("User aborted test suite via KeyboardInterrupt.")
 
 class ConfTest:
     def __init__(self, wd=".", input="tfplan.json", use_vault=False):
