@@ -25,8 +25,14 @@ os.makedirs(SECURE_DIR, mode=0o700, exist_ok=True)
 KEY_FILE = os.path.join(SECURE_DIR, ".vault_key")
 ENV_FILE = os.path.join(SECURE_DIR, ".env.gpg")
 
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Interactive Login Wrapper")
+    
+    # Session Management Flags
+    parser.add_argument("-s", "--status", action="store_true", help="Check the expiration of the locally cached token")
+    parser.add_argument("-c", "--clear", action="store_true", help="Clear the locally cached token (logout)")
+    
     parser.add_argument("-a", "--addr", help="Vault Server Address (e.g., https://IP:PORT)")
     
     # Human Auth
@@ -148,6 +154,40 @@ def cache_local_token(vault_addr, token, lease_duration):
 
 def main():
     args = get_args()
+    if args.clear:
+        cleared = False
+        if os.path.exists(KEY_FILE):
+            os.remove(KEY_FILE)
+            cleared = True
+        if os.path.exists(ENV_FILE):
+            os.remove(ENV_FILE)
+            cleared = True
+            
+        if cleared:
+            print("🧹 Local Vault cache cleared successfully. You are now logged out.")
+        else:
+            print("ℹ️ No active session found to clear.")
+        sys.exit(0)
+
+    if args.status:
+        vault = HashiVault()
+        is_valid, remaining = vault.check_expiration()
+        
+        if remaining <= 0:
+            print("❌ No valid token found, or the token has completely expired.")
+            sys.exit(1)
+            
+        hours, remainder = divmod(remaining, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if is_valid:
+            print(f"✅ Token is valid and active.")
+        else:
+            print(f"⚠️ Token is alive but within the expiration grace period ({vault.grace_period}s).")
+            
+        print(f"⏳ Time remaining: {hours}h {minutes}m {seconds}s")
+        sys.exit(0)
+
     vault_addr = args.addr or input("Enter Vault Address (e.g., https://IP:PORT): ").strip()
     
     check_vault_health(vault_addr)
