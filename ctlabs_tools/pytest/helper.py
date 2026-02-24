@@ -390,29 +390,42 @@ class HashiVault:
         )
 
     def read_secret(self, path, mount_point='secret'):
-        """Reads a secret dictionary from Vault's KV-v2 engine."""
+        """Reads a secret dictionary from Vault."""
         client = self._get_client()
         if not client: return None
 
         try:
-            response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount_point)
-            return response['data']['data']
+            if mount_point.lower() == 'cubbyhole':
+                # Cubbyhole behaves like KV-v1, no /data/ wrapper
+                response = client.read(f"cubbyhole/{path}")
+                if response and 'data' in response:
+                    return response['data']
+                return None
+            else:
+                # Standard KV-v2
+                response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount_point)
+                return response['data']['data']
         except Exception as e:
-            print(f"❌ Error reading {mount_point}/data/{path}: {e}")
+            print(f"❌ Error reading {mount_point}/{path}: {e}")
             return None
 
     def write_secret(self, path, secret_data, mount_point='secret'):
-        """Writes a dictionary of key-value pairs to Vault's KV-v2 engine."""
+        """Writes a dictionary of key-value pairs to Vault."""
         client = self._get_client()
         if not client: return False
 
         try:
-            client.secrets.kv.v2.create_or_update_secret(
-                path=path, 
-                secret=secret_data, 
-                mount_point=mount_point
-            )
-            print(f"✅ Successfully wrote secret to {mount_point}/data/{path}")
+            if mount_point.lower() == 'cubbyhole':
+                # Cubbyhole uses the generic write method, passing the dict as kwargs
+                client.write(f"cubbyhole/{path}", **secret_data)
+            else:
+                # Standard KV-v2
+                client.secrets.kv.v2.create_or_update_secret(
+                    path=path, 
+                    secret=secret_data, 
+                    mount_point=mount_point
+                )
+            print(f"✅ Successfully wrote secret to {mount_point}/{path}")
             return True
         except Exception as e:
             print(f"❌ Error writing secret to Vault: {e}")
