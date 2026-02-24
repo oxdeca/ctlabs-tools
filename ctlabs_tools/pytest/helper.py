@@ -80,15 +80,17 @@ class Terraform:
     def _run_cmd(self, args, capture=True):
         while True:
             try:
-                # 1. THE VAULT CHECK: Loop here until the user fixes the token
                 if self.use_vault:
-                    while not load_vault_secrets():
-                        print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
-                        print("Please run 'vault_login.py' in a separate terminal.")
-                        choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
-                        if choice == 'q':
-                            pytest.fail("User aborted due to Vault expiry.")
-                        print("🔄 Checking for new Vault secrets...")
+                    self.vault.ensure_valid_token(interactive=self.interactive)
+                ## 1. THE VAULT CHECK: Loop here until the user fixes the token
+                #if self.use_vault:
+                #    while not load_vault_secrets():
+                #        print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
+                #        print("Please run 'vault_login.py' in a separate terminal.")
+                #        choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
+                #        if choice == 'q':
+                #            pytest.fail("User aborted due to Vault expiry.")
+                #        print("🔄 Checking for new Vault secrets...")
     
                 is_json_req = "show" in args and "-json" in args
                 current_capture = True if is_json_req else (False if self.interactive else capture)
@@ -207,13 +209,15 @@ class Ansible:
     def run(self, opts=["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]):
         while True:
             try:
-                # 1. Handle Vault check interactively
                 if self.use_vault:
-                    while not load_vault_secrets():
-                        print("\n🔑 Vault Token missing/expired!")
-                        choice = input("Action: [r]etry, [q]uit: ").lower().strip()
-                        if choice != 'r':
-                            pytest.fail("User aborted due to Vault expiry.")
+                    self.vault.ensure_valid_token(interactive=self.interactive)
+                ## 1. Handle Vault check interactively
+                #if self.use_vault:
+                #    while not load_vault_secrets():
+                #        print("\n🔑 Vault Token missing/expired!")
+                #        choice = input("Action: [r]etry, [q]uit: ").lower().strip()
+                #        if choice != 'r':
+                #            pytest.fail("User aborted due to Vault expiry.")
 
                 cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
                 res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)
@@ -448,6 +452,21 @@ class HashiVault:
                 results[name] = None
                 
         return results
+
+    def ensure_valid_token(self, interactive=False):
+        """Blocks until a valid Vault token is available. Prompts user if interactive."""
+        while not self.load_secrets():
+            if not interactive:
+                pytest.fail("Vault token expired or missing in headless mode. Cannot proceed.")
+                
+            print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
+            print("Please run 'vault-login' in a separate terminal.")
+            choice = input("Action: [r]etry checking vault, [q]uit: ").strip().lower()
+            
+            if choice == 'q':
+                pytest.exit("User aborted test run due to Vault expiry.")
+            print("🔄 Checking for new Vault secrets...")
+        return True
 
 
 class GCPSecretManager:
