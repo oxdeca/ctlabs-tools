@@ -73,6 +73,7 @@ class Terraform:
         self.plan_bin    = "tfplan.bin"
         self.use_vault   = use_vault
         self.interactive = interactive
+        self.vault       = HashiVault()
 
         if use_vault:
             load_vault_secrets()
@@ -202,6 +203,7 @@ class Ansible:
         self.roles       = roles
         self.use_vault   = use_vault
         self.interactive = interactive
+        self.vault       = HashiVault()
 
         if use_vault:
             load_vault_secrets()
