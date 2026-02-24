@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.1.28",
+    version="0.1.29",
     description="ctlabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -21,6 +21,11 @@ setup(
       "flask-jwt-extended",
       "python-dotenv",
     ],
+    extras_require={
+        "gcp" : [
+            "google-cloud-secret-manager>=2.16.0"
+        ]
+    },
     entry_points={
         'console_scripts': [
             'vault-login=ctlabs_tools.pytest.vault_login:main',
