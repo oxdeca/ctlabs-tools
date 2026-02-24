@@ -15,7 +15,7 @@ import subprocess
 from getpass import getpass
 
 # Import the new classes we built in helper.py
-from helper import HashiVault, GCPSecretManager
+from .helper import HashiVault, GCPSecretManager
 
 # Suppress self-signed cert warnings
 warnings.filterwarnings('ignore')
