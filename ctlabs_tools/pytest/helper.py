@@ -281,13 +281,7 @@ class ConfTest:
                 pytest.fail("User aborted policy test.")
 
 
-import os
-import subprocess
-import time
-import warnings
-import hvac
 
-warnings.filterwarnings('ignore')
 
 class HashiVault:
     def __init__(self, grace_period=300):
@@ -338,6 +332,10 @@ class HashiVault:
 
     def check_expiration(self):
         """Calculates if the Dev/Test token is valid."""
+        # If we are using an in-memory token from AppRole, assume it's fresh for the session
+        if self._memory_token:
+            return True, 3600 
+
         secrets = self._decrypt_secrets()
         if not secrets: return False, 0
         
@@ -345,6 +343,31 @@ class HashiVault:
         expiry_timestamp = int(secrets.get("EXPIRES_AT", int(secrets.get("CREATED_AT", 0)) + 28800))
         remaining = expiry_timestamp - current_time
         return remaining > self.grace_period, remaining
+
+    def load_secrets(self):
+        """Checks expiry and loads secrets into os.environ for Terraform/Ansible subprocesses."""
+        # 1. Handle in-memory (AppRole/Production)
+        if self._memory_token and self._memory_url:
+            os.environ["VAULT_ADDR"] = self._memory_url
+            os.environ["VAULT_TOKEN"] = self._memory_token
+            os.environ["VAULT_SKIP_VERIFY"] = "true"
+            return True
+
+        # 2. Handle Local File Cache (Dev/Test)
+        secrets = self._decrypt_secrets()
+        if not secrets:
+            return False
+
+        is_valid, remaining = self.check_expiration()
+
+        if not is_valid:
+            if os.path.exists(self.key_path): os.remove(self.key_path)
+            if os.path.exists(self.gpg_path): os.remove(self.gpg_path)
+            return False
+
+        os.environ.update(secrets)
+        os.environ["VAULT_SKIP_VERIFY"] = "true" 
+        return True
 
     def _get_client(self):
         """Initializes hvac Client, favoring AppRole memory over Dev GPG cache."""
@@ -377,6 +400,23 @@ class HashiVault:
         except Exception as e:
             print(f"❌ Error reading {mount_point}/data/{path}: {e}")
             return None
+
+    def write_secret(self, path, secret_data, mount_point='secret'):
+        """Writes a dictionary of key-value pairs to Vault's KV-v2 engine."""
+        client = self._get_client()
+        if not client: return False
+
+        try:
+            client.secrets.kv.v2.create_or_update_secret(
+                path=path, 
+                secret=secret_data, 
+                mount_point=mount_point
+            )
+            print(f"✅ Successfully wrote secret to {mount_point}/data/{path}")
+            return True
+        except Exception as e:
+            print(f"❌ Error writing secret to Vault: {e}")
+            return False
 
     def resolve_mapped_config(self, config):
         """Iterates over a Terraform-style vault block and returns a mapped dictionary."""
