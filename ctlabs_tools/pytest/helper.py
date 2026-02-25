@@ -65,6 +65,8 @@ def load_vault_secrets(grace_period=300):
         print(f"❌ GPG Decryption failed: {res.stderr}")
         return False
 
+
+
 class Terraform:
     def __init__(self, wd=".", use_vault=False, interactive=False):
         self.wd          = wd
@@ -83,15 +85,6 @@ class Terraform:
             try:
                 if self.use_vault:
                     self.vault.ensure_valid_token(interactive=self.interactive)
-                ## 1. THE VAULT CHECK: Loop here until the user fixes the token
-                #if self.use_vault:
-                #    while not load_vault_secrets():
-                #        print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
-                #        print("Please run 'vault_login.py' in a separate terminal.")
-                #        choice = input("Action: [r]etry loading secrets, [q]uit: ").strip().lower()
-                #        if choice == 'q':
-                #            pytest.fail("User aborted due to Vault expiry.")
-                #        print("🔄 Checking for new Vault secrets...")
     
                 is_json_req = "show" in args and "-json" in args
                 current_capture = True if is_json_req else (False if self.interactive else capture)
@@ -142,10 +135,6 @@ class Terraform:
                     json.dump(self.tf_plan, f, indent=2)
         return res
 
-    def get_planned_output(self, name):
-        outputs = self.tf_plan.get("planned_values", {}).get("outputs", {})
-        return outputs.get(name)
-
     def apply(self):
         res = self._run_cmd(["terraform", "apply", "-auto-approve"], capture=False)
         if res.returncode == 0:
@@ -155,8 +144,66 @@ class Terraform:
                 pytest.fail("Terraform Apply failed.")
         return res
 
-    def destroy(self):
-        return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
+    def show_state(self):
+        res = self._run_cmd(["terraform", "show", "-json"], capture=True)
+        if res.returncode == 0:
+            self.tf_state = json.loads(res.stdout)
+        return self.tf_state
+
+    def show_plan(self, file="tfplan.json"):
+        """
+        Reads the plan JSON from disk and updates self.tf_plan.
+        Returns the raw dictionary.
+        """
+        path = os.path.join(self.wd, file)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                self.tf_plan = json.load(f)
+        return self.tf_plan
+
+    def search_plan(self, address):
+        """Searches the planned changes for a specific address."""
+        if not self.tf_plan:
+            self.show_plan()
+        # The 'planned_values' key contains the state-like object of the future
+        data_root = self.tf_plan.get("planned_values", {})
+        return self._find_in_data(data_root, address)
+
+    def search_state(self, address):
+        """Searches the current live state for a specific address."""
+        if not self.tf_state:
+            self.show_state()
+        return self._find_in_data(self.tf_state, address)
+
+    def _find_in_data(self, data_root, address):
+        """
+        Private helper to navigate Terraform's JSON structure.
+        Works for both Plan and State data.
+        """
+        if not data_root:
+            return None
+
+        # 1. Check Outputs
+        outputs = data_root.get("outputs", {})
+        if address in outputs:
+            return outputs[address].get("value")
+
+        # 2. Recursive Search for Resources
+        def find_resource(module, target_address):
+            # Check resources in the current module level
+            for res in module.get("resources", []):
+                if res.get("address") == target_address or res.get("name") == target_address:
+                    return res.get("values")
+            
+            # Recurse into child modules
+            for child in module.get("child_modules", []):
+                result = find_resource(child, target_address)
+                if result:
+                    return result
+            return None
+
+        root_module = data_root.get("root_module", {})
+        return find_resource(root_module, address)
 
     def destroy(self, force=False):
         """
@@ -176,23 +223,11 @@ class Terraform:
         print(">>> Destroying infrastructure...")
         return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
 
-
-    def show_state(self):
-        res = self._run_cmd(["terraform", "show", "-json"], capture=True)
-        if res.returncode == 0:
-            self.tf_state = json.loads(res.stdout)
-        return self.tf_state
-
-    def show_plan(self, file="tfplan.json"):
-        path = os.path.join(self.wd, file)
-        with open(path, "r") as f:
-            self.tf_plan = json.load(f)
-        return self.tf_plan
-
     def cleanup(self):
         for f in ["tfplan.bin", "tfplan.json"]:
             p = os.path.join(self.wd, f)
             if os.path.exists(p): os.remove(p)
+
 
 
 class Ansible:
@@ -213,13 +248,6 @@ class Ansible:
             try:
                 if self.use_vault:
                     self.vault.ensure_valid_token(interactive=self.interactive)
-                ## 1. Handle Vault check interactively
-                #if self.use_vault:
-                #    while not load_vault_secrets():
-                #        print("\n🔑 Vault Token missing/expired!")
-                #        choice = input("Action: [r]etry, [q]uit: ").lower().strip()
-                #        if choice != 'r':
-                #            pytest.fail("User aborted due to Vault expiry.")
 
                 cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
                 res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)
@@ -248,6 +276,8 @@ class Ansible:
             print("\n" + "!" * 40 + "\n--- ANSIBLE FAILURE ---\n" + "!" * 40)
             if input("Action: [r]etry, [q]uit: ").lower() != 'r':
                 pytest.fail("User aborted after task failure.")
+
+
 
 class ConfTest:
     def __init__(self, wd=".", input="tfplan.json", use_vault=False, interactive=False):
@@ -285,7 +315,6 @@ class ConfTest:
             print(f"\n" + "!" * 40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---")
             if input("Action: [r]etry, [q]uit: ").lower() != 'r':
                 pytest.fail("User aborted policy test.")
-
 
 
 
@@ -469,6 +498,7 @@ class HashiVault:
                 pytest.exit("User aborted test run due to Vault expiry.")
             print("🔄 Checking for new Vault secrets...")
         return True
+
 
 
 class GCPSecretManager:

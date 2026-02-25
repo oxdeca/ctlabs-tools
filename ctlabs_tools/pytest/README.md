@@ -93,7 +93,7 @@ def test_infrastructure(tf, is_interactive):
     tf.plan(interactive=is_interactive)
     tf.apply(interactive=is_interactive)
     
-    assert tf.get_planned_output("instance_ip") is not None
+    assert tf.search_plan("instance_ip") is not None
 ```
 
 ## Manual Usage
@@ -113,6 +113,19 @@ tf_offline = Terraform(wd="./infra/local-test", use_vault=False)
 tf.init()
 tf.plan()
 ```
+
+
+```py
+# Get the IP we currently have
+current_ip = tf.search_state("aws_instance.web")["public_ip"]
+
+# Get the IP terraform wants to assign (if it's changing)
+planned_ip = tf.search_plan("aws_instance.web")["public_ip"]
+
+if current_ip != planned_ip:
+    print(f"Update detected: {current_ip} -> {planned_ip}")
+```
+
 
 ### Ansible
 
