@@ -108,7 +108,8 @@ class Terraform:
                 print(f"\n⚠️ Execution Error: {e}")
                 if not self.interactive: raise
     
-            print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
+            print("\n" + "!"*40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---\n" + "!"*40)
+            nflue
             choice = input("Action: [r]etry, [q]uit: ").strip().lower()
             if choice != 'r':
                 pytest.fail("User aborted.")
@@ -226,9 +227,7 @@ class Terraform:
         Prompts for confirmation if interactive=True and force=False.
         """
         if self.interactive and not force:
-            print("\n" + "!" * 40)
-            print("🛑 DESTROY CONFIRMATION REQUIRED")
-            print("!" * 40)
+            print("\n" + "!"*40 + "\n🛑 DESTROY CONFIRMATION REQUIRED\n" + "!"*40)
             response = input(">>> Do you want to destroy the Terraform stack? (y/n): ").lower().strip()
             
             if response != 'y':
@@ -288,7 +287,7 @@ class Ansible:
                 if not self.interactive: pytest.fail(str(e))
 
             # 3. Standard Failure Loop
-            print("\n" + "!" * 40 + "\n--- ANSIBLE FAILURE ---\n" + "!" * 40)
+            print("\n" + "!"*40 + "\n--- ANSIBLE FAILURE ---\n" + "!"*40)
             if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
                 pytest.fail("User aborted after task failure.")
             print("🔄 Retrying command...")
@@ -305,7 +304,7 @@ class ConfTest:
         if use_vault:
             load_vault_secrets()
 
-    def test(self, ns="main"):
+    def run(self, ns="main"):
         """Runs conftest with the same retry logic as Terraform/Ansible."""
         while True:
             try:
@@ -328,7 +327,7 @@ class ConfTest:
                 print(f"\n⚠️ Policy/Vault Error: {e}")
                 if not self.interactive: raise
 
-            print(f"\n" + "!" * 40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---")
+            print(f"\n" + "!"*40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---\n" + "!"*40)
             if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
                 pytest.fail("User aborted policy test.")
             print("🔄 Retrying command...")
@@ -507,7 +506,7 @@ class HashiVault:
             if not interactive:
                 pytest.fail("Vault token expired or missing in headless mode. Cannot proceed.")
                 
-            print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
+            print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING\n" + "!"*40)
             print("Please run 'vault-login' in a separate terminal.")
             choice = input("Action: [r]etry, [q]uit: ").strip().lower()
             
