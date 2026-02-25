@@ -27,7 +27,7 @@ pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
 ## Importing in your Tests
 Once installed via pip, your imports become clean and location-independent. In your VM's test files, you simply write:
 
-```python
+```py
 from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest
 from ctlabs_tools.pytest.vault_login import get_args # etc.
 ```
@@ -42,12 +42,12 @@ vault_login -a https://<VAULT_IP>:8081 -u <USER>
 ## Usage Examples
 
 ### Test requiring Vault
-```python
+```py
 tf = Terraform(wd="./infra/vault-stuff", use_vault=True)
 ```
 
 ### Test that works offline/without Vault
-```python
+```py
 tf_offline = Terraform(wd="./infra/local-test", use_vault=False)
 ```
 
@@ -59,7 +59,7 @@ To enable the --interactive flag and shared fixtures across your entire test sui
 1. Configure conftest.py
 This setup registers the global flag and creates reusable fixtures.
 
-```python
+```py
 import pytest
 from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest
 
@@ -86,7 +86,7 @@ def tf(is_interactive):
 2. Use in Test Files
 Your test files now stay clean. Passing --interactive on the command line will automatically trigger retry loops on failures.
 
-```python
+```py
 def test_infrastructure(tf, is_interactive):
     # If a command fails and --interactive is set, the test pauses for manual fix/retry
     tf.init(interactive=is_interactive)
@@ -120,7 +120,7 @@ tf.plan()
 ```
 
 
-__pytest example__
+__pytest examples__
 
 ```py
 import pytest
@@ -166,6 +166,38 @@ def test_teardown(tf):
     # Since it's in a container, you might skip this if the container dies anyway,
     # but it's good practice for persistence.
     tf.destroy(force=True)
+```
+
+```py
+@pytest.fixture(scope="session")
+def tf_stack(generate_config_file, is_interactive):
+    tf = Terraform(interactive=is_interactive)
+    tf.init()
+    
+    # Run plan and export the JSON
+    tf.plan()
+    
+    # Determine if changes exist using the new encapsulated method
+    changes_exist = tf.has_changes()
+    
+    if changes_exist:
+        print("\n[CONFTEST] Evaluating Terraform plan against Rego policies...")
+        policy_checker = ConfTest(wd=".", input="tfplan.json", interactive=is_interactive)
+        
+        # Evaluates against the policies in the ./policy/ directory
+        # Will pause interactively or abort pytest if a policy fails
+        policy_checker.run(ns="main")
+    
+    # Apply only happens if policies pass (or if there are no changes)
+    tf.apply()
+    
+    # Attach the boolean to the fixture object so subsequent tests can read it
+    tf.has_changes = changes_exist
+    
+    yield tf
+    
+    tf.cleanup()
+    tf.destroy()
 ```
 
 
@@ -229,6 +261,23 @@ from ctlabs_tools.pytest.helper import ConfTest
 
 ct = ConfTest(wd=".", input="tfplan.json")
 ct.test(ns="security_policies", interactive=True)
+```
+
+
+### RemoteDesktop
+
+```bash
+@pytest.fixture(scope="session")
+def windows_creds(tf_stack):
+    vm_name = CONFIG['vms']['win'][0]['name']
+    domain  = CONFIG['defaults']['vm']['win']['domain']
+    
+    # ... your password retrieval/reset logic ...
+    
+    # Launch RDP automatically based on the developer's OS!
+    RemoteDesktop.launch(f"{vm_name}.{domain}", creds["username"], creds["password"])
+
+    return creds
 ```
 
 

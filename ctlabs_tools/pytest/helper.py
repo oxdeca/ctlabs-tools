@@ -140,6 +140,31 @@ class Terraform:
                 pytest.fail("Terraform Apply failed.")
         return res
 
+    def has_changes(self):
+        """
+        Evaluates the current Terraform plan to determine if any infrastructure 
+        will be created, updated, replaced, or destroyed.
+        Returns True if changes exist, False if the plan is a complete no-op.
+        """
+        # Ensure the plan is loaded into memory
+        if not self.tf_plan:
+            self.show_plan()
+            
+        # If the plan is completely empty, there are no changes
+        if not self.tf_plan.get("resource_changes"):
+            return False
+
+        # Look for any resource whose action is NOT just "no-op" or "read"
+        # "read" actions happen when Terraform updates a data source, which doesn't affect infrastructure
+        for resource in self.tf_plan.get("resource_changes", []):
+            actions = resource.get("change", {}).get("actions", [])
+            
+            if actions != ["no-op"] and actions != ["read"]:
+                return True
+                
+        return False
+
+
     def show_state(self):
         res = self._run_cmd(["terraform", "show", "-json"], capture=True)
         if res.returncode == 0:
@@ -542,3 +567,61 @@ class GCPSecretManager:
         except Exception as e:
             print(f"❌ Failed to fetch {secret_id} from GSM: {e}")
             return None
+
+
+
+class RemoteDesktop:
+    """Handles launching native RDP clients based on the host operating system."""
+    
+    @staticmethod
+    def launch(hostname, username, password):
+        """Detects OS and launches the appropriate RDP client."""
+        if sys.platform == "darwin":
+            RemoteDesktop._launch_royaltsx(hostname, username, password)
+        else:
+            RemoteDesktop._launch_freerdp(hostname, username, password)
+
+    @staticmethod
+    def _launch_royaltsx(hostname, username, password):
+        print(f"\n[RDP] Launching Royal TSX session to {hostname}...")
+
+        # Pre-escape problematic characters for Royal TSX's internal parser
+        protected_password = password.replace('#', '\\#').replace('&', '0x46').replace('*', '\\*')
+
+        # Perform standard URL encoding
+        user_enc = urllib.parse.quote(username, safe='')
+        pass_enc = urllib.parse.quote(protected_password, safe='')
+        host_enc = urllib.parse.quote(hostname, safe='')
+
+        rtsx_uri = (
+            f"rtsx://rdp%3a%2f%2f{user_enc}:{pass_enc}@{host_enc}"
+            f"?using=adhoc"
+            f"&property_AuthenticationLevel=0"
+            f"&property_Name={host_enc}"
+        )
+
+        subprocess.Popen(
+            ["open", rtsx_uri],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+    @staticmethod
+    def _launch_freerdp(hostname, username, password):
+        print(f"\n[RDP] Launching FreeRDP session to {hostname}...")
+        
+        cmd = [
+            "xfreerdp",
+            f"/v:{hostname}",
+            f"/u:{username}",
+            f"/p:{password}",
+            "/cert:ignore",       # Ignore self-signed cert warnings
+            "+clipboard",         # Enable copy/paste
+            "/dynamic-resolution" # Allow resizing
+        ]
+        
+        subprocess.Popen(
+            cmd, 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL
+        )
