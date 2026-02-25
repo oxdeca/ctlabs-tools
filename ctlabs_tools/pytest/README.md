@@ -169,6 +169,44 @@ def test_teardown(tf):
 ```
 
 
+__search_plan()__
+
+Before Apply (search_plan): Did Terraform say it was going to do the right thing?
+
+```py
+# Check the diff to ensure it plans to create the resource
+diff = tf_stack.search_plan('google_compute_instance.vm["linux-vm01"]')
+assert "create" in diff["change"]["actions"]
+```
+
+```py
+# Checking what action is happening:
+# Looks in resource_changes by default
+vm_diff = tf_stack.search_plan('module.vm_linux.google_compute_instance.vm["linux-vm01"]')
+
+if vm_diff and "create" in vm_diff.get("change", {}).get("actions", []):
+    print("This plan will create the Linux VM!")
+```
+
+```py
+# Checking the final predicted machine type:
+# Looks in planned_values for the final state
+vm_future = tf_stack.search_plan('module.vm_linux.google_compute_instance.vm["linux-vm01"]', section="planned_values")
+
+assert vm_future["machine_type"] == "e2-medium", "Incorrect machine size configured!"
+```
+
+__search_state()__
+
+After Apply (search_state): Did Terraform actually do it?
+```py
+# Check the live state to get the actual assigned IP address
+live_vm = tf_stack.search_state('google_compute_instance.vm["linux-vm01"]')
+
+# You can now safely grab runtime attributes that didn't exist in the plan!
+actual_ip = live_vm["network_interface"][0]["network_ip"]
+print(f"The VM successfully deployed with IP: {actual_ip}")
+```
 
 ### Ansible
 
