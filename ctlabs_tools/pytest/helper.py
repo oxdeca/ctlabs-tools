@@ -91,7 +91,6 @@ class Terraform:
                 
                 res = subprocess.run(args, cwd=self.wd, capture_output=current_capture, text=True, env=os.environ)
     
-                # 2. THE CTRL+C HANDLER: Signal -2 (SIGINT) comes back as a negative return code
                 if res.returncode < 0:
                     raise KeyboardInterrupt
     
@@ -103,13 +102,12 @@ class Terraform:
     
             except KeyboardInterrupt:
                 print("\n\n🛑 [STOP] User triggered exit. Killing pytest session...")
-                sys.exit(1) # This stops pytest from jumping to the next test
+                sys.exit(1)
     
             except Exception as e:
                 print(f"\n⚠️ Execution Error: {e}")
                 if not self.interactive: raise
     
-            # 3. THE FAILURE LOOP: Standard command failure
             print("\n" + "!" * 40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---")
             choice = input("Action: [r]etry, [q]uit: ").strip().lower()
             if choice != 'r':
@@ -128,11 +126,8 @@ class Terraform:
         res = self._run_cmd(["terraform", "plan", "-out", plan_bin], capture=False)
 
         if res.returncode == 0:
-            show_res = self._run_cmd(["terraform", "show", "-json", plan_bin], capture=True)
-            if show_res.returncode == 0:
-                self.tf_plan = json.loads(show_res.stdout)
-                with open(os.path.join(self.wd, "tfplan.json"), "w") as f:
-                    json.dump(self.tf_plan, f, indent=2)
+            # Refresh internal dict immediately after a successful plan
+            self.show_plan() 
         return res
 
     def apply(self):
@@ -151,23 +146,22 @@ class Terraform:
         return self.tf_state
 
     def show_plan(self, file="tfplan.json"):
-        """
-        Reads the plan JSON from disk and updates self.tf_plan.
-        Returns the raw dictionary.
-        """
-        path = os.path.join(self.wd, file)
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                self.tf_plan = json.load(f)
+        """Syncs the binary plan to JSON and loads it into memory."""
+        # Convert bin to json for easier parsing
+        self._run_cmd(["terraform", "show", "-json", self.plan_bin], capture=True)
+        show_res = self._run_cmd(["terraform", "show", "-json", self.plan_bin], capture=True)
+        
+        if show_res.returncode == 0:
+            self.tf_plan = json.loads(show_res.stdout)
+            with open(os.path.join(self.wd, file), "w") as f:
+                json.dump(self.tf_plan, f, indent=2)
         return self.tf_plan
 
     def search_plan(self, address):
-        """Searches the planned changes for a specific address."""
+        """Searches the planned values (future state)."""
         if not self.tf_plan:
             self.show_plan()
-        # The 'planned_values' key contains the state-like object of the future
-        data_root = self.tf_plan.get("planned_values", {})
-        return self._find_in_data(data_root, address)
+        return self._find_in_data(self.tf_plan.get("planned_values", {}), address)
 
     def search_state(self, address):
         """Searches the current live state for a specific address."""
@@ -176,34 +170,25 @@ class Terraform:
         return self._find_in_data(self.tf_state, address)
 
     def _find_in_data(self, data_root, address):
-        """
-        Private helper to navigate Terraform's JSON structure.
-        Works for both Plan and State data.
-        """
-        if not data_root:
-            return None
+        """Recursive helper to find outputs or resources by address."""
+        if not data_root: return None
 
         # 1. Check Outputs
         outputs = data_root.get("outputs", {})
         if address in outputs:
             return outputs[address].get("value")
 
-        # 2. Recursive Search for Resources
-        def find_resource(module, target_address):
-            # Check resources in the current module level
+        # 2. Recursive Resource Search
+        def find_resource(module, target):
             for res in module.get("resources", []):
-                if res.get("address") == target_address or res.get("name") == target_address:
+                if res.get("address") == target or res.get("name") == target:
                     return res.get("values")
-            
-            # Recurse into child modules
             for child in module.get("child_modules", []):
-                result = find_resource(child, target_address)
-                if result:
-                    return result
+                result = find_resource(child, target)
+                if result: return result
             return None
 
-        root_module = data_root.get("root_module", {})
-        return find_resource(root_module, address)
+        return find_resource(data_root.get("root_module", {}), address)
 
     def destroy(self, force=False):
         """
@@ -218,7 +203,7 @@ class Terraform:
             
             if response != 'y':
                 print(">>> Skipping destruction. Infrastructure remains active.")
-                return None # Return early without running the command
+                return None
 
         print(">>> Destroying infrastructure...")
         return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
@@ -274,8 +259,9 @@ class Ansible:
 
             # 3. Standard Failure Loop
             print("\n" + "!" * 40 + "\n--- ANSIBLE FAILURE ---\n" + "!" * 40)
-            if input("Action: [r]etry, [q]uit: ").lower() != 'r':
+            if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
                 pytest.fail("User aborted after task failure.")
+            print("🔄 Retrying command...")
 
 
 
@@ -313,8 +299,9 @@ class ConfTest:
                 if not self.interactive: raise
 
             print(f"\n" + "!" * 40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---")
-            if input("Action: [r]etry, [q]uit: ").lower() != 'r':
+            if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
                 pytest.fail("User aborted policy test.")
+            print("🔄 Retrying command...")
 
 
 
@@ -492,7 +479,7 @@ class HashiVault:
                 
             print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING")
             print("Please run 'vault-login' in a separate terminal.")
-            choice = input("Action: [r]etry checking vault, [q]uit: ").strip().lower()
+            choice = input("Action: [r]etry, [q]uit: ").strip().lower()
             
             if choice == 'q':
                 pytest.exit("User aborted test run due to Vault expiry.")

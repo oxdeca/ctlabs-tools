@@ -99,6 +99,7 @@ def test_infrastructure(tf, is_interactive):
 ## Manual Usage
 If you prefer not to use conftest.py, you can import and instantiate the helpers directly.
 
+
 ### Terraform
 
 ```py
@@ -106,25 +107,67 @@ from ctlabs_tools.pytest.helper import Terraform
 
 # With Vault (Verify/Refresh token on every command)
 tf = Terraform(wd="./infra/vault-stuff", use_vault=True)
+```
+
+```py
+from ctlabs_tools.pytest.helper import Terraform
 
 # Offline/Local (No Vault interaction)
-tf_offline = Terraform(wd="./infra/local-test", use_vault=False)
+tf = Terraform(wd="./infra/local-test", use_vault=False)
 
 tf.init()
 tf.plan()
 ```
 
 
+__pytest example__
+
 ```py
-# Get the IP we currently have
-current_ip = tf.search_state("aws_instance.web")["public_ip"]
+import pytest
+from your_terraform_module import Terraform
 
-# Get the IP terraform wants to assign (if it's changing)
-planned_ip = tf.search_plan("aws_instance.web")["public_ip"]
+@pytest.fixture(scope="module")
+def tf():
+    """Setup the Terraform instance """
+    tf = Terraform(wd="./infra", use_vault=True)
+    tf.init()
+    yield terraform
+    tf.cleanup()
 
-if current_ip != planned_ip:
-    print(f"Update detected: {current_ip} -> {planned_ip}")
+def test_plan_integrity(tf):
+    """Verify the plan doesn't violate core requirements."""
+    tf.plan()
+
+    # 1. Search for a specific output
+    # Ensures the architect didn't change the naming convention
+    api_endpoint = tf.search_plan("api_gateway_url")
+    assert api_endpoint is not None
+    assert "execute-api" in api_endpoint
+
+    # 2. Search for a resource attribute deep in the plan
+    # Even if this resource is nested in a module, search_plan finds it
+    bucket_vals = tf.search_plan("aws_s3_bucket.data_lake")
+    
+    assert bucket_vals["force_destroy"] is False, "Safety check: Data lake must not be destroyable"
+    assert bucket_vals["versioning"][0]["enabled"] is True
+
+def test_apply_and_verify(tf):
+    """Verify live state after infrastructure is stood up."""
+    tf.apply()
+
+    # 3. Compare Planned vs Actual (Search State)
+    # Useful for verifying computed values like AWS IDs or IPs
+    instance_id = tf.search_state("aws_instance.web_server")["id"]
+    
+    assert instance_id.startswith("i-"), f"Invalid Instance ID: {instance_id}"
+
+def test_teardown(tf):
+    """Clean up resources after testing."""
+    # Since it's in a container, you might skip this if the container dies anyway,
+    # but it's good practice for persistence.
+    tf.destroy(force=True)
 ```
+
 
 
 ### Ansible
