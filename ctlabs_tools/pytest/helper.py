@@ -215,16 +215,20 @@ class Ansible:
         self.interactive   = interactive
         self.auth_callback = auth_callback
 
-    def run(self, opts=None):
+    def run(self, opts=None, inventory=None, playbook=None, roles=None):
         if opts is None:
             opts = ["-b", "-e", "CTLABS_DOMAIN=ctlabs.internal"]
+
+        target_inv   = inventory or self.inventory
+        target_pb    = playbook  or self.playbook
+        target_roles = roles or self.roles
             
         while True:
             try:
                 if self.auth_callback:
                     self.auth_callback(interactive=self.interactive)
 
-                cmd = ["ansible-playbook", "-i", self.inventory, self.playbook, "-t", self.roles] + opts
+                cmd = ["ansible-playbook", "-i", target_inv, target_pb, "-t", target_roles] + opts
                 res = subprocess.run(cmd, cwd=self.wd, capture_output=False, text=True, env=os.environ)
                 
                 if res.returncode < 0: 
