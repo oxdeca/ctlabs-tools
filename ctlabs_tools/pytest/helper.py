@@ -4,6 +4,7 @@
 # -----------------------------------------------------------------------------
 
 import json
+import jmespath
 import hvac
 import os
 import pytest
@@ -183,47 +184,25 @@ class Terraform:
                 json.dump(self.tf_plan, f, indent=2)
         return self.tf_plan
 
-    def search_plan(self, address, section="resource_changes"):
+    def search_plan(self, query):
         """
-        Searches the Terraform JSON plan for a specific resource address.
-        Allows targeting specific sections of the plan lifecycle.
+        Queries the Terraform plan JSON using JMESPath.
+        Example: tf.search_plan("resource_changes[?address=='google_compute_instance.vm'].change.after | [0]")
         """
         if not self.tf_plan:
             self.show_plan()
             
-        # 1. THE DIFF (Default) - Shows actions (create/update/delete) and before/after values
-        if section == "resource_changes":
-            for resource in self.tf_plan.get("resource_changes", []):
-                # Match by exact address (e.g., 'google_compute_instance.vm["linux-vm01"]')
-                if resource.get("address") == address:
-                    return resource
-                    
-        # 2. THE FUTURE - Shows the final predicted state of the resource after apply
-        elif section == "planned_values":
-            data_root = self.tf_plan.get("planned_values", {})
-            return self._find_in_data(data_root, address)
-            
-        # 3. THE PAST - Shows what the resource looks like right now (current state)
-        elif section == "prior_state":
-            data_root = self.tf_plan.get("prior_state", {}).get("values", {})
-            return self._find_in_data(data_root, address)
+        return jmespath.search(query, self.tf_plan)
 
-        print(f"⚠️ Section '{section}' is not supported by search_plan.")
-        return None
-
-    def search_state(self, address):
+    def search_state(self, query):
         """
-        Searches the current live state for a specific address.
-        Returns the applied resource attributes (after Terraform apply).
+        Queries the live Terraform state JSON.
+        Example: tf.search_state("values.root_module.resources[?type=='google_compute_instance']")
         """
         if not self.tf_state:
             self.show_state()
             
-        # FIX: The actual deployed resources and outputs in a state file 
-        # live inside the "values" block, not at the root!
-        data_root = self.tf_state.get("values", {})
-        
-        return self._find_in_data(data_root, address)
+        return jmespath.search(query, self.tf_state)
 
     def _find_in_data(self, data_root, address):
         """Recursive helper to find outputs or resources by address."""

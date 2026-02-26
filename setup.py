@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.1.40",
+    version="0.1.41",
     description="ctlabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -12,6 +12,7 @@ setup(
     zip_safe=False,
     install_requires=[
       "hvac",
+      "jmespath",
       "pytest",
       "requests",
       "streamlit",

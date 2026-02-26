@@ -206,6 +206,11 @@ __search_plan()__
 Before Apply (search_plan): Did Terraform say it was going to do the right thing?
 
 ```py
+# Find the exact VM and get its planned machine type in one line!
+machine_type = tf_stack.search_plan("resource_changes[?name=='linux-vm01'].change.after.machine_type | [0]")
+```
+
+```py
 # Check the diff to ensure it plans to create the resource
 diff = tf_stack.search_plan('google_compute_instance.vm["linux-vm01"]')
 assert "create" in diff["change"]["actions"]
@@ -266,7 +271,7 @@ ct.test(ns="security_policies", interactive=True)
 
 ### RemoteDesktop
 
-```bash
+```py
 @pytest.fixture(scope="session")
 def windows_creds(tf_stack):
     vm_name = CONFIG['vms']['win'][0]['name']
@@ -279,6 +284,8 @@ def windows_creds(tf_stack):
 
     return creds
 ```
+
+
 
 
 ## Interactive Mode Features
