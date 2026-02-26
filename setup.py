@@ -2,11 +2,11 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.1.43",
-    description="ctlabs tools and helpers",
+    version="0.1.44",
+    description="CTLabs tools and helpers",
     packages=find_packages(),
     package_data={
-      'ctlabs_tools.flashcards':['*html'],
+      'ctlabs_tools.flashcards': ['*.html'],
     },
     include_package_data=True,
     zip_safe=False,
@@ -23,7 +23,10 @@ setup(
       "python-dotenv",
     ],
     extras_require={
-        "gcp" : [
+        "gcp": [
+            "google-cloud-secret-manager>=2.16.0"
+        ],
+        "all": [
             "google-cloud-secret-manager>=2.16.0"
         ]
     },
