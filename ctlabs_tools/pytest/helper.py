@@ -451,6 +451,53 @@ class HashiVault:
             print("🔄 Checking for new Vault secrets...")
         return True
 
+    def create_or_update_approle(self, role_name, policies, ttl="1h"):
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.auth.approle.create_or_update_approle(
+                role_name=role_name,
+                token_policies=policies,
+                token_ttl=ttl,
+                bind_secret_id=True
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error setting up AppRole {role_name}: {e}")
+            return False
+
+    def get_approle_credentials(self, role_name):
+        client = self._get_client()
+        if not client: return None
+        try:
+            role_id = client.auth.approle.read_role_id(role_name=role_name)['data']['role_id']
+            secret_id = client.auth.approle.generate_secret_id(role_name=role_name)['data']['secret_id']
+            return {"role_id": role_id, "secret_id": secret_id}
+        except Exception as e:
+            print(f"❌ Error fetching AppRole creds: {e}")
+            return None
+
+    def create_manager_policy(self, manager_name, target_role):
+        """Creates a policy allowing a manager to issue SecretIDs for a target role."""
+        client = self._get_client()
+        if not client: return None
+
+        policy_name = f"manager-{manager_name}-for-{target_role}"
+        # Policy: Only allow generating SecretIDs for the specific target
+        policy_hcl = f"""
+        path "auth/approle/role/{target_role}/secret-id" {{
+          capabilities = ["update"]
+        }}
+        """
+        
+        try:
+            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
+            return policy_name
+        except Exception as e:
+            print(f"❌ Failed to create manager policy: {e}")
+            return None
+
+
 
 class GCPSecretManager:
     def __init__(self):

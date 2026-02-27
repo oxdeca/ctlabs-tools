@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.1.45",
+    version="0.1.46",
     description="CTLabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'vault-login=ctlabs_tools.pytest.vault_login:main',
+            'vault-approle=ctlabs_tools.pytest.vault_approle:main',
             'flashcards=ctlabs_tools.flashcards.server:main',
         ],
     },
