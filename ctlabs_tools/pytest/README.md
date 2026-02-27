@@ -28,8 +28,6 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 
 HashiCorp Vault strictly separates **Who you are** (Identity) from **What you are accessing** (Data). Our toolkit reflects this separation to keep your CI/CD pipelines secure.
 
-
-
 1. **`vault-login`**: The human administrator authenticates to Vault.
 2. **`vault-secret`**: The administrator stores the actual sensitive data (e.g., a database password) in a specific KV path.
 3. **`vault-approle`**: The administrator creates a Machine Identity (AppRole) and a policy that grants it read-only access to that specific path.
@@ -51,16 +49,19 @@ vault-login --details
 ```
 
 ### 2. Secret Data Management (Data)
-Create, read, or list the actual JSON payloads stored in Vault's KVv2 engine.
+Create, read, list, and search the actual JSON payloads stored in Vault's KVv2 engine.
 ```bash
 # Write a new secret to the kvv2 engine
 vault-secret write kvv2/apps/my-service --data '{"api_key": "12345", "db_pass": "supersecret"}'
 
-# Read a secret back
+# Read a secret payload back
 vault-secret read kvv2/apps/my-service
 
-# List all secret keys available at a specific path
-vault-secret list kvv2/apps
+# List Vault paths (folders), OR list the specific data keys if pointed at a secret
+vault-secret list kvv2/apps/my-service
+
+# Recursively search for a specific key inside payloads under a given path
+vault-secret search kvv2/apps --key db_pass
 ```
 
 ### 3. Automated AppRole Setup (Identity)

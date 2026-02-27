@@ -662,6 +662,39 @@ class HashiVault:
             print(f"❌ Error listing secrets at {mount_point}/{path}: {e}")
             return None
 
+    def search_secret_keys(self, base_path, search_key, mount_point='secret'):
+        """Recursively searches for a specific key inside secret payloads."""
+        client = self._get_client()
+        if not client: return []
+        
+        found_paths = []
+        
+        def _recurse(current):
+            try:
+                res = client.secrets.kv.v2.list_secrets(path=current, mount_point=mount_point)
+                keys = res.get('data', {}).get('keys', [])
+                
+                for k in keys:
+                    next_path = f"{current}/{k}" if current else k
+                    
+                    if k.endswith('/'):
+                        # It's a folder, recurse deeper
+                        _recurse(next_path.rstrip('/'))
+                    else:
+                        # It's a secret, read its payload to check for the key
+                        try:
+                            secret_res = client.secrets.kv.v2.read_secret_version(path=next_path, mount_point=mount_point)
+                            secret_data = secret_res.get('data', {}).get('data', {})
+                            if search_key in secret_data:
+                                found_paths.append(next_path)
+                        except Exception:
+                            pass # Ignore permissions errors on specific secrets
+            except Exception:
+                pass # Ignore list errors
+                
+        _recurse(base_path)
+        return found_paths
+
 
 
 
