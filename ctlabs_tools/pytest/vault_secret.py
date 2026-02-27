@@ -1,8 +1,6 @@
 # -----------------------------------------------------------------------------
 # File    : ctlabs-tools/ctlabs_tools/pytest/vault_secret.py
-# Purpose : CLI for creating and updating actual secret data in Vault
 # -----------------------------------------------------------------------------
-
 import argparse
 import sys
 import json
@@ -10,9 +8,10 @@ from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
-    parser.add_argument("command", choices=["write", "read", "list"], help="Action to perform")
+    parser.add_argument("command", choices=["write", "read", "list", "search"], help="Action to perform")
     parser.add_argument("path", help="Vault KVv2 path (e.g., kvv2/apps/my-service)")
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
+    parser.add_argument("--key", help="The specific key to search for inside secret payloads (used with search)")
     
     return parser.parse_args()
 
@@ -34,7 +33,6 @@ def main():
         if not args.data:
             print("❌ Error: --data JSON string is required to write a secret.")
             sys.exit(1)
-            
         try:
             secret_dict = json.loads(args.data)
         except json.JSONDecodeError:
@@ -53,13 +51,34 @@ def main():
 
     elif args.command == "list":
         keys = vault.list_secrets(path=secret_path, mount_point=mount_point)
-        if keys is not None:
-            if not keys:
-                print(f"ℹ️ No secrets found under {args.path}/")
-            else:
-                print(f"📂 Keys at {args.path}/:")
-                for k in keys:
+        if keys:
+            print(f"📂 Folders/Secrets at {args.path}/:")
+            for k in keys:
+                print(f"  ├─ {k}")
+        else:
+            # Smart fallback: If list returns empty, it might be a secret. Try reading it!
+            data = vault.read_secret(path=secret_path, mount_point=mount_point)
+            if data:
+                print(f"🔑 Keys inside secret payload at '{args.path}':")
+                for k in data.keys():
                     print(f"  ├─ {k}")
+            else:
+                print(f"ℹ️ No paths or secrets found at {args.path}")
+
+    elif args.command == "search":
+        if not args.key:
+            print("❌ Error: --key is required when using the search command.")
+            sys.exit(1)
+            
+        print(f"🔍 Recursively searching for key '{args.key}' under {args.path}/ ...")
+        found = vault.search_secret_keys(base_path=secret_path, search_key=args.key, mount_point=mount_point)
+        
+        if found:
+            print(f"✅ Found key '{args.key}' inside the following secrets:")
+            for p in found:
+                print(f"  ➜ {mount_point}/{p}")
+        else:
+            print(f"⚠️ Could not find any secret containing the key '{args.key}'.")
 
 if __name__ == "__main__":
     main()
