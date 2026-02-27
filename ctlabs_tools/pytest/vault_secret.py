@@ -5,22 +5,36 @@ import argparse
 import sys
 import json
 import os
+import subprocess
 from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
     parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "raw", "setup"], help="Action to perform")
-    parser.add_argument("path", nargs="?", default="", help="Vault KVv2 path (e.g., kvv2/apps/my-service). Not required for setup.")
+    parser.add_argument("path", nargs="?", default="", help="Vault KVv2 path. Not required for setup.")
     
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
     parser.add_argument("--pattern", help="Regex pattern to search for (used with search)")
     
-    # Removed --vault-url, keeping only the GCP specific arguments
+    # NEW: Only requires the project ID now!
     parser.add_argument("--add-backend", choices=["gcp"], help="Initialize a new backend engine (used with setup)")
-    parser.add_argument("--project-id", help="GCP Project ID (e.g., my-company-prod)")
-    parser.add_argument("--project-num", help="GCP Project Number (e.g., 123456789012)")
+    parser.add_argument("--project-id", help="GCP Project ID (e.g., ctlabs-0815-123abc-05b-03)")
     
     return parser.parse_args()
+
+def run_gcloud(cmd_list, capture_json=False):
+    """Silently runs a gcloud command and halts if it fails."""
+    try:
+        # If we need the JSON, we capture stdout. Otherwise, we let it run silently.
+        res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
+        if capture_json:
+            # gcloud sometimes prints warnings to stderr, so we strictly parse stdout for the JSON
+            return res.stdout.strip()
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
+        print(f"Error output: {e.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
 
 def main():
     args = get_args()
@@ -30,51 +44,53 @@ def main():
         sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # NEW: Handle "setup" command
+    # NEW: Zero-Touch Setup Command
     # -------------------------------------------------------------------------
     if args.command == "setup":
         if args.add_backend == "gcp":
-            if not all([args.project_id, args.project_num]):
-                print("❌ Error: --project-id and --project-num are required to set up the GCP backend.", file=sys.stderr)
+            if not args.project_id:
+                print("❌ Error: --project-id is required to set up the GCP backend.", file=sys.stderr)
                 sys.exit(1)
                 
-            # Dynamically grab the Vault URL from the environment or the hvac client
-            vault_url = os.getenv("VAULT_ADDR")
-            if not vault_url:
-                client = vault._get_client()
-                vault_url = client.url if client else None
-                
-            if not vault_url:
-                print("❌ Error: Could not determine Vault URL. Please set VAULT_ADDR in your environment.", file=sys.stderr)
+            sa_name = "vault-gcp-master"
+            sa_email = f"{sa_name}@{args.project_id}.iam.gserviceaccount.com"
+            
+            print(f"🚀 Initializing Zero-Touch GCP Secrets Engine...")
+            
+            # 1. Create the Service Account in GCP
+            print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
+            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", args.project_id])
+            
+            # 2. Grant Permissions
+            print(f"  ├─ Granting IAM Permissions to Service Account...")
+            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin", "--condition=None"])
+            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin", "--condition=None"])
+            
+            # 3. Generate the Key directly into Python RAM (Using '-' as the output file)
+            print(f"  ├─ Generating JSON Key in-memory...")
+            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", args.project_id], capture_json=True)
+            
+            # 4. Configure Vault Engine
+            print(f"  ├─ Configuring Vault Engine...")
+            if not vault.setup_gcp_engine(creds_json=creds_json):
+                print("❌ Aborting setup due to Vault engine configuration failure.", file=sys.stderr)
                 sys.exit(1)
-                
-            print(f"🚀 Initializing GCP Workload Identity Federation on Vault at {vault_url}...")
             
-            pool_name = "vault-wif-pool"
-            provider_name = "vault-wif-provider"
-            sa_email = f"vault-master-sa@{args.project_id}.iam.gserviceaccount.com"
-            audience = f"//iam.googleapis.com/projects/{args.project_num}/locations/global/workloadIdentityPools/{pool_name}/providers/{provider_name}"
-            
+            # 5. Create the Roleset
+            print(f"  ├─ Creating 'terraform-runner' roleset...")
             bindings_hcl = f"""
               resource "//cloudresourcemanager.googleapis.com/projects/{args.project_id}" {{
                 roles = ["roles/editor"]
               }}
             """
+            if not vault.create_gcp_roleset(name="terraform-runner", project_id=args.project_id, bindings_hcl=bindings_hcl):
+                print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
+                sys.exit(1)
             
-            # 1. OIDC Configuration
-            vault.configure_oidc_issuer(issuer_url=vault_url)
-            
-            # 2. Enable & Configure GCP Engine for WIF
-            vault.setup_gcp_wif_engine(audience=audience, sa_email=sa_email)
-            
-            # 3. Create the default terraform-runner roleset
-            vault.create_gcp_roleset(name="terraform-runner", project_id=args.project_id, bindings_hcl=bindings_hcl)
-            
-            print("\n🎉 GCP Backend successfully configured!")
-            print("Next steps:")
-            print("  1. Export Vault's keys: vault-secret raw identity/oidc/.well-known/keys > vault-keys.json")
-            print("  2. Upload them to GCP Workload Identity Provider using gcloud.")
+            print("\n🎉 GCP Backend successfully configured using Zero-Touch provisioning!")
+            print("Your Vault cluster is now managing dynamic Google Cloud credentials.")
             sys.exit(0)
+            
         else:
             print("❌ Error: Please specify a backend to setup, e.g., --add-backend gcp", file=sys.stderr)
             sys.exit(1)

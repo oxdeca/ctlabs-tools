@@ -29,7 +29,7 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 HashiCorp Vault strictly separates **Who you are** (Identity) from **What you are accessing** (Data). Our toolkit reflects this separation to keep your CI/CD pipelines secure.
 
 1. **`vault-login`**: The human administrator authenticates to Vault.
-2. **`vault-secret`**: The administrator stores the actual sensitive data (e.g., a database password) in a specific KV path.
+2. **`vault-secret`**: The administrator stores the actual sensitive data (e.g., a database password) or bootstraps dynamic identity engines (like GCP).
 3. **`vault-approle`**: The administrator creates a Machine Identity (AppRole) and a policy that grants it read-only access to that specific path.
 4. **CI/CD / Rundeck**: The orchestrator fetches a one-time-use token for the AppRole and injects it into the Pytest environment. Pytest uses this disposable token to read the data and run the infrastructure tests.
 
@@ -48,8 +48,22 @@ vault-login --addr [https://vault.example.com](https://vault.example.com)
 vault-login --details
 ```
 
-### 2. Secret Data Management (Data)
-Create, read, list, and search the actual JSON payloads stored in Vault's KVv2 engine.
+### 2. Secret Data Management & GCP Engines
+Manage static JSON payloads in Vault's KVv2 engine, and bootstrap dynamic GCP credential engines.
+
+**Bootstrap a Zero-Touch GCP Secrets Engine:**
+*Uses your local `gcloud` session to safely build a Master Service Account entirely in memory and inject it into Vault without leaving a trace.*
+```bash
+vault-secret setup --add-backend gcp --project-id my-gcp-project-id
+```
+
+**Generate Dynamic GCP Token for Terminal:**
+*Injects a short-lived OAuth token directly into your environment.*
+```bash
+eval $(vault-secret gcp gcp/terraform-runner)
+```
+
+**Manage Static KVv2 Secrets:**
 ```bash
 # Write a new secret to the kvv2 engine
 vault-secret write kvv2/apps/my-service --data '{"api_key": "12345", "db_pass": "supersecret"}'
@@ -62,6 +76,12 @@ vault-secret list kvv2/apps/my-service
 
 # Safely search folder names, secret names, and payload keys using Regex
 vault-secret search kvv2/ansible --pattern "onetick|dev_pass"
+```
+
+**Read Raw API Paths:**
+*Bypasses the KVv2 wrapper to read core Vault endpoints (e.g., extracting public JWKS keys).*
+```bash
+vault-secret raw identity/oidc/.well-known/keys > vault-keys.json
 ```
 
 ### 3. Automated AppRole Setup (Identity)
@@ -118,9 +138,13 @@ def tf(is_interactive, vault_auth):
     t.cleanup()
 ```
 
-GCP Authentication
+### GCP Authentication Fixture
 
-```py
+```python
+import os
+import pytest
+from ctlabs_tools.pytest.helper import Terraform
+
 @pytest.fixture(scope="session")
 def tf(is_interactive, vault_auth):
     # 1. Ask Vault for a temporary GCP token
@@ -146,8 +170,6 @@ def tf(is_interactive, vault_auth):
     if "GOOGLE_OAUTH_ACCESS_TOKEN" in os.environ:
         del os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"]
 ```
-
-
 
 ---
 

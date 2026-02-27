@@ -772,31 +772,31 @@ class HashiVault:
             print(f"❌ Error setting OIDC issuer: {e}")
             return False
 
-    def setup_gcp_wif_engine(self, audience, sa_email, mount_point='gcp'):
-        """Phase 4: Enables GCP engine and configures it for WIF (No JSON keys!)."""
+    def setup_gcp_engine(self, creds_json, mount_point='gcp'):
+        """Phase 1: Enables GCP engine and configures it with the Master JSON key."""
         client = self._get_client()
         if not client: return False
         try:
-            # 1. Enable the engine if it doesn't exist
-            engines = client.sys.read_mounts()
-            if f"{mount_point}/" not in engines:
+            # 1. Safely enable the engine
+            try:
                 client.sys.enable_secrets_engine(backend_type='gcp', path=mount_point)
                 print(f"✅ Enabled GCP secrets engine at '{mount_point}/'")
+            except Exception as e:
+                if "path is already in use" not in str(e):
+                    print(f"❌ Failed to enable engine: {e}")
+                    return False
             
-            # 2. Configure WIF Trust
-            client.write(
-                f'{mount_point}/config',
-                identity_token_audience=audience,
-                service_account_email=sa_email
-            )
-            print(f"✅ Configured GCP Engine '{mount_point}/' for Workload Identity Federation")
+            # 2. Write the Master Credentials
+            client.write(f'{mount_point}/config', credentials=creds_json)
+            print(f"✅ Configured GCP Engine '{mount_point}/' with Master Credentials")
             return True
         except Exception as e:
-            print(f"❌ Error configuring GCP WIF engine: {e}")
+            # Added exact exception typing so errors are never blank again!
+            print(f"❌ Error configuring GCP engine: {type(e).__name__} - {str(e)}")
             return False
 
     def create_gcp_roleset(self, name, project_id, bindings_hcl, mount_point='gcp'):
-        """Phase 5: Creates a roleset to generate temporary GCP OAuth tokens."""
+        """Phase 2: Creates a roleset to generate temporary GCP OAuth tokens."""
         client = self._get_client()
         if not client: return False
         try:
@@ -812,7 +812,7 @@ class HashiVault:
         except Exception as e:
             print(f"❌ Error creating roleset '{name}': {e}")
             return False
-            
+
 
 
 
