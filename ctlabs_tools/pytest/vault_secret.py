@@ -77,7 +77,7 @@ def main():
             print(f"🚀 Initializing Zero-Touch GCP Secrets Engine...")
             
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
-            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", args.project_id])
+            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", project_id])
             
             print(f"  ├─ Granting IAM Permissions (Polling for GCP synchronization)...")
             
@@ -85,7 +85,7 @@ def main():
             # exist yet, wait 5s and retry. Max timeout: 60 seconds (12 attempts).
             iam_success = False
             for attempt in range(1, 13):
-                if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"], ignore_errors=True, quiet=True):
+                if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"], ignore_errors=True, quiet=True):
                     iam_success = True
                     break
                 print(f"  ⏳ GCP IAM settling... Retrying in 5s (Attempt {attempt}/12)")
@@ -96,11 +96,11 @@ def main():
                 sys.exit(1)
                 
             # If the loop above succeeded, GCP's databases are synced! We can fire the next two instantly.
-            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"])
-            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/resourcemanager.projectIamAdmin"])
+            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"])
+            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/resourcemanager.projectIamAdmin"])
             
             print(f"  ├─ Generating JSON Key in-memory...")
-            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", args.project_id], capture_json=True)
+            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project_id], capture_json=True)
             
             print(f"  ├─ Configuring Vault Engine...")
             if not vault.setup_gcp_engine(creds_json=creds_json):
@@ -109,14 +109,14 @@ def main():
             
             print(f"  ├─ Creating 'terraform-runner' roleset...")
             bindings_hcl = f"""
-              resource "//cloudresourcemanager.googleapis.com/projects/{args.project_id}" {{
+              resource "//cloudresourcemanager.googleapis.com/projects/{project_id}" {{
                 roles = ["roles/editor"]
               }}
             """
             
             # 🧠 Note: We can remove the sleep here because our create_gcp_roleset method inside helper.py 
             # ALREADY has a built-in retry loop for handling the final IAM propagation delay!
-            if not vault.create_gcp_roleset(name="terraform-runner", project_id=args.project_id, bindings_hcl=bindings_hcl):
+            if not vault.create_gcp_roleset(name="terraform-runner", project_id=project_id, bindings_hcl=bindings_hcl):
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
             
@@ -128,7 +128,7 @@ def main():
             print(f"  ├─ Unmounting Vault engine...")
             vault.teardown_gcp_engine()
             print(f"  ├─ Deleting Master Service Account '{sa_name}' from GCP...")
-            run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", args.project_id, "--quiet"], ignore_errors=True)
+            run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project_id, "--quiet"], ignore_errors=True)
             print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
             sys.exit(0)
 
