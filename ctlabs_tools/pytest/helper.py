@@ -7,10 +7,12 @@ import jmespath
 import json
 import os
 import pytest
+import socket
 import subprocess
 import sys
 import time
 import urllib
+import urllib.parse
 import warnings
 
 import urllib3
@@ -747,9 +749,41 @@ class GCPSecretManager:
             return None
 
 
+
+
 class RemoteDesktop:
     @staticmethod
-    def launch(hostname, username, password):
+    def _wait_for_port(hostname, port=3389, timeout=300):
+        """
+        Blocks and polls the target port until it accepts a TCP connection.
+        Prevents RDP clients from failing instantly if the VM is still booting.
+        """
+        print(f"\n[RDP] Waiting for {hostname}:{port} to become available (timeout: {timeout}s)...")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Attempt a quick 2-second TCP connection
+                with socket.create_connection((hostname, port), timeout=2):
+                    print(f"[RDP] ✅ Host {hostname} is ready to accept RDP connections!")
+                    return True
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                # Port is closed or host is down. Sleep and retry.
+                time.sleep(5)
+                
+        print(f"\n⚠️ [RDP] Timed out waiting for {hostname}:{port} after {timeout} seconds.")
+        return False
+
+    @staticmethod
+    def launch(hostname, username, password, timeout=300):
+        """Detects OS and launches the appropriate RDP client after ensuring the port is open."""
+        
+        # 1. Wait for the Windows Remote Desktop service to actually start
+        if not RemoteDesktop._wait_for_port(hostname, port=3389, timeout=timeout):
+            print("[RDP] Aborting client launch due to timeout.")
+            return
+
+        # 2. Launch the client
         if sys.platform == "darwin":
             RemoteDesktop._launch_royaltsx(hostname, username, password)
         else:
@@ -757,7 +791,7 @@ class RemoteDesktop:
 
     @staticmethod
     def _launch_royaltsx(hostname, username, password):
-        print(f"\n[RDP] Launching Royal TSX session to {hostname}...")
+        print(f"[RDP] Launching Royal TSX session to {hostname}...")
 
         user_enc = urllib.parse.quote(username, safe='')
         pass_enc = urllib.parse.quote(password, safe='')
@@ -778,7 +812,7 @@ class RemoteDesktop:
 
     @staticmethod
     def _launch_freerdp(hostname, username, password):
-        print(f"\n[RDP] Launching FreeRDP session to {hostname}...")
+        print(f"[RDP] Launching FreeRDP session to {hostname}...")
         
         cmd = [
             "xfreerdp",
