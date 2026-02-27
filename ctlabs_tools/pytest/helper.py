@@ -415,14 +415,20 @@ class HashiVault:
             return None
 
     def read_raw_path(self, path):
-        """Reads the raw data from any Vault API path."""
+        """Reads the raw data from any Vault API path, handling both Vault-wrapped and raw responses."""
         client = self._get_client()
         if not client: return None
         try:
-            # client.read() hits the exact path without adding /data/
             res = client.read(path)
-            # Return just the data payload if it exists
-            return res.get('data', {}) if res else None
+            if not res: 
+                return None
+            
+            # If it's a standard Vault response, unwrap the 'data' block
+            if 'data' in res and 'request_id' in res:
+                return res['data']
+            
+            # If it's a raw standard endpoint (like OIDC JWKS), return the whole thing
+            return res
         except Exception as e:
             print(f"❌ Error reading raw path '{path}': {e}")
             return None
