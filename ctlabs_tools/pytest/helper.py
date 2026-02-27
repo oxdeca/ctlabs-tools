@@ -549,7 +549,7 @@ class HashiVault:
             print(f"❌ Failed to create manager policy: {e}")
             return None
 
-    def create_minimal_policy(self, role_name, secret_path):
+    def create_minimal_policy(self, role_name, secret_path, gcp_roleset=None):
         """Creates a standard restricted policy for a specific AppRole (KVv2 Aware)."""
         client = self._get_client()
         if not client: return None
@@ -577,6 +577,14 @@ class HashiVault:
         path "{meta_path}/*" {{ capabilities = ["read", "list"] }}
         path "{meta_path}"   {{ capabilities = ["read", "list"] }}
         """
+
+        if gcp_roleset:
+            policy_hcl += f"""
+            # Allow generating dynamic GCP OAuth tokens for {gcp_roleset}
+            path "gcp/token/{gcp_roleset}" {{
+              capabilities = ["read"]
+            }}
+            """
         
         try:
             client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)

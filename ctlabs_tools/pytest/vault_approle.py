@@ -20,6 +20,7 @@ def get_args():
     create_parser.add_argument("--target",   help="Target role name (Required if type=manager)")
     create_parser.add_argument("--path",     help="Vault KV path to auto-generate a minimal read policy (e.g., kvv2/apps/my-app)")
     create_parser.add_argument("--policies", help="Comma-separated list of existing policies (if not using auto-generation)")
+    create_parser.add_argument("--gcp-role", help="Optional GCP roleset name to grant token generation access (e.g., terraform-runner)")
 
     # Command: Get Credentials
     creds_parser = subparsers.add_parser("get-creds", help="Get RoleID and generate a new SecretID")
@@ -54,9 +55,10 @@ def main():
                 print(f"✅ Manager AppRole '{args.name}' is ready to issue tokens for '{args.target}'.")
                 
         elif args.path:
-            pol_name = vault.create_minimal_policy(args.name, args.path)
+            pol_name = vault.create_minimal_policy(args.name, args.path, gcp_roleset=args.gcp_role)
             if pol_name and vault.create_or_update_approle(args.name, [pol_name], ttl=args.ttl):
-                print(f"✅ Standard AppRole '{args.name}' is ready with minimal access to '{args.path}'.")
+                gcp_msg = f" and GCP roleset '{args.gcp_role}'" if args.gcp_role else ""
+                print(f"✅ Standard AppRole '{args.name}' is ready with minimal access to '{args.path}'{gcp_msg}.")
                 
         elif args.policies:
             policies = [p.strip() for p in args.policies.split(",")]
