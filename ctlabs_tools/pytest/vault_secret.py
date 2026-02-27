@@ -11,7 +11,7 @@ def get_args():
     parser.add_argument("command", choices=["write", "read", "list", "search"], help="Action to perform")
     parser.add_argument("path", help="Vault KVv2 path (e.g., kvv2/apps/my-service)")
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
-    parser.add_argument("--key", help="The specific key to search for inside secret payloads (used with search)")
+    parser.add_argument("--pattern", help="Regex pattern to search for (used with search)")
     
     return parser.parse_args()
 
