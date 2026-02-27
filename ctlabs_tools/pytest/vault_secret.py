@@ -70,15 +70,17 @@ def main():
             print("❌ Error: --key is required when using the search command.")
             sys.exit(1)
             
-        print(f"🔍 Recursively searching for key '{args.key}' under {args.path}/ ...")
-        found = vault.search_secret_keys(base_path=secret_path, search_key=args.key, mount_point=mount_point)
+        print(f"🔍 Safely scanning for key '{args.key}' under {args.path}/ ...")
         
-        if found:
-            print(f"✅ Found key '{args.key}' inside the following secrets:")
-            for p in found:
-                print(f"  ➜ {mount_point}/{p}")
-        else:
+        found_any = False
+        # The generator will print results instantly as it finds them
+        for found_path in vault.search_secret_keys(base_path=secret_path, search_key=args.key, mount_point=mount_point):
+            print(f"  ✅ Found in: {mount_point}/{found_path}")
+            found_any = True
+            
+        if not found_any:
             print(f"⚠️ Could not find any secret containing the key '{args.key}'.")
+
 
 if __name__ == "__main__":
     main()

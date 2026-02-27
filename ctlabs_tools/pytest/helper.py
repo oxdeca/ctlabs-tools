@@ -13,6 +13,9 @@ import time
 import urllib
 import warnings
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # hvac is only needed if HashiVault is actually used
 try:
     import hvac
@@ -658,19 +661,23 @@ class HashiVault:
             res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
             return res.get('data', {}).get('keys', [])
         except Exception as e:
-            if "404" in str(e): return []
+            # Vault throws an InvalidPath/404 when trying to list a leaf node.
+            # We fail silently here so the CLI can smoothly fall back to a "read".
+            error_str = str(e)
+            if "404" in error_str or "InvalidPath" in type(e).__name__ or "None, on list" in error_str:
+                return []
+            
             print(f"❌ Error listing secrets at {mount_point}/{path}: {e}")
             return None
 
     def search_secret_keys(self, base_path, search_key, mount_point='secret'):
-        """Recursively searches for a specific key inside secret payloads."""
+        """Safely and sequentially yields paths containing the search key."""
         client = self._get_client()
-        if not client: return []
-        
-        found_paths = []
+        if not client: return
         
         def _recurse(current):
             try:
+                # 1. Try to list it as a folder
                 res = client.secrets.kv.v2.list_secrets(path=current, mount_point=mount_point)
                 keys = res.get('data', {}).get('keys', [])
                 
@@ -678,22 +685,30 @@ class HashiVault:
                     next_path = f"{current}/{k}" if current else k
                     
                     if k.endswith('/'):
-                        # It's a folder, recurse deeper
-                        _recurse(next_path.rstrip('/'))
+                        # It's a folder, dive in
+                        yield from _recurse(next_path.rstrip('/'))
                     else:
-                        # It's a secret, read its payload to check for the key
+                        # It's a secret, read it safely
                         try:
                             secret_res = client.secrets.kv.v2.read_secret_version(path=next_path, mount_point=mount_point)
                             secret_data = secret_res.get('data', {}).get('data', {})
                             if search_key in secret_data:
-                                found_paths.append(next_path)
+                                yield next_path
                         except Exception:
-                            pass # Ignore permissions errors on specific secrets
-            except Exception:
-                pass # Ignore list errors
-                
-        _recurse(base_path)
-        return found_paths
+                            pass # Ignore permission errors
+            except Exception as e:
+                # 2. If listing fails, it might be a leaf node itself
+                error_str = str(e)
+                if "404" in error_str or "InvalidPath" in type(e).__name__ or "None, on list" in error_str:
+                    try:
+                        secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
+                        secret_data = secret_res.get('data', {}).get('data', {})
+                        if search_key in secret_data:
+                            yield current
+                    except Exception:
+                        pass
+                        
+        yield from _recurse(base_path)
 
 
 
