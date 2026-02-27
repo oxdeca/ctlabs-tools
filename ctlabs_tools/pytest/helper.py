@@ -799,18 +799,44 @@ class HashiVault:
         """Phase 2: Creates a roleset to generate temporary GCP OAuth tokens."""
         client = self._get_client()
         if not client: return False
+        
+        import time
+        # Add a retry loop to handle GCP IAM propagation delays
+        for attempt in range(1, 4):
+            try:
+                client.write(
+                    f'{mount_point}/roleset/{name}',
+                    project=project_id,
+                    secret_type="access_token",
+                    token_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    bindings=bindings_hcl
+                )
+                print(f"✅ Created GCP roleset '{name}' in project '{project_id}'")
+                return True
+            except Exception as e:
+                error_msg = str(e)
+                # Catch GCP's specific sync delay error
+                if "Invalid JWT Signature" in error_msg and attempt < 3:
+                    print(f"  ⏳ GCP IAM sync delay detected. Waiting 15 seconds for Google to catch up... (Attempt {attempt+1}/3)")
+                    time.sleep(15)
+                else:
+                    print(f"❌ Error creating roleset '{name}': {e}")
+                    return False
+        return False
+
+def teardown_gcp_engine(self, mount_point='gcp'):
+        """Phase 3 (Cleanup): Disables the GCP secrets engine to clean up Vault."""
+        client = self._get_client()
+        if not client: return False
         try:
-            client.write(
-                f'{mount_point}/roleset/{name}',
-                project=project_id,
-                secret_type="access_token",
-                token_scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                bindings=bindings_hcl
-            )
-            print(f"✅ Created GCP roleset '{name}' in project '{project_id}'")
+            engines = client.sys.read_mounts()
+            if f"{mount_point}/" in engines:
+                client.sys.disable_secrets_engine(path=mount_point)
+                print(f"✅ Disabled GCP secrets engine at '{mount_point}/'")
             return True
         except Exception as e:
-            print(f"❌ Error creating roleset '{name}': {e}")
+            # We don't want to halt if Vault is already partially destroyed
+            print(f"⚠️ Could not disable GCP engine: {e}")
             return False
 
 

@@ -6,32 +6,39 @@ import sys
 import json
 import os
 import subprocess
+import time
 from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
-    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "raw", "setup"], help="Action to perform")
-    parser.add_argument("path", nargs="?", default="", help="Vault KVv2 path. Not required for setup.")
+    
+    # 1. Replaced setup/teardown with the unified "backend" command
+    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "raw", "backend"], help="Action to perform")
+    
+    # 2. Flexible positional arguments to handle both "kvv2/path" OR "gcp create"
+    parser.add_argument("arg1", nargs="?", default="", help="Vault path (e.g., kvv2/apps) OR backend provider (e.g., gcp)")
+    parser.add_argument("arg2", nargs="?", default="", help="Backend action: 'create' or 'destroy' (only used with 'backend' command)")
     
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
     parser.add_argument("--pattern", help="Regex pattern to search for (used with search)")
     
-    # NEW: Only requires the project ID now!
-    parser.add_argument("--add-backend", choices=["gcp"], help="Initialize a new backend engine (used with setup)")
-    parser.add_argument("--project-id", help="GCP Project ID (e.g., ctlabs-0815-123abc-05b-03)")
+    # 3. Dedicated flag for the backend manager
+    parser.add_argument("--project-id", help="GCP Project ID (required for backend gcp create/destroy)")
     
     return parser.parse_args()
 
-def run_gcloud(cmd_list, capture_json=False):
-    """Silently runs a gcloud command and halts if it fails."""
+def run_gcloud(cmd_list, capture_json=False, ignore_errors=False):
+    """Silently runs a gcloud command and halts if it fails (unless ignored)."""
     try:
-        # If we need the JSON, we capture stdout. Otherwise, we let it run silently.
         res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
         if capture_json:
-            # gcloud sometimes prints warnings to stderr, so we strictly parse stdout for the JSON
             return res.stdout.strip()
         return True
     except subprocess.CalledProcessError as e:
+        if ignore_errors:
+            print(f"  ⚠️ Ignored GCP Error: {e.stderr.strip().splitlines()[0]}", file=sys.stderr)
+            return False
+            
         print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
         print(f"Error output: {e.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
@@ -44,39 +51,46 @@ def main():
         sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # NEW: Zero-Touch Setup Command
+    # NEW: Elegant Noun-Verb Backend Manager
     # -------------------------------------------------------------------------
-    if args.command == "setup":
-        if args.add_backend == "gcp":
-            if not args.project_id:
-                print("❌ Error: --project-id is required to set up the GCP backend.", file=sys.stderr)
-                sys.exit(1)
-                
-            sa_name = "vault-gcp-master"
-            sa_email = f"{sa_name}@{args.project_id}.iam.gserviceaccount.com"
+    if args.command == "backend":
+        provider = args.arg1.lower()
+        action = args.arg2.lower()
+        
+        if provider != "gcp":
+            print("❌ Error: Unsupported backend provider. Currently only 'gcp' is supported.", file=sys.stderr)
+            sys.exit(1)
             
+        if action not in ["create", "destroy"]:
+            print("❌ Error: Action must be 'create' or 'destroy'. Example: vault-secret backend gcp create", file=sys.stderr)
+            sys.exit(1)
+            
+        if not args.project_id:
+            print("❌ Error: --project-id is required for backend management.", file=sys.stderr)
+            sys.exit(1)
+
+        sa_name = "vault-gcp-master"
+        sa_email = f"{sa_name}@{args.project_id}.iam.gserviceaccount.com"
+
+        # --- CREATE ACTION ---
+        if action == "create":
             print(f"🚀 Initializing Zero-Touch GCP Secrets Engine...")
             
-            # 1. Create the Service Account in GCP
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
             run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", args.project_id])
             
-            # 2. Grant Permissions
             print(f"  ├─ Granting IAM Permissions to Service Account...")
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin", "--condition=None"])
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin", "--condition=None"])
             
-            # 3. Generate the Key directly into Python RAM (Using '-' as the output file)
             print(f"  ├─ Generating JSON Key in-memory...")
             creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", args.project_id], capture_json=True)
             
-            # 4. Configure Vault Engine
             print(f"  ├─ Configuring Vault Engine...")
             if not vault.setup_gcp_engine(creds_json=creds_json):
                 print("❌ Aborting setup due to Vault engine configuration failure.", file=sys.stderr)
                 sys.exit(1)
             
-            # 5. Create the Roleset
             print(f"  ├─ Creating 'terraform-runner' roleset...")
             bindings_hcl = f"""
               resource "//cloudresourcemanager.googleapis.com/projects/{args.project_id}" {{
@@ -87,34 +101,42 @@ def main():
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
             
-            print("\n🎉 GCP Backend successfully configured using Zero-Touch provisioning!")
-            print("Your Vault cluster is now managing dynamic Google Cloud credentials.")
+            print("\n🎉 GCP Backend successfully created!")
             sys.exit(0)
+
+        # --- DESTROY ACTION ---
+        elif action == "destroy":
+            print(f"🧹 Tearing down GCP Secrets Engine & orphaned resources...")
             
-        else:
-            print("❌ Error: Please specify a backend to setup, e.g., --add-backend gcp", file=sys.stderr)
-            sys.exit(1)
+            print(f"  ├─ Unmounting Vault engine...")
+            vault.teardown_gcp_engine()
+            
+            print(f"  ├─ Deleting Master Service Account '{sa_name}' from GCP...")
+            run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", args.project_id, "--quiet"], ignore_errors=True)
+            
+            print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
+            sys.exit(0)
 
     # -------------------------------------------------------------------------
-    # VALIDATION: All other commands require a valid path
+    # VALIDATION: All standard commands require a valid path
     # -------------------------------------------------------------------------
-    if not args.path:
+    path = args.arg1
+    if not path:
         print("❌ Error: 'path' is required for this command.", file=sys.stderr)
         sys.exit(1)
 
     if args.command == "raw":
-        # Raw commands use the exact path without splitting mount points
-        data = vault.read_raw_path(args.path)
+        data = vault.read_raw_path(path)
         if data:
             print(json.dumps(data, indent=2))
         else:
-            print(f"⚠️ No data found at {args.path}")
+            print(f"⚠️ No data found at {path}")
         sys.exit(0)
 
-    # For standard Vault operations, split the mount point from the secret path
-    parts = args.path.split('/', 1)
+    # Split the mount point from the secret path
+    parts = path.split('/', 1)
     if len(parts) < 2:
-        print("❌ Error: Path must include the mount point (e.g., kvv2/my-secret)")
+        print("❌ Error: Path must include the mount point (e.g., kvv2/my-secret)", file=sys.stderr)
         sys.exit(1)
         
     mount_point, secret_path = parts[0], parts[1]
