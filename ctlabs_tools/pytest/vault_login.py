@@ -34,7 +34,7 @@ def get_args():
     parser.add_argument("-c", "--clear", action="store_true", help="Clear the locally cached token (logout)")
     
     parser.add_argument("-a", "--addr", help="Vault Server Address (e.g., https://IP:PORT)")
-    parser.add_argument("--details", action="store_true", help="Show details of the currently loaded token")
+    parser.add_argument("-d", "--details", action="store_true", help="Show details of the currently loaded token")
     
     # Human Auth
     parser.add_argument("-u", "--user", help="Vault Username (LDAP/Userpass)")
@@ -42,7 +42,7 @@ def get_args():
     
     # Machine Auth
     parser.add_argument("--approle", action="store_true", help="Use AppRole authentication instead of userpass")
-    parser.add_argument("--role-id", help="AppRole Role ID (or GCP Secret Manager path)")
+    parser.add_argument("--role-id",   help="AppRole Role ID (or GCP Secret Manager path)")
     parser.add_argument("--secret-id", help="AppRole Secret ID (or GCP Secret Manager path)")
     
     return parser.parse_args()

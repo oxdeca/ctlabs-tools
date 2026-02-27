@@ -14,12 +14,11 @@ def get_args():
 
     # Command: Create/Update
     create_parser = subparsers.add_parser("setup", help="Create or update an AppRole")
-    create_parser.add_argument("name", help="Name of the AppRole")
-    create_parser.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m)")
-    create_parser.add_argument("--type", choices=["standard", "manager"], default="standard", 
-                               help="Type of role to create (default: standard)")
-    create_parser.add_argument("--target", help="Target role name (Required if type=manager)")
-    create_parser.add_argument("--path", help="Vault KV path to auto-generate a minimal read policy (e.g., kvv2/apps/my-app)")
+    create_parser.add_argument("name",       help="Name of the AppRole")
+    create_parser.add_argument("--ttl",      default="1h", help="Token TTL (e.g. 1h, 30m)")
+    create_parser.add_argument("--type",     choices=["standard", "manager"], default="standard", help="Type of role to create (default: standard)")
+    create_parser.add_argument("--target",   help="Target role name (Required if type=manager)")
+    create_parser.add_argument("--path",     help="Vault KV path to auto-generate a minimal read policy (e.g., kvv2/apps/my-app)")
     create_parser.add_argument("--policies", help="Comma-separated list of existing policies (if not using auto-generation)")
 
     # Command: Get Credentials
