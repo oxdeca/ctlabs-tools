@@ -27,7 +27,7 @@ def get_args():
     
     return parser.parse_args()
 
-def run_gcloud(cmd_list, capture_json=False, ignore_errors=False):
+def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False):
     """Silently runs a gcloud command and halts if it fails (unless ignored)."""
     try:
         res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
@@ -36,7 +36,9 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False):
         return True
     except subprocess.CalledProcessError as e:
         if ignore_errors:
-            print(f"  ⚠️ Ignored GCP Error: {e.stderr.strip().splitlines()[0]}", file=sys.stderr)
+            if not quiet:
+                error_line = e.stderr.strip().splitlines()[0] if e.stderr else "Unknown error"
+                print(f"  ⚠️ Ignored GCP Error: {error_line}", file=sys.stderr)
             return False
             
         print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
@@ -78,16 +80,25 @@ def main():
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
             run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", args.project_id])
             
-            print(f"  ⏳ Waiting 10 seconds for Service Account to propagate...")
-            time.sleep(10)
+            print(f"  ├─ Granting IAM Permissions (Polling for GCP synchronization)...")
             
-            print(f"  ├─ Granting IAM Permissions to Service Account...")
-            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"])
+            # 🧠 SMART POLLING: Try to attach the first IAM role. If GCP says the account doesn't 
+            # exist yet, wait 5s and retry. Max timeout: 60 seconds (12 attempts).
+            iam_success = False
+            for attempt in range(1, 13):
+                if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"], ignore_errors=True, quiet=True):
+                    iam_success = True
+                    break
+                print(f"  ⏳ GCP IAM settling... Retrying in 5s (Attempt {attempt}/12)")
+                time.sleep(5)
+                
+            if not iam_success:
+                print("❌ Error: Service account failed to propagate to GCP IAM within 60 seconds.", file=sys.stderr)
+                sys.exit(1)
+                
+            # If the loop above succeeded, GCP's databases are synced! We can fire the next two instantly.
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"])
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", args.project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/resourcemanager.projectIamAdmin"])
-            
-            print(f"  ⏳ Waiting 15 seconds for Google Cloud IAM rules to propagate globally...")
-            time.sleep(15)
             
             print(f"  ├─ Generating JSON Key in-memory...")
             creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", args.project_id], capture_json=True)
@@ -103,6 +114,9 @@ def main():
                 roles = ["roles/editor"]
               }}
             """
+            
+            # 🧠 Note: We can remove the sleep here because our create_gcp_roleset method inside helper.py 
+            # ALREADY has a built-in retry loop for handling the final IAM propagation delay!
             if not vault.create_gcp_roleset(name="terraform-runner", project_id=args.project_id, bindings_hcl=bindings_hcl):
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
