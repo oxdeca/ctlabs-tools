@@ -335,13 +335,20 @@ class HashiVault:
         return secrets
 
     def check_expiration(self):
+        current_time = int(time.time())
+        
+        # BUGFIX: Accurately check memory token and clear if expired
         if self._memory_token:
-            return True, 3600 
+            remaining = getattr(self, '_memory_expiry', current_time + 3600) - current_time
+            if remaining > self.grace_period:
+                return True, remaining
+            else:
+                self._memory_token = None
+                self._memory_url = None
 
         secrets = self._decrypt_secrets()
         if not secrets: return False, 0
         
-        current_time = int(time.time())
         expiry_timestamp = int(secrets.get("EXPIRES_AT", int(secrets.get("CREATED_AT", 0)) + 28800))
         remaining = expiry_timestamp - current_time
         return remaining > self.grace_period, remaining
@@ -466,6 +473,21 @@ class HashiVault:
             print(f"❌ Error setting up AppRole {role_name}: {e}")
             return False
 
+    def approle_login(self, vault_url, role_id, secret_id):
+        client = hvac.Client(url=vault_url, verify=False)
+        try:
+            res = client.auth.approle.login(role_id=role_id, secret_id=secret_id)
+            self._memory_token = res['auth']['client_token']
+            self._memory_url = vault_url
+            # BUGFIX: Track actual expiration
+            lease = res['auth'].get('lease_duration', 3600)
+            self._memory_expiry = int(time.time()) + lease
+            print("✅ AppRole login successful. Token stored in memory.")
+            return True
+        except Exception as e:
+            print(f"❌ AppRole authentication failed: {e}")
+            return False
+
     def get_approle_credentials(self, role_name):
         client = self._get_client()
         if not client: return None
@@ -498,24 +520,37 @@ class HashiVault:
             return None
 
     def create_minimal_policy(self, role_name, secret_path):
-        """Creates a standard restricted policy for a specific AppRole."""
+        """Creates a standard restricted policy for a specific AppRole (KVv2 Aware)."""
         client = self._get_client()
         if not client: return None
 
         policy_name = f"policy-{role_name}"
-        # Minimal HCL: Allow read on specific path + metadata
+        
+        # BUGFIX: Handle KVv2 data/ and metadata/ routing
+        # If the user passes 'kv/my-app', we split it to 'kv/data/my-app'
+        parts = secret_path.split('/', 1)
+        if len(parts) > 1:
+            mount = parts[0]
+            path = parts[1]
+            data_path = f"{mount}/data/{path}"
+            meta_path = f"{mount}/metadata/{path}"
+        else:
+            data_path = secret_path
+            meta_path = secret_path
+
         policy_hcl = f"""
-        path "{secret_path}/*" {{
-          capabilities = ["read", "list"]
-        }}
-        path "{secret_path}" {{
-          capabilities = ["read", "list"]
-        }}
+        # Allow reading the actual secret data
+        path "{data_path}/*" {{ capabilities = ["read", "list"] }}
+        path "{data_path}"   {{ capabilities = ["read", "list"] }}
+        
+        # Allow reading the secret metadata (required by many tools)
+        path "{meta_path}/*" {{ capabilities = ["read", "list"] }}
+        path "{meta_path}"   {{ capabilities = ["read", "list"] }}
         """
         
         try:
             client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
-            print(f"✅ Created minimal policy: {policy_name}")
+            print(f"✅ Created minimal KVv2 policy: {policy_name}")
             return policy_name
         except Exception as e:
             print(f"❌ Failed to create policy: {e}")
@@ -531,7 +566,7 @@ class HashiVault:
         return self.create_or_update_approle(role_name, [policy_name])
 
 
-        
+
 
 class GCPSecretManager:
     def __init__(self):

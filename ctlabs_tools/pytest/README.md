@@ -1,6 +1,6 @@
 # CTLabs Tools
 
-A collection of Python helpers for infrastructure testing with Terraform, Ansible, Policy Checks (ConfTest), and Vault.
+A comprehensive collection of Python helpers for infrastructure testing with Terraform, Ansible, Policy Checks (ConfTest), and HashiCorp Vault.
 
 ## Installation
 
@@ -15,7 +15,7 @@ pip install git+[https://github.com/oxdeca/ctlabs-tools.git@dev](https://github.
 ```
 
 ## Importing in your Tests
-Once installed, your imports become clean and location-independent:
+Once installed, your imports are clean and location-independent:
 
 ```python
 from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest
@@ -24,123 +24,109 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 
 ---
 
-## Pytest Integration (Recommended Workflow)
-To enable the `--interactive` flag, share fixtures across your entire test suite, and cleanly handle Vault authentication, create a `conftest.py` in your tests root directory.
+## Vault Authentication & AppRole Management
+The `HashiVault` class supports both interactive human login and automated machine authentication (AppRole).
 
-### 1. Configure `conftest.py`
-This setup registers the global interactive flag and uses **dependency injection** to pass Vault authentication checks directly into your tools without tightly coupling them.
+### 1. Interactive Human Login
+Use the included utility to authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
 
-```python
-import pytest
-from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest, HashiVault
-
-def pytest_addoption(parser):
-    """Register the --interactive flag for the entire test suite."""
-    parser.addoption(
-        "--interactive", 
-        action="store_true", 
-        default=False, 
-        help="Enable interactive retry loops on failures"
-    )
-
-@pytest.fixture(scope="session")
-def is_interactive(request):
-    """Returns True if --interactive was passed in the command line."""
-    return request.config.getoption("--interactive")
-
-@pytest.fixture(scope="session")
-def vault_auth():
-    """Provides a single Vault instance for the test session."""
-    return HashiVault()
-
-@pytest.fixture(scope="session")
-def tf(is_interactive, vault_auth):
-    """Shared Terraform fixture with Vault auth injected."""
-    t = Terraform(
-        wd="./terraform", 
-        interactive=is_interactive,
-        auth_callback=vault_auth.ensure_valid_token # Injects the auth check!
-    )
-    yield t
-    t.cleanup()
+```bash
+python -m ctlabs_tools.pytest.vault_login --addr [https://vault.example.com](https://vault.example.com)
 ```
 
-### 2. Use in Test Files
-Your test files now stay incredibly clean. Passing `--interactive` on the command line will automatically trigger retry loops and Vault token refreshes on failures.
+### 2. Automated AppRole Setup (Admin)
+Use `vault-approle` to manage machine identities for CI/CD or Orchestrators (like Rundeck).
 
-```python
-def test_infrastructure(tf):
-    # Vault auth is automatically verified before these commands run
-    tf.init()
-    tf.plan()
-    
-    # Print colored summary of changes
-    tf.show_changes() 
-    
-    tf.apply()
-    
-    assert tf.search_state("values.root_module.resources[0].type") is not None
+```bash
+# Set up a new AppRole with a generated minimal policy for a specific path
+python -m ctlabs_tools.pytest.vault_approle setup my-service --path "kv/apps/my-service"
+
+# Set up a "Manager" role (e.g., for Rundeck) to issue SecretIDs for another role
+python -m ctlabs_tools.pytest.vault_approle setup rundeck-mgr --type manager --target pytest-role
+
+# Retrieve RoleID and generate a new SecretID (JSON output)
+python -m ctlabs_tools.pytest.vault_approle get-creds my-service
 ```
 
 ---
 
-## Manual Usage (Without Pytest Fixtures)
-If you prefer not to use `conftest.py`, you can import and instantiate the helpers directly.
+## Pytest Integration (Recommended Workflow)
+To handle the `--interactive` flag and cleanly manage Vault authentication across your suite, create a `conftest.py`.
 
+### Configure `conftest.py`
 ```python
-from ctlabs_tools.pytest.helper import Terraform, HashiVault
+import pytest
+from ctlabs_tools.pytest.helper import Terraform, ConfTest, HashiVault
 
-# 1. Initialize Vault
-vault = HashiVault()
-vault.ensure_valid_token(interactive=True)
+def pytest_addoption(parser):
+    parser.addoption("--interactive", action="store_true", default=False)
 
-# 2. Pass the callback to Terraform
-tf = Terraform(
-    wd="./infra/my-stack", 
-    interactive=True, 
-    auth_callback=vault.ensure_valid_token
-)
+@pytest.fixture(scope="session")
+def is_interactive(request):
+    return request.config.getoption("--interactive")
 
-tf.init()
-tf.plan()
+@pytest.fixture(scope="session")
+def vault_auth():
+    v = HashiVault()
+    v.ensure_valid_token(interactive=True) 
+    return v
+
+@pytest.fixture(scope="session")
+def tf(is_interactive, vault_auth):
+    t = Terraform(
+        wd="./terraform", 
+        interactive=is_interactive,
+        auth_callback=vault_auth.ensure_valid_token 
+    )
+    yield t
+    t.cleanup()
 ```
 
 ---
 
 ## Terraform Testing Examples
 
-### 1. Plan Integrity Testing
-Verify the plan doesn't violate core requirements before applying.
+### 1. Plan Integrity & Ephemeral Values
+Verify the plan doesn't violate core requirements before applying. Ephemeral values (Terraform 1.10+) don't exist in the state file, so use `search_plan` to verify them during the planning phase.
 
 ```python
-def test_plan_integrity(tf):
+def test_plan_secrets_and_changes(tf):
     tf.plan()
     
-    # 1. Check if the plan actually has changes
     if not tf.has_changes():
-        pytest.skip("No infrastructure changes detected.")
-
-    # 2. Search for a specific resource using JMESPath
-    bucket_diff = tf.search_plan("resource_changes[?address=='aws_s3_bucket.data_lake'] | [0]")
+        pytest.skip("No changes detected.")
+        
+    # Verify ephemeral secrets are correctly retrieved by the module
+    secret_val = tf.search_plan("planned_values.outputs.secrets.value.api_key")
+    assert secret_val is not None
     
-    # Ensure it's not being deleted!
+    # Ensure critical resources aren't being deleted
+    bucket_diff = tf.search_plan("resource_changes[?address=='aws_s3_bucket.data'] | [0]")
     assert "delete" not in bucket_diff["change"]["actions"]
-    
-    # Check a specific planned value
-    bucket_future = tf.search_plan("planned_values.root_module.resources[?address=='aws_s3_bucket.data_lake'] | [0]")
-    assert bucket_future["values"]["force_destroy"] is False
 ```
 
-### 2. Conftest / Policy Evaluation
-Evaluate your plan against OPA/Rego policies.
+### 2. Post-Apply Verification
+Verify live state after infrastructure is stood up.
+
+```python
+def test_apply_and_verify(tf):
+    tf.apply()
+    
+    # Search the live state JSON using JMESPath
+    live_vm = tf.search_state("values.root_module.resources[?address=='aws_instance.web'] | [0]")
+    assert live_vm["values"]["instance_state"] == "running"
+```
+
+---
+
+## ConfTest / Policy Evaluation
+Evaluate your Terraform plans against OPA/Rego policies before applying them.
 
 ```python
 def test_policies(tf, is_interactive, vault_auth):
     tf.plan()
     
     if tf.has_changes():
-        print("\n[CONFTEST] Evaluating Terraform plan against Rego policies...")
-        
         policy_checker = ConfTest(
             wd=".", 
             input="tfplan.json", 
@@ -152,68 +138,58 @@ def test_policies(tf, is_interactive, vault_auth):
         policy_checker.run(ns="main")
 ```
 
-### 3. Post-Apply Verification
-Verify live state after infrastructure is stood up.
+---
+
+## Ansible Examples
+Run configuration management against your newly provisioned infrastructure.
 
 ```python
-def test_apply_and_verify(tf):
-    tf.apply()
+from ctlabs_tools.pytest.helper import Ansible
 
-    # Compare Planned vs Actual by searching the live state JSON
-    live_vm = tf.search_state("values.root_module.resources[?address=='aws_instance.web_server'] | [0]")
-    
-    actual_ip = live_vm["values"]["public_ip"]
-    print(f"The VM successfully deployed with IP: {actual_ip}")
+def test_config_management(vault_auth, is_interactive):
+    ansible = Ansible(
+        wd="./ansible", 
+        inventory="./inventories/prod.ini", 
+        interactive=is_interactive,
+        auth_callback=vault_auth.ensure_valid_token
+    )
+
+    # Runs standard playbook with Extra Vars
+    ansible.run(roles="setup,config", opts=["-b", "-e", "CTLABS_ENV=prod"]) 
 ```
 
 ---
 
-## Ansible Examples
+## Google Cloud Secret Manager (GSM) Integration
+If you are bootstrapping identities via Google Cloud, you can fetch them securely.
 
 ```python
-from ctlabs_tools.pytest.helper import Ansible, HashiVault
+from ctlabs_tools.pytest.helper import GCPSecretManager
 
-vault = HashiVault()
-
-ansible = Ansible(
-    wd="./ansible", 
-    inventory="./inventories/prod.ini", 
-    interactive=True,
-    auth_callback=vault.ensure_valid_token
-)
-
-# Runs standard playbook
-ansible.run() 
-
-# Run with custom extra vars
-ansible.run(opts=["-b", "-e", "CTLABS_DOMAIN=custom.local"])
+def test_fetch_gsm_bootstrap():
+    gsm = GCPSecretManager()
+    if gsm.is_available:
+        # Fetches projects/my-project/secrets/my-secret/versions/latest
+        secret_payload = gsm.get_secret("my-project", "my-secret")
+        assert secret_payload is not None
 ```
 
 ---
 
 ## Remote Desktop Helper
-
-Easily launch native RDP sessions (RoyalTSX on macOS, FreeRDP on Linux) dynamically from your test suite based on deployed credentials.
+Launch native RDP sessions dynamically based on deployment results (RoyalTSX on macOS, FreeRDP on Linux).
 
 ```python
 from ctlabs_tools.pytest.helper import RemoteDesktop
 
-def test_rdp_access():
-    # ... your password retrieval logic ...
+def test_rdp_access(tf):
+    # Retrieve dynamic IP from state
+    ip = tf.search_state("values.outputs.vm_ip.value")
     
-    # Launches the correct native RDP client based on the OS
     RemoteDesktop.launch(
-        hostname="win-srv-01.ctlabs.internal", 
+        hostname=ip, 
         username="admin", 
         password="SuperSecretPassword123!"
     )
 ```
 
----
-
-## Interactive Mode Features
-
-When running tests with `pytest --interactive`:
-* **Live Logs:** Standard output for Terraform and Ansible is shown in real-time.
-* **Auto-Retry:** On failure, the process catches the error and pauses for a manual fix: `Action: [r]etry, [q]uit`.
-* **Vault Resilience:** Because the auth callback is dynamically injected into the retry loops, hitting `[r]etry` will automatically trigger a Vault session check, allowing you to re-login in another terminal without killing your entire test suite!
