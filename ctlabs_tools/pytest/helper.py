@@ -847,20 +847,20 @@ class HashiVault:
             print(f"⚠️ Could not disable GCP engine: {e}")
             return False
 
-    def list_gcp_leases(self, roleset_name, mount_point='gcp'):
-        """Lists active leases (issued tokens) for a given GCP roleset."""
+    def list_leases(self, prefix):
+        """Lists active leases for ANY Vault secrets engine."""
         client = self._get_client()
         if not client: return []
         try:
-            # Note: Vault requires update/list permissions on sys/leases/lookup/*
-            res = client.list(f"sys/leases/lookup/{mount_point}/token/{roleset_name}")
+            # We pass the exact prefix the user typed
+            res = client.list(f"sys/leases/lookup/{prefix}")
             return res.get('data', {}).get('keys', []) if res else []
         except Exception as e:
-            # 404/Permission errors usually just mean no active leases exist right now
             if "404" in str(e) or "permission denied" in str(e).lower():
                 return []
-            print(f"❌ Error listing leases for {roleset_name}: {e}")
+            print(f"❌ Error listing leases for {prefix}: {e}")
             return []
+
 
 
 

@@ -13,7 +13,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
     
     # 1. Added "get-creds" to choices
-    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "get-creds", "leases", "raw", "backend"], help="Action to perform")
+    parser.add_argument("command", choices=["write", "read", "list", "search", "get-creds", "leases", "raw", "backend"], help="Action to perform")
     
     parser.add_argument("arg1", nargs="?", default="", help="Vault path (e.g., kvv2/apps) OR backend provider (e.g., gcp)")
     # 2. arg2 now natively acts as the search pattern!
@@ -218,7 +218,7 @@ def main():
             print(f"⚠️ Could not find any paths or keys matching the pattern '{pattern}'.")
 
     # 5. GET-CREDS ALIAS
-    elif args.command in ["gcp", "get-creds"]:
+    elif args.command == "get-creds":
         if mount_point == "gcp":
             token = vault.get_gcp_token(roleset_name=secret_path, mount_point=mount_point)
             if token:
@@ -233,13 +233,30 @@ def main():
             sys.exit(1)
 
     elif args.command == "leases":
-        keys = vault.list_gcp_leases(roleset_name=secret_path, mount_point=mount_point)
+        # 1. Intercept 'auth/' requests and educate the user!
+        if path.startswith("auth/") or mount_point == "auth":
+            print("ℹ️  Vault Architecture Note:")
+            print("   Human and Machine logins (Userpass, LDAP, AppRole) generate 'Tokens', not 'Leases'.")
+            print("   To view active logins, you must list Token Accessors.")
+            print("\n   Try running: vault-secret raw auth/token/accessors/")
+            sys.exit(0)
+
+        # 2. If they type 'gcp/terraform-runner', we need to format it to match Vault's internal structure
+        # Vault stores GCP token leases specifically under `<mount>/token/<roleset>`
+        if mount_point == "gcp" and "token/" not in secret_path:
+            lookup_path = f"{mount_point}/token/{secret_path}"
+        else:
+            lookup_path = path
+
+        # 3. Fetch the generic leases
+        keys = vault.list_leases(prefix=lookup_path)
+        
         if keys:
-            print(f"📋 Active token leases for '{path}':")
+            print(f"📋 Active leases for '{lookup_path}':")
             for k in keys:
                 print(f"  ├─ {k}")
         else:
-            print(f"ℹ️ No active leases found for '{path}' (or permission denied).")
+            print(f"ℹ️ No active leases found for '{lookup_path}' (or permission denied).")
 
 if __name__ == "__main__":
     main()
