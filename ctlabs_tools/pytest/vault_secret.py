@@ -8,7 +8,7 @@ from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
-    parser.add_argument("command", choices=["write", "read", "list", "search"], help="Action to perform")
+    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp"], help="Action to perform")
     parser.add_argument("path", help="Vault KVv2 path (e.g., kvv2/apps/my-service)")
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
     parser.add_argument("--pattern", help="Regex pattern to search for (used with search)")
@@ -90,6 +90,21 @@ def main():
             
         if not found_any:
             print(f"⚠️ Could not find any paths or keys matching the pattern '{args.pattern}'.")
+
+    elif args.command == "gcp":
+        # Using the helper method we added earlier
+        token = vault.get_gcp_token(roleset_name=secret_path, mount_point=mount_point)
+        
+        if token:
+            # Output the export command to stdout for shell evaluation
+            print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
+            
+            # Output human-friendly text to stderr so `eval` ignores it
+            print(f"# ✅ Dynamically generated GCP Token for roleset '{secret_path}'!", file=sys.stderr)
+            print("# ⏳ This token will automatically expire in 1 hour.", file=sys.stderr)
+        else:
+            print(f"# ❌ Failed to fetch GCP token for roleset '{secret_path}'.", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
