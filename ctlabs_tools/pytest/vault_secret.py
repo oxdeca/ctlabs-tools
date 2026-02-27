@@ -11,19 +11,15 @@ from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
-    
-    # 1. Added "get-creds" to choices
     parser.add_argument("command", choices=["write", "read", "list", "search", "get-creds", "leases", "raw", "backend"], help="Action to perform")
-    
-    parser.add_argument("arg1", nargs="?", default="", help="Vault path (e.g., kvv2/apps) OR backend provider (e.g., gcp)")
-    # 2. arg2 now natively acts as the search pattern!
+    parser.add_argument("arg1", nargs="?", default="", help="Vault path (e.g., kvv2/apps) OR backend provider")
     parser.add_argument("arg2", nargs="?", default="", help="Backend action ('create'/'destroy') OR Search pattern")
+    parser.add_argument("arg3", nargs="?", default="", help="GCP Project ID (for backend gcp create/destroy)")
     
-    parser.add_argument("--data", help="JSON string of the secret data (required for write)")
-    parser.add_argument("--pattern", help="Regex pattern to search for (optional, can use positional arg instead)")
     
-    parser.add_argument("--project-id", help="GCP Project ID (required for backend gcp create/destroy)")
-    parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds (default: 90)")
+    parser.add_argument("--data", help="JSON string of the secret data")
+    parser.add_argument("--pattern", help="Regex pattern to search for")
+    parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds")
     
     return parser.parse_args()
 
@@ -58,21 +54,24 @@ def main():
     if args.command == "backend":
         provider = args.arg1.lower()
         action = args.arg2.lower()
+        project_id = args.arg3  # Automatically grabbed from the command line!
         
         if provider != "gcp":
             print("❌ Error: Unsupported backend provider. Currently only 'gcp' is supported.", file=sys.stderr)
             sys.exit(1)
             
         if action not in ["create", "destroy"]:
-            print("❌ Error: Action must be 'create' or 'destroy'. Example: vault-secret backend gcp create", file=sys.stderr)
+            print("❌ Error: Action must be 'create' or 'destroy'. Example: vault-secret backend gcp create <project_id>", file=sys.stderr)
             sys.exit(1)
             
-        if not args.project_id:
-            print("❌ Error: --project-id is required for backend management.", file=sys.stderr)
+        if not project_id:
+            print("❌ Error: Project ID is required. Example: vault-secret backend gcp create <project_id>", file=sys.stderr)
             sys.exit(1)
 
+        # 🧠 SMART MOUNT: Automatically map the mount point to gcp/<project_id>
+        custom_mount = f"gcp/{project_id}"
         sa_name = "vault-gcp-master"
-        sa_email = f"{sa_name}@{args.project_id}.iam.gserviceaccount.com"
+        sa_email = f"{sa_name}@{project_id}.iam.gserviceaccount.com"
 
         if action == "create":
             print(f"🚀 Initializing Zero-Touch GCP Secrets Engine...")
@@ -231,23 +230,27 @@ def main():
         if not found_any:
             print(f"⚠️ Could not find any paths or keys matching the pattern '{pattern}'.")
 
-    # 5. GET-CREDS ALIAS
+    # 5. GET-CREDS
     elif args.command == "get-creds":
-        if mount_point == "gcp":
-            token = vault.get_gcp_token(roleset_name=secret_path, mount_point=mount_point)
+        if path.startswith("gcp/"):
+            # Split from the right: "gcp/my-project/terraform-runner" -> Mount: "gcp/my-project", Roleset: "terraform-runner"
+            roleset_name = path.split('/')[-1]
+            dynamic_mount = path.rsplit('/', 1)[0]
+            
+            token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
             if token:
                 print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
-                print(f"# ✅ Dynamically generated GCP Token for roleset '{secret_path}'!", file=sys.stderr)
+                print(f"# ✅ Dynamically generated GCP Token for roleset '{roleset_name}' at '{dynamic_mount}/'!", file=sys.stderr)
                 print("# ⏳ This token will automatically expire in 1 hour.", file=sys.stderr)
             else:
-                print(f"# ❌ Failed to fetch GCP token for roleset '{secret_path}'.", file=sys.stderr)
+                print(f"# ❌ Failed to fetch GCP token for '{path}'.", file=sys.stderr)
                 sys.exit(1)
         else:
-            print(f"❌ Error: 'get-creds' currently only supports GCP rolesets via this script. Found '{mount_point}'.", file=sys.stderr)
+            print(f"❌ Error: 'get-creds' currently only supports GCP rolesets via this script.", file=sys.stderr)
             sys.exit(1)
 
+    # 6. LEASES
     elif args.command == "leases":
-        # 1. Intercept 'auth/' requests and educate the user!
         if path.startswith("auth/") or mount_point == "auth":
             print("ℹ️  Vault Architecture Note:")
             print("   Human and Machine logins (Userpass, LDAP, AppRole) generate 'Tokens', not 'Leases'.")
@@ -255,14 +258,14 @@ def main():
             print("\n   Try running: vault-secret raw auth/token/accessors/")
             sys.exit(0)
 
-        # 2. If they type 'gcp/terraform-runner', we need to format it to match Vault's internal structure
-        # Vault stores GCP token leases specifically under `<mount>/token/<roleset>`
-        if mount_point == "gcp" and "token/" not in secret_path:
-            lookup_path = f"{mount_point}/token/{secret_path}"
+        # Smart format for GCP token paths
+        if path.startswith("gcp/"):
+            roleset_name = path.split('/')[-1]
+            dynamic_mount = path.rsplit('/', 1)[0]
+            lookup_path = f"{dynamic_mount}/token/{roleset_name}"
         else:
             lookup_path = path
 
-        # 3. Fetch the generic leases
         keys = vault.list_leases(prefix=lookup_path)
         
         if keys:
