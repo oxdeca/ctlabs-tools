@@ -26,7 +26,8 @@ def get_args():
     creds_parser.add_argument("name", help="Name of the AppRole")
 
     # Command: List AppRoles
-    subparsers.add_parser("list", help="List all existing AppRoles")
+    list_parser = subparsers.add_parser("list", help="List all existing AppRoles")
+    list_parser.add_argument("--details", action="store_true", help="Show policies and TTLs for each role")
 
     # Command: Delete AppRole
     delete_parser = subparsers.add_parser("delete", help="Delete an AppRole and its associated default policy")
