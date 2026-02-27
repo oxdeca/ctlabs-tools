@@ -13,7 +13,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
     
     # 1. Replaced setup/teardown with the unified "backend" command
-    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "raw", "backend"], help="Action to perform")
+    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "leases", "raw", "backend"], help="Action to perform")
     
     # 2. Flexible positional arguments to handle both "kvv2/path" OR "gcp create"
     parser.add_argument("arg1", nargs="?", default="", help="Vault path (e.g., kvv2/apps) OR backend provider (e.g., gcp)")
@@ -118,6 +118,15 @@ def main():
             
             print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
             sys.exit(0)
+
+    elif args.command == "leases":
+        keys = vault.list_gcp_leases(roleset_name=secret_path, mount_point=mount_point)
+        if keys:
+            print(f"📋 Active token leases for '{path}':")
+            for k in keys:
+                print(f"  ├─ {k}")
+        else:
+            print(f"ℹ️ No active leases found for '{path}' (or permission denied).")
 
     # -------------------------------------------------------------------------
     # VALIDATION: All standard commands require a valid path

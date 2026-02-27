@@ -421,15 +421,17 @@ class HashiVault:
         client = self._get_client()
         if not client: return None
         try:
-            res = client.read(path)
+            if path.endswith('/'):
+                res = client.list(path)
+            else:
+                res = client.read(path)
+
             if not res: 
                 return None
             
-            # If it's a standard Vault response, unwrap the 'data' block
             if 'data' in res and 'request_id' in res:
                 return res['data']
             
-            # If it's a raw standard endpoint (like OIDC JWKS), return the whole thing
             return res
         except Exception as e:
             print(f"❌ Error reading raw path '{path}': {e}")
@@ -692,7 +694,7 @@ class HashiVault:
                 res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
             else:
                 res = client.list(f"{mount_point}/{path}")
-                
+
             return res.get('data', {}).get('keys', [])
         except Exception as e:
             # Vault throws an InvalidPath/404 when trying to list a leaf node.
@@ -844,6 +846,22 @@ class HashiVault:
             # We don't want to halt if Vault is already partially destroyed
             print(f"⚠️ Could not disable GCP engine: {e}")
             return False
+
+    def list_gcp_leases(self, roleset_name, mount_point='gcp'):
+        """Lists active leases (issued tokens) for a given GCP roleset."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            # Note: Vault requires update/list permissions on sys/leases/lookup/*
+            res = client.list(f"sys/leases/lookup/{mount_point}/token/{roleset_name}")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            # 404/Permission errors usually just mean no active leases exist right now
+            if "404" in str(e) or "permission denied" in str(e).lower():
+                return []
+            print(f"❌ Error listing leases for {roleset_name}: {e}")
+            return []
+
 
 
 
