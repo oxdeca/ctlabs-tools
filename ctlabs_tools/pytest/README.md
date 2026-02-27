@@ -24,25 +24,46 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 
 ---
 
-## Vault Authentication & AppRole Management
-The `HashiVault` class supports both interactive human login and automated machine authentication (AppRole). The installation automatically registers the `vault-login` and `vault-approle` CLI commands in your terminal.
+## The Vault Workflow: Identity vs. Data
+
+HashiCorp Vault strictly separates **Who you are** (Identity) from **What you are accessing** (Data). Our toolkit reflects this separation to keep your CI/CD pipelines secure.
+
+
+
+1. **`vault-login`**: The human administrator authenticates to Vault.
+2. **`vault-secret`**: The administrator stores the actual sensitive data (e.g., a database password) in a specific KV path.
+3. **`vault-approle`**: The administrator creates a Machine Identity (AppRole) and a policy that grants it read-only access to that specific path.
+4. **CI/CD / Rundeck**: The orchestrator fetches a one-time-use token for the AppRole and injects it into the Pytest environment. Pytest uses this disposable token to read the data and run the infrastructure tests.
+
+---
+
+## Vault CLI Utilities
+The installation automatically registers these CLI commands in your terminal for managing your Vault environment.
 
 ### 1. Interactive Human Login
-Use the included utility to authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
-
+Authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
 ```bash
 vault-login --addr [https://vault.example.com](https://vault.example.com)
 ```
 
-### 2. Automated AppRole Setup (Admin)
-Use `vault-approle` to manage machine identities for CI/CD or Orchestrators (like Rundeck).
-
+### 2. Secret Data Management (Data)
+Create or read the actual JSON payloads stored in Vault's KVv2 engine.
 ```bash
-# Set up a new AppRole with a generated minimal policy for a specific path
-vault-approle setup my-service --path "kv/apps/my-service"
+# Write a new secret to the kvv2 engine
+vault-secret write kvv2/apps/my-service --data '{"api_key": "12345", "db_pass": "supersecret"}'
+
+# Read a secret back
+vault-secret read kvv2/apps/my-service
+```
+
+### 3. Automated AppRole Setup (Identity)
+Manage machine identities and permissions for CI/CD or Orchestrators (like Rundeck).
+```bash
+# Set up a new AppRole with an auto-generated minimal policy for a specific path
+vault-approle setup my-service --path "kvv2/apps/my-service"
 
 # Set up a "Manager" role (e.g., for Rundeck) to issue SecretIDs for another role
-vault-approle setup rundeck-mgr --type manager --target pytest-role
+vault-approle setup rundeck-mgr --type manager --target my-service
 
 # Retrieve RoleID and generate a new SecretID (JSON output)
 vault-approle get-creds my-service
