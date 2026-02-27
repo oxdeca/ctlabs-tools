@@ -25,13 +25,13 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 ---
 
 ## Vault Authentication & AppRole Management
-The `HashiVault` class supports both interactive human login and automated machine authentication (AppRole).
+The `HashiVault` class supports both interactive human login and automated machine authentication (AppRole). The installation automatically registers the `vault-login` and `vault-approle` CLI commands in your terminal.
 
 ### 1. Interactive Human Login
 Use the included utility to authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
 
 ```bash
-python -m ctlabs_tools.pytest.vault_login --addr [https://vault.example.com](https://vault.example.com)
+vault-login --addr [https://vault.example.com](https://vault.example.com)
 ```
 
 ### 2. Automated AppRole Setup (Admin)
@@ -39,13 +39,13 @@ Use `vault-approle` to manage machine identities for CI/CD or Orchestrators (lik
 
 ```bash
 # Set up a new AppRole with a generated minimal policy for a specific path
-python -m ctlabs_tools.pytest.vault_approle setup my-service --path "kv/apps/my-service"
+vault-approle setup my-service --path "kv/apps/my-service"
 
 # Set up a "Manager" role (e.g., for Rundeck) to issue SecretIDs for another role
-python -m ctlabs_tools.pytest.vault_approle setup rundeck-mgr --type manager --target pytest-role
+vault-approle setup rundeck-mgr --type manager --target pytest-role
 
 # Retrieve RoleID and generate a new SecretID (JSON output)
-python -m ctlabs_tools.pytest.vault_approle get-creds my-service
+vault-approle get-creds my-service
 ```
 
 ---
