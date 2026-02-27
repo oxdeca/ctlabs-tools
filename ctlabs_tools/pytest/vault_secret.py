@@ -157,37 +157,37 @@ def main():
             sys.exit(1)
             
         if vault.write_secret(path=secret_path, secret_data=secret_dict, mount_point=mount_point):
-            print(f"✅ Successfully wrote data to {args.path}")
+            print(f"✅ Successfully wrote data to {path}")
 
     elif args.command == "read":
         data = vault.read_secret(path=secret_path, mount_point=mount_point)
         if data:
             print(json.dumps(data, indent=2))
         else:
-            print(f"⚠️ No data found at {args.path}")
+            print(f"⚠️ No data found at {path}")
 
     elif args.command == "list":
         keys = vault.list_secrets(path=secret_path, mount_point=mount_point)
         if keys:
-            print(f"📂 Folders/Secrets at {args.path}/:")
+            print(f"📂 Folders/Secrets at {path}/:")
             for k in keys:
                 print(f"  ├─ {k}")
         else:
             # Smart fallback: If list returns empty, it might be a secret. Try reading it!
             data = vault.read_secret(path=secret_path, mount_point=mount_point)
             if data:
-                print(f"🔑 Keys inside secret payload at '{args.path}':")
+                print(f"🔑 Keys inside secret payload at '{path}':")
                 for k in data.keys():
                     print(f"  ├─ {k}")
             else:
-                print(f"ℹ️ No paths or secrets found at {args.path}")
+                print(f"ℹ️ No paths or secrets found at {path}")
 
     elif args.command == "search":
         if not args.pattern:
             print("❌ Error: --pattern is required when using the search command.")
             sys.exit(1)
             
-        print(f"🔍 Safely scanning for pattern '{args.pattern}' under {args.path}/ ...")
+        print(f"🔍 Safely scanning for pattern '{args.pattern}' under {path}/ ...")
         
         found_any = False
         
