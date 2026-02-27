@@ -590,6 +590,44 @@ class HashiVault:
         # 2. Create the AppRole linked to that policy
         return self.create_or_update_approle(role_name, [policy_name])
 
+    def list_approles(self):
+        """Fetches a list of all configured AppRoles."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            # hvac returns a dict with 'keys' if successful
+            res = client.auth.approle.list_roles()
+            return res.get('data', {}).get('keys', [])
+        except Exception as e:
+            # A 404/InvalidPath usually just means no roles exist yet
+            if "404" in str(e): return []
+            print(f"❌ Error listing AppRoles: {e}")
+            return None
+
+    def delete_approle(self, role_name):
+        """Deletes a specific AppRole."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.auth.approle.delete_role(role_name=role_name)
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting AppRole {role_name}: {e}")
+            return False
+
+    def delete_policy(self, policy_name):
+        """Deletes a specific Vault policy."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.sys.delete_policy(name=policy_name)
+            return True
+        except Exception as e:
+            # Don't print an error if it just doesn't exist
+            if "404" not in str(e):
+                print(f"⚠️ Could not delete policy {policy_name}: {e}")
+            return False
+
 
 
 
