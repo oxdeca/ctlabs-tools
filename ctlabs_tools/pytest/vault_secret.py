@@ -89,7 +89,7 @@ def main():
             found_any = True
             
         if not found_any:
-            print(f"⚠️ Could not find any paths or keys matching the pattern '{args.pattern}'."
+            print(f"⚠️ Could not find any paths or keys matching the pattern '{args.pattern}'.")
 
 
 if __name__ == "__main__":
