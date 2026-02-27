@@ -79,26 +79,6 @@ def main():
             else:
                 print("📋 Existing AppRoles:")
                 for r in roles:
-                    print(f"  - {r}")
-
-    elif args.command == "delete":
-        if vault.delete_approle(args.name):
-            print(f"✅ Deleted AppRole '{args.name}'.")
-        
-        # Automatically clean up the standard policy we generated during setup
-        if not args.keep_policy:
-            pol_name = f"policy-{args.name}"
-            if vault.delete_policy(pol_name):
-                print(f"✅ Cleaned up associated policy '{pol_name}'.")
-    
-    elif args.command == "list":
-        roles = vault.list_approles()
-        if roles is not None:
-            if not roles:
-                print("ℹ️ No AppRoles found.")
-            else:
-                print("📋 Existing AppRoles:")
-                for r in roles:
                     if args.details:
                         details = vault.read_approle(r)
                         if details:
@@ -109,6 +89,16 @@ def main():
                             print(f"  - {r} (Error fetching details)")
                     else:
                         print(f"  - {r}")
+
+    elif args.command == "delete":
+        if vault.delete_approle(args.name):
+            print(f"✅ Deleted AppRole '{args.name}'.")
+        
+        # Automatically clean up the standard policy we generated during setup
+        if not args.keep_policy:
+            pol_name = f"policy-{args.name}"
+            if vault.delete_policy(pol_name):
+                print(f"✅ Cleaned up associated policy '{pol_name}'.")
 
 if __name__ == "__main__":
     main()
