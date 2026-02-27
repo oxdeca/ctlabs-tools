@@ -414,6 +414,19 @@ class HashiVault:
             print(f"❌ Error reading {mount_point}/{path}: {e}")
             return None
 
+    def read_raw_path(self, path):
+        """Reads the raw data from any Vault API path."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            # client.read() hits the exact path without adding /data/
+            res = client.read(path)
+            # Return just the data payload if it exists
+            return res.get('data', {}) if res else None
+        except Exception as e:
+            print(f"❌ Error reading raw path '{path}': {e}")
+            return None
+
     def write_secret(self, path, secret_data, mount_point='secret'):
         client = self._get_client()
         if not client: return False

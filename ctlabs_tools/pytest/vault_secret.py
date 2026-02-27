@@ -8,7 +8,7 @@ from .helper import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Secret Data Manager")
-    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp"], help="Action to perform")
+    parser.add_argument("command", choices=["write", "read", "list", "search", "gcp", "raw"], help="Action to perform")
     parser.add_argument("path", help="Vault KVv2 path (e.g., kvv2/apps/my-service)")
     parser.add_argument("--data", help="JSON string of the secret data (required for write)")
     parser.add_argument("--pattern", help="Regex pattern to search for (used with search)")
@@ -106,6 +106,14 @@ def main():
             print(f"# ❌ Failed to fetch GCP token for roleset '{secret_path}'.", file=sys.stderr)
             sys.exit(1)
 
+    elif args.command == "raw":
+        # We don't split the path for raw reads, we just pass the whole thing
+        data = vault.read_raw_path(args.path)
+        if data:
+            # We print just the JSON data, perfectly formatted for GCP!
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"⚠️ No data found at {args.path}")
 
 if __name__ == "__main__":
     main()
