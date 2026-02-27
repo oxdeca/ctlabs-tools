@@ -670,45 +670,54 @@ class HashiVault:
             print(f"❌ Error listing secrets at {mount_point}/{path}: {e}")
             return None
 
-    def search_secret_keys(self, base_path, search_key, mount_point='secret'):
-        """Safely and sequentially yields paths containing the search key."""
+    def search_secrets(self, base_path, search_pattern, mount_point='secret'):
+        """Safely yields paths and matched keys, evaluating both folder/secret names and payload keys."""
         client = self._get_client()
         if not client: return
         
-        def _recurse(current):
-            try:
-                # 1. Try to list it as a folder
-                res = client.secrets.kv.v2.list_secrets(path=current, mount_point=mount_point)
-                keys = res.get('data', {}).get('keys', [])
+        import re
+        try:
+            regex = re.compile(search_pattern, re.IGNORECASE)
+        except re.error as e:
+            print(f"❌ Invalid regex pattern '{search_pattern}': {e}")
+            return
+
+        def _recurse(current, is_folder=True):
+            path_matches = bool(regex.search(current))
+            
+            if is_folder:
+                # If the folder path itself matches, yield it immediately
+                if path_matches and current != base_path:
+                    yield current, [], True, True # path, matched_keys, path_matches, is_folder
                 
-                for k in keys:
-                    next_path = f"{current}/{k}" if current else k
-                    
-                    if k.endswith('/'):
-                        # It's a folder, dive in
-                        yield from _recurse(next_path.rstrip('/'))
-                    else:
-                        # It's a secret, read it safely
-                        try:
-                            secret_res = client.secrets.kv.v2.read_secret_version(path=next_path, mount_point=mount_point)
-                            secret_data = secret_res.get('data', {}).get('data', {})
-                            if search_key in secret_data:
-                                yield next_path
-                        except Exception:
-                            pass # Ignore permission errors
-            except Exception as e:
-                # 2. If listing fails, it might be a leaf node itself
-                error_str = str(e)
-                if "404" in error_str or "InvalidPath" in type(e).__name__ or "None, on list" in error_str:
-                    try:
-                        secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
-                        secret_data = secret_res.get('data', {}).get('data', {})
-                        if search_key in secret_data:
-                            yield current
-                    except Exception:
-                        pass
-                        
-        yield from _recurse(base_path)
+                try:
+                    res = client.secrets.kv.v2.list_secrets(path=current, mount_point=mount_point)
+                    keys = res.get('data', {}).get('keys', [])
+                    for k in keys:
+                        next_path = f"{current}/{k}" if current else k
+                        if k.endswith('/'):
+                            yield from _recurse(next_path.rstrip('/'), is_folder=True)
+                        else:
+                            yield from _recurse(next_path, is_folder=False)
+                except Exception as e:
+                    # If listing fails on the base_path, it might actually be a leaf node
+                    if current == base_path:
+                        yield from _recurse(current, is_folder=False)
+            else:
+                # It's a secret (leaf node). Read the payload to check the keys.
+                matched_keys = []
+                try:
+                    secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
+                    secret_data = secret_res.get('data', {}).get('data', {})
+                    matched_keys = [sk for sk in secret_data.keys() if regex.search(sk)]
+                except Exception:
+                    pass # Ignore permission errors
+                
+                # Yield if the secret's path matches OR if any keys inside matched
+                if path_matches or matched_keys:
+                    yield current, matched_keys, path_matches, False
+
+        yield from _recurse(base_path, is_folder=True)
 
 
 

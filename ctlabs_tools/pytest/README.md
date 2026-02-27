@@ -60,8 +60,8 @@ vault-secret read kvv2/apps/my-service
 # List Vault paths (folders), OR list the specific data keys if pointed at a secret
 vault-secret list kvv2/apps/my-service
 
-# Recursively search for a specific key inside payloads under a given path
-vault-secret search kvv2/apps --key db_pass
+# Safely search folder names, secret names, and payload keys using Regex
+vault-secret search kvv2/ansible --pattern "onetick|dev_pass"
 ```
 
 ### 3. Automated AppRole Setup (Identity)

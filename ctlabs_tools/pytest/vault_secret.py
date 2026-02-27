@@ -66,20 +66,30 @@ def main():
                 print(f"ℹ️ No paths or secrets found at {args.path}")
 
     elif args.command == "search":
-        if not args.key:
-            print("❌ Error: --key is required when using the search command.")
+        if not args.pattern:
+            print("❌ Error: --pattern is required when using the search command.")
             sys.exit(1)
             
-        print(f"🔍 Safely scanning for key '{args.key}' under {args.path}/ ...")
+        print(f"🔍 Safely scanning for pattern '{args.pattern}' under {args.path}/ ...")
         
         found_any = False
-        # The generator will print results instantly as it finds them
-        for found_path in vault.search_secret_keys(base_path=secret_path, search_key=args.key, mount_point=mount_point):
-            print(f"  ✅ Found in: {mount_point}/{found_path}")
+        
+        # Unpack the 4 variables yielded by our smarter generator
+        for found_path, matched_keys, path_matches, is_folder in vault.search_secrets(base_path=secret_path, search_pattern=args.pattern, mount_point=mount_point):
+            if is_folder:
+                print(f"  📁 {mount_point}/{found_path} ➜ [Folder Match]")
+            else:
+                match_types = []
+                if path_matches: match_types.append("Path Match")
+                if matched_keys: match_types.append(f"Key Matches: {', '.join(matched_keys)}")
+                
+                details = " | ".join(match_types)
+                print(f"  📄 {mount_point}/{found_path} ➜ [{details}]")
+                
             found_any = True
             
         if not found_any:
-            print(f"⚠️ Could not find any secret containing the key '{args.key}'.")
+            print(f"⚠️ Could not find any paths or keys matching the pattern '{args.pattern}'."
 
 
 if __name__ == "__main__":
