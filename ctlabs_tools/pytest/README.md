@@ -56,7 +56,7 @@ To handle the `--interactive` flag and cleanly manage Vault authentication acros
 ### Configure `conftest.py`
 ```python
 import pytest
-from ctlabs_tools.pytest.helper import Terraform, ConfTest, HashiVault
+from ctlabs_tools.pytest.helper import Terraform, HashiVault
 
 def pytest_addoption(parser):
     parser.addoption("--interactive", action="store_true", default=False)
@@ -68,6 +68,7 @@ def is_interactive(request):
 @pytest.fixture(scope="session")
 def vault_auth():
     v = HashiVault()
+    # Supports both human GPG cache and automated VAULT_ROLE_ID/VAULT_SECRET_ID env vars
     v.ensure_valid_token(interactive=True) 
     return v
 
@@ -192,4 +193,3 @@ def test_rdp_access(tf):
         password="SuperSecretPassword123!"
     )
 ```
-
