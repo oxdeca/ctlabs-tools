@@ -13,7 +13,7 @@ def get_args():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Command: Create/Update
-    create_parser = subparsers.add_parser("setup", help="Create or update an AppRole")
+    create_parser = subparsers.add_parser("create", help="Create or update an AppRole")
     create_parser.add_argument("name",       help="Name of the AppRole")
     create_parser.add_argument("--ttl",      default="1h", help="Token TTL (e.g. 1h, 30m)")
     create_parser.add_argument("--type",     choices=["standard", "manager"], default="standard", help="Type of role to create (default: standard)")
@@ -44,7 +44,7 @@ def main():
     if not vault.ensure_valid_token(interactive=True):
         sys.exit(1)
 
-    if args.command == "setup":
+    if args.command == "create":
         if args.type == "manager":
             if not args.target:
                 print("❌ Error: --target is required when --type is 'manager'")
@@ -95,7 +95,7 @@ def main():
         if vault.delete_approle(args.name):
             print(f"✅ Deleted AppRole '{args.name}'.")
         
-        # Automatically clean up the standard policy we generated during setup
+        # Automatically clean up the standard policy we generated during create
         if not args.keep_policy:
             pol_name = f"policy-{args.name}"
             if vault.delete_policy(pol_name):

@@ -68,10 +68,10 @@ vault-secret search kvv2/ansible --pattern "onetick|dev_pass"
 Manage machine identities and permissions for CI/CD or Orchestrators (like Rundeck).
 ```bash
 # Set up a new AppRole with an auto-generated minimal policy for a specific path
-vault-approle setup my-service --path "kvv2/apps/my-service"
+vault-approle create my-service --path "kvv2/apps/my-service"
 
 # Set up a "Manager" role (e.g., for Rundeck) to issue SecretIDs for another role
-vault-approle setup rundeck-mgr --type manager --target my-service
+vault-approle create rundeck-mgr --type manager --target my-service
 
 # Retrieve RoleID and generate a new SecretID (JSON output)
 vault-approle get-creds my-service
