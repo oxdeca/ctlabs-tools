@@ -497,7 +497,41 @@ class HashiVault:
             print(f"❌ Failed to create manager policy: {e}")
             return None
 
+    def create_minimal_policy(self, role_name, secret_path):
+        """Creates a standard restricted policy for a specific AppRole."""
+        client = self._get_client()
+        if not client: return None
 
+        policy_name = f"policy-{role_name}"
+        # Minimal HCL: Allow read on specific path + metadata
+        policy_hcl = f"""
+        path "{secret_path}/*" {{
+          capabilities = ["read", "list"]
+        }}
+        path "{secret_path}" {{
+          capabilities = ["read", "list"]
+        }}
+        """
+        
+        try:
+            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
+            print(f"✅ Created minimal policy: {policy_name}")
+            return policy_name
+        except Exception as e:
+            print(f"❌ Failed to create policy: {e}")
+            return None
+
+    def setup_automated_approle(self, role_name, secret_path):
+        """High-level helper to create policy and role in one shot."""
+        # 1. Create the restricted policy
+        policy_name = self.create_minimal_policy(role_name, secret_path)
+        if not policy_name: return False
+
+        # 2. Create the AppRole linked to that policy
+        return self.create_or_update_approle(role_name, [policy_name])
+
+
+        
 
 class GCPSecretManager:
     def __init__(self):
