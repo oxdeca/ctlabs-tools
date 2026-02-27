@@ -445,17 +445,31 @@ class HashiVault:
         return results
 
     def ensure_valid_token(self, interactive=False):
-        while not self.load_secrets():
-            if not interactive:
-                pytest.fail("Vault token expired or missing in headless mode. Cannot proceed.")
-                
-            print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING\n" + "!"*40)
-            print("Please run 'vault-login' in a separate terminal.")
-            choice = input("Action: [r]etry, [q]uit: ").strip().lower()
+        # 1. Try Local GPG Cache or Memory (Human Dev Workflow)
+        if self.load_secrets():
+            return True
+
+        # 2. Try Automated AppRole Login (Rundeck / CI/CD Workflow)
+        role_id = os.getenv("VAULT_ROLE_ID")
+        secret_id = os.getenv("VAULT_SECRET_ID")
+        vault_url = os.getenv("VAULT_ADDR")
+
+        if role_id and secret_id and vault_url:
+            print("🤖 Automated environment detected. Logging into Vault via AppRole...")
+            if self.approle_login(vault_url, role_id, secret_id):
+                return True
+
+        # 3. Fallback to Headless Failure or Interactive Prompt
+        if not interactive:
+            pytest.fail("Vault auth failed: No valid token or AppRole credentials found in environment.")
             
-            if choice == 'q':
-                pytest.exit("User aborted test run due to Vault expiry.")
-            print("🔄 Checking for new Vault secrets...")
+        print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING\n" + "!"*40)
+        print("Please run 'vault-login' in a separate terminal.")
+        choice = input("Action: [r]etry, [q]uit: ").strip().lower()
+        
+        if choice == 'q':
+            pytest.exit("User aborted test run due to Vault expiry.")
+        print("🔄 Checking for new Vault secrets...")
         return True
 
     def create_or_update_approle(self, role_name, policies, ttl="1h"):
