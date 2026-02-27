@@ -118,6 +118,37 @@ def tf(is_interactive, vault_auth):
     t.cleanup()
 ```
 
+GCP Authentication
+
+```py
+@pytest.fixture(scope="session")
+def tf(is_interactive, vault_auth):
+    # 1. Ask Vault for a temporary GCP token
+    gcp_token = vault_auth.get_gcp_token(roleset_name="terraform-runner")
+    
+    # 2. Inject it securely into the local environment 
+    if gcp_token:
+        os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = gcp_token
+        print("✅ Injected dynamic GCP credentials for Terraform.")
+    else:
+        print("⚠️ Failed to get GCP token from Vault. Terraform may fail to authenticate.")
+
+    # 3. Start Terraform!
+    t = Terraform(
+        wd="./terraform", 
+        interactive=is_interactive,
+        auth_callback=vault_auth.ensure_valid_token 
+    )
+    yield t
+    t.cleanup()
+    
+    # Clean up the environment variable afterward
+    if "GOOGLE_OAUTH_ACCESS_TOKEN" in os.environ:
+        del os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"]
+```
+
+
+
 ---
 
 ## Terraform Testing Examples
