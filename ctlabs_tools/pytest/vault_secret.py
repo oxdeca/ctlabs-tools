@@ -24,6 +24,7 @@ def get_args():
     
     # 3. Dedicated flag for the backend manager
     parser.add_argument("--project-id", help="GCP Project ID (required for backend gcp create/destroy)")
+    parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds (default: 90)")
     
     return parser.parse_args()
 
@@ -45,7 +46,7 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False):
 
 def main():
     args = get_args()
-    vault = HashiVault()
+    vault = HashiVault(timeout=args.timeout)
     
     if not vault.ensure_valid_token(interactive=True):
         sys.exit(1)

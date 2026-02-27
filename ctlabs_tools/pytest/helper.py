@@ -296,14 +296,15 @@ class ConfTest:
 
 
 class HashiVault:
-    def __init__(self, grace_period=300):
+    def __init__(self, grace_period=300, timeout=90):
         self.grace_period = grace_period
-        self.base_path = os.path.expanduser("~/.ctlabs_vault")
-        self.key_path = os.path.join(self.base_path, ".vault_key")
-        self.gpg_path = os.path.join(self.base_path, ".env.gpg")
+        self.timeout      = timeout
+        self.base_path    = os.path.expanduser("~/.ctlabs_vault")
+        self.key_path     = os.path.join(self.base_path, ".vault_key")
+        self.gpg_path     = os.path.join(self.base_path, ".env.gpg")
         
         self._memory_token = None
-        self._memory_url = None
+        self._memory_url   = None
 
     def approle_login(self, vault_url, role_id, secret_id):
         client = hvac.Client(url=vault_url, verify=False)
@@ -394,7 +395,8 @@ class HashiVault:
         return hvac.Client(
             url=secrets.get("VAULT_ADDR"), 
             token=secrets.get("VAULT_TOKEN"), 
-            verify=not skip_verify
+            verify=not skip_verify,
+            timeout=self.timeout
         )
 
     def read_secret(self, path, mount_point='secret'):
@@ -815,16 +817,16 @@ class HashiVault:
                 return True
             except Exception as e:
                 error_msg = str(e)
-                # Catch GCP's specific sync delay error
-                if "Invalid JWT Signature" in error_msg and attempt < 3:
-                    print(f"  ⏳ GCP IAM sync delay detected. Waiting 15 seconds for Google to catch up... (Attempt {attempt+1}/3)")
-                    time.sleep(15)
+                # Catch both JWT signature failures AND Vault hanging (timeouts)
+                if attempt < 3 and ("Invalid JWT Signature" in error_msg or "timed out" in error_msg.lower()):
+                    print(f"  ⏳ GCP IAM sync delay detected. Waiting 30 seconds for Google to catch up... (Attempt {attempt+1}/3)")
+                    time.sleep(30)
                 else:
                     print(f"❌ Error creating roleset '{name}': {e}")
                     return False
         return False
 
-def teardown_gcp_engine(self, mount_point='gcp'):
+    def teardown_gcp_engine(self, mount_point='gcp'):
         """Phase 3 (Cleanup): Disables the GCP secrets engine to clean up Vault."""
         client = self._get_client()
         if not client: return False
