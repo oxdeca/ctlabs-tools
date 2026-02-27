@@ -91,6 +91,25 @@ def main():
             pol_name = f"policy-{args.name}"
             if vault.delete_policy(pol_name):
                 print(f"✅ Cleaned up associated policy '{pol_name}'.")
+    
+    elif args.command == "list":
+        roles = vault.list_approles()
+        if roles is not None:
+            if not roles:
+                print("ℹ️ No AppRoles found.")
+            else:
+                print("📋 Existing AppRoles:")
+                for r in roles:
+                    if args.details:
+                        details = vault.read_approle(r)
+                        if details:
+                            pols = ", ".join(details.get("token_policies", []))
+                            ttl = details.get("token_ttl", "default")
+                            print(f"  - {r.ljust(20)} | TTL: {str(ttl).ljust(6)} | Policies: {pols}")
+                        else:
+                            print(f"  - {r} (Error fetching details)")
+                    else:
+                        print(f"  - {r}")
 
 if __name__ == "__main__":
     main()

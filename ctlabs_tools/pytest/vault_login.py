@@ -34,6 +34,7 @@ def get_args():
     parser.add_argument("-c", "--clear", action="store_true", help="Clear the locally cached token (logout)")
     
     parser.add_argument("-a", "--addr", help="Vault Server Address (e.g., https://IP:PORT)")
+    parser.add_argument("--details", action="store_true", help="Show details of the currently loaded token")
     
     # Human Auth
     parser.add_argument("-u", "--user", help="Vault Username (LDAP/Userpass)")
@@ -154,23 +155,25 @@ def cache_local_token(vault_addr, token, lease_duration):
 
 def main():
     args = get_args()
-    if args.clear:
-        cleared = False
-        if os.path.exists(KEY_FILE):
-            os.remove(KEY_FILE)
-            cleared = True
-        if os.path.exists(ENV_FILE):
-            os.remove(ENV_FILE)
-            cleared = True
-            
-        if cleared:
-            print("🧹 Local Vault cache cleared successfully. You are now logged out.")
+    vault = HashiVault()
+
+    if args.details:
+        if vault.load_secrets():
+            info = vault.lookup_token()
+            if info:
+                print("\n🔐 Current Vault Token Info:")
+                print(f"  • Display Name : {info.get('display_name', 'N/A')}")
+                print(f"  • Policies     : {', '.join(info.get('policies', []))}")
+                print(f"  • Entity ID    : {info.get('entity_id', 'N/A')}")
+                print(f"  • TTL          : {info.get('creation_ttl', 'N/A')}s")
+                print(f"  • Renewable    : {info.get('renewable', False)}")
+            else:
+                print("❌ Token loaded, but could not fetch details from Vault.")
         else:
-            print("ℹ️ No active session found to clear.")
+            print("ℹ️ No valid Vault token found. Please log in first.")
         sys.exit(0)
 
     if args.status:
-        vault = HashiVault()
         is_valid, remaining = vault.check_expiration()
         
         if remaining <= 0:
@@ -186,6 +189,21 @@ def main():
             print(f"⚠️ Token is alive but within the expiration grace period ({vault.grace_period}s).")
             
         print(f"⏳ Time remaining: {hours}h {minutes}m {seconds}s")
+        sys.exit(0)
+
+    if args.clear:
+        cleared = False
+        if os.path.exists(KEY_FILE):
+            os.remove(KEY_FILE)
+            cleared = True
+        if os.path.exists(ENV_FILE):
+            os.remove(ENV_FILE)
+            cleared = True
+            
+        if cleared:
+            print("🧹 Local Vault cache cleared successfully. You are now logged out.")
+        else:
+            print("ℹ️ No active session found to clear.")
         sys.exit(0)
 
     vault_addr = args.addr or input("Enter Vault Address (e.g., https://IP:PORT): ").strip()

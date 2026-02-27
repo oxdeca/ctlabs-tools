@@ -628,6 +628,40 @@ class HashiVault:
                 print(f"⚠️ Could not delete policy {policy_name}: {e}")
             return False
 
+    def lookup_token(self):
+        """Fetches metadata about the currently active token."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.auth.token.lookup_self()
+            return res.get('data', {})
+        except Exception as e:
+            print(f"❌ Error looking up token: {e}")
+            return None
+
+    def read_approle(self, role_name):
+        """Fetches detailed properties of a specific AppRole."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.auth.approle.read_role(role_name=role_name)
+            return res.get('data', {})
+        except Exception as e:
+            print(f"❌ Error reading AppRole {role_name}: {e}")
+            return None
+
+    def list_secrets(self, path, mount_point='secret'):
+        """Lists keys available at a specific KVv2 path."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
+            return res.get('data', {}).get('keys', [])
+        except Exception as e:
+            if "404" in str(e): return []
+            print(f"❌ Error listing secrets at {mount_point}/{path}: {e}")
+            return None
+
 
 
 

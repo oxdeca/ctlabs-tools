@@ -43,17 +43,24 @@ The installation automatically registers these CLI commands in your terminal for
 ### 1. Interactive Human Login
 Authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
 ```bash
+# Log in to Vault
 vault-login --addr [https://vault.example.com](https://vault.example.com)
+
+# Inspect the currently active session token and its policies
+vault-login --details
 ```
 
 ### 2. Secret Data Management (Data)
-Create or read the actual JSON payloads stored in Vault's KVv2 engine.
+Create, read, or list the actual JSON payloads stored in Vault's KVv2 engine.
 ```bash
 # Write a new secret to the kvv2 engine
 vault-secret write kvv2/apps/my-service --data '{"api_key": "12345", "db_pass": "supersecret"}'
 
 # Read a secret back
 vault-secret read kvv2/apps/my-service
+
+# List all secret keys available at a specific path
+vault-secret list kvv2/apps
 ```
 
 ### 3. Automated AppRole Setup (Identity)
@@ -67,6 +74,12 @@ vault-approle setup rundeck-mgr --type manager --target my-service
 
 # Retrieve RoleID and generate a new SecretID (JSON output)
 vault-approle get-creds my-service
+
+# List all AppRoles (add --details to see TTLs and attached policies)
+vault-approle list --details
+
+# Delete an AppRole (automatically cleans up its auto-generated policy)
+vault-approle delete my-service
 ```
 
 ---
