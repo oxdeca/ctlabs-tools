@@ -760,6 +760,59 @@ class HashiVault:
             print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}")
             return None
 
+    def configure_oidc_issuer(self, issuer_url):
+        """Phase 1: Tells Vault to broadcast its identity for WIF."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.write('identity/oidc/config', issuer=issuer_url)
+            print(f"✅ Vault OIDC Issuer set to: {issuer_url}")
+            return True
+        except Exception as e:
+            print(f"❌ Error setting OIDC issuer: {e}")
+            return False
+
+    def setup_gcp_wif_engine(self, audience, sa_email, mount_point='gcp'):
+        """Phase 4: Enables GCP engine and configures it for WIF (No JSON keys!)."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            # 1. Enable the engine if it doesn't exist
+            engines = client.sys.read_mounts()
+            if f"{mount_point}/" not in engines:
+                client.sys.enable_secrets_engine(backend_type='gcp', path=mount_point)
+                print(f"✅ Enabled GCP secrets engine at '{mount_point}/'")
+            
+            # 2. Configure WIF Trust
+            client.write(
+                f'{mount_point}/config',
+                identity_token_audience=audience,
+                service_account_email=sa_email
+            )
+            print(f"✅ Configured GCP Engine '{mount_point}/' for Workload Identity Federation")
+            return True
+        except Exception as e:
+            print(f"❌ Error configuring GCP WIF engine: {e}")
+            return False
+
+    def create_gcp_roleset(self, name, project_id, bindings_hcl, mount_point='gcp'):
+        """Phase 5: Creates a roleset to generate temporary GCP OAuth tokens."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.write(
+                f'{mount_point}/roleset/{name}',
+                project=project_id,
+                secret_type="access_token",
+                token_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                bindings=bindings_hcl
+            )
+            print(f"✅ Created GCP roleset '{name}' in project '{project_id}'")
+            return True
+        except Exception as e:
+            print(f"❌ Error creating roleset '{name}': {e}")
+            return False
+            
 
 
 
