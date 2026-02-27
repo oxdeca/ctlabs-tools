@@ -685,11 +685,14 @@ class HashiVault:
             return None
 
     def list_secrets(self, path, mount_point='secret'):
-        """Lists keys available at a specific KVv2 path."""
         client = self._get_client()
         if not client: return None
         try:
-            res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
+            if mount_point in ['secret', 'kv', 'kvv2']:
+                res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
+            else:
+                res = client.list(f"{mount_point}/{path}")
+                
             return res.get('data', {}).get('keys', [])
         except Exception as e:
             # Vault throws an InvalidPath/404 when trying to list a leaf node.
@@ -757,7 +760,8 @@ class HashiVault:
         try:
             # Reads from gcp/token/<roleset_name>
             res = client.read(f"{mount_point}/token/{roleset_name}")
-            return res.get('data', {}).get('token_oauth2_secret')
+            return res.get('token') or res.get('token_oauth2_secret') or res.get('data', {}).get('token')
+            #return res.get('data', {}).get('token_oauth2_secret')
         except Exception as e:
             print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}")
             return None
