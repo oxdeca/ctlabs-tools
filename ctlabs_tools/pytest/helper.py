@@ -761,16 +761,27 @@ class HashiVault:
         if not client: return None
         try:
             res = client.read(f"{mount_point}/token/{roleset_name}")
-            
-            # SAFETY NET: Gracefully handle 404s instead of crashing
             if not res:
                 print(f"❌ Vault Error: Roleset '{roleset_name}' not found at '{mount_point}/'.", file=sys.stderr)
                 return None
                 
             return res.get('token') or res.get('token_oauth2_secret') or res.get('data', {}).get('token')
         except Exception as e:
-            print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}")
+            print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}", file=sys.stderr)
             return None
+
+    def get_gcp_token_info(self, token_string):
+        """Introspects ANY existing GCP OAuth token using Google's public endpoint."""
+        if not token_string: return {}
+        try:
+            r = requests.get(f"https://oauth2.googleapis.com/tokeninfo?access_token={token_string}", timeout=5)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                # Google returns a 400 with an error description if the token is expired/invalid
+                return {"error": r.json().get("error_description", "Invalid or expired token")}
+        except Exception:
+            return {}
 
     def configure_oidc_issuer(self, issuer_url):
         """Phase 1: Tells Vault to broadcast its identity for WIF."""

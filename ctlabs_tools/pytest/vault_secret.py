@@ -258,23 +258,33 @@ def main():
         if path.startswith("gcp/"):
             parts = path.split('/')
             
-            # FUTURE-PROOFING: Support overriding the roleset positionally or via path
             if len(parts) >= 3:
-                # Syntax: gcp/project-id/custom-role
                 roleset_name = parts[-1]
                 dynamic_mount = path.rsplit('/', 1)[0]
             else:
-                # Syntax: gcp/project-id [custom-role]
                 dynamic_mount = path
                 roleset_name = args.arg2 if args.arg2 else "terraform-runner"
             
+            # 1. Pure generation
             token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
+            
             if token:
                 print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
-                print(f"# ✅ Dynamically generated GCP Token for roleset '{roleset_name}' at '{dynamic_mount}/'!", file=sys.stderr)
-                print("# ⏳ This token will automatically expire in 1 hour.", file=sys.stderr)
+                print(f"# ✅ Dynamically generated GCP Token at '{dynamic_mount}/'!", file=sys.stderr)
+                
+                # 2. Pure introspection
+                metadata = vault.get_gcp_token_info(token)
+                
+                if metadata and "email" in metadata:
+                    email = metadata.get("email")
+                    expires_in = int(metadata.get("expires_in", 3600))
+                    mins = expires_in // 60
+                    
+                    print(f"# 👤 Authenticated as: {email}", file=sys.stderr)
+                    print(f"# ⏳ Valid for exactly {mins} minutes ({expires_in}s).", file=sys.stderr)
+                elif metadata.get("error"):
+                    print(f"# ⚠️ Token validation warning: {metadata['error']}", file=sys.stderr)
             else:
-                # The helper.py script now prints the exact error, so we just cleanly exit
                 sys.exit(1)
         else:
             print(f"❌ Error: 'get-creds' currently only supports GCP rolesets via this script.", file=sys.stderr)
