@@ -1,20 +1,20 @@
-# CTLabs Tools
+# 🛠️ CTLabs Tools
 
 A comprehensive collection of Python helpers for infrastructure testing with Terraform, Ansible, Policy Checks (ConfTest), and HashiCorp Vault.
 
-## Installation
+## 📦 Installation
 
 Install directly from GitHub using pip:
 
 ```bash
 # Install latest from main
-pip install git+https://github.com/oxdeca/ctlabs-tools.git
+pip install git+[https://github.com/oxdeca/ctlabs-tools.git](https://github.com/oxdeca/ctlabs-tools.git)
 
 # or from the dev branch
-pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
+pip install git+[https://github.com/oxdeca/ctlabs-tools.git@dev](https://github.com/oxdeca/ctlabs-tools.git@dev)
 ```
 
-## Importing in your Tests
+## 🧩 Importing in your Tests
 Once installed, your imports are clean and location-independent:
 
 ```python
@@ -24,7 +24,7 @@ from ctlabs_tools.pytest.helper import HashiVault, GCPSecretManager, RemoteDeskt
 
 ---
 
-## The Vault Workflow: Identity vs. Data
+## 🔐 The Vault Workflow: Identity vs. Data
 
 HashiCorp Vault strictly separates **Who you are** (Identity) from **What you are accessing** (Data). Our toolkit reflects this separation to keep your CI/CD pipelines secure.
 
@@ -35,10 +35,10 @@ HashiCorp Vault strictly separates **Who you are** (Identity) from **What you ar
 
 ---
 
-## Vault CLI Utilities
+## 💻 Vault CLI Utilities
 The installation automatically registers these CLI commands in your terminal for managing your Vault environment.
 
-### 1. Interactive Human Login
+### 1. Interactive Human Login 🧑‍💻
 Authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
 ```bash
 # Log in to Vault
@@ -48,30 +48,37 @@ vault-login --addr [https://vault.example.com](https://vault.example.com)
 vault-login --details
 ```
 
-### 2. Secret Data Management & GCP Engines
-Manage static JSON payloads in Vault's KVv2 engine, and bootstrap dynamic GCP credential engines.
+### 2. Secret Data Management & Dynamic Engines ⚙️
+Manage static JSON payloads in Vault's KVv2 engine, and seamlessly bootstrap dynamic GCP credential engines.
 
-**Bootstrap a Zero-Touch GCP Secrets Engine:**
-*Uses your local `gcloud` session to safely build a Master Service Account entirely in memory, inject it into Vault, and handle Google Cloud IAM replication delays.*
+**🚀 Bootstrap a Zero-Touch GCP Secrets Engine:**
+*Uses your local `gcloud` session to safely build a Master Service Account entirely in memory, inject it into Vault, and elegantly handle Google Cloud IAM replication delays via smart polling. Vault automatically mounts this to `gcp/<project_id>/`.*
 ```bash
-# Create the engine and the terraform-runner roleset
-vault-secret backend gcp create --project-id my-gcp-project-id
+# Create the engine and the terraform-runner roleset for a specific project
+vault-secret backend gcp create ctlabs-0815-123abc-05a-03
 
-# Tear it down and delete the Master Service Account from GCP
-vault-secret backend gcp destroy --project-id my-gcp-project-id
+# Tear it down and cleanly delete the Master Service Account from GCP
+vault-secret backend gcp destroy ctlabs-0815-123abc-05a-03
 ```
 
-**Generate Dynamic GCP Token for Terminal:**
-*Injects a short-lived OAuth token directly into your environment.*
+**🔑 Generate Dynamic Credentials:**
+*Injects a short-lived OAuth token (or other dynamic secrets) directly into your environment.*
 ```bash
-# Fetch and export the 1-hour token
-eval $(vault-secret gcp gcp/terraform-runner)
-
-# Check how many active tokens are currently issued (requires sys/leases/lookup/* policy)
-vault-secret leases gcp/terraform-runner
+# Fetch and export the 1-hour token for a specific GCP project mount
+eval $(vault-secret get-creds gcp/ctlabs-0815-123abc-05a-03/terraform-runner)
 ```
 
-**Manage Static KVv2 Secrets:**
+**📋 Track Active Leases:**
+*Check how many active tokens/keys are currently issued for any dynamic engine (requires `sys/leases/lookup/*` policy).*
+```bash
+# Track GCP leases
+vault-secret leases gcp/ctlabs-0815-123abc-05a-03/terraform-runner
+
+# Track Database leases
+vault-secret leases database/creds/my-app
+```
+
+**🗄️ Manage Static KVv2 Secrets:**
 ```bash
 # Write a new secret to the kvv2 engine
 vault-secret write kvv2/apps/my-service --data '{"api_key": "12345", "db_pass": "supersecret"}'
@@ -82,21 +89,28 @@ vault-secret read kvv2/apps/my-service
 # List Vault paths (folders), OR list the specific data keys if pointed at a secret
 vault-secret list kvv2/apps/my-service
 
-# Safely search folder names, secret names, and payload keys using Regex
-vault-secret search kvv2/ansible --pattern "onetick|dev_pass"
+# Safely search folder names, secret names, and payload keys using Regex (positional!)
+vault-secret search kvv2/ansible "onetick|dev_pass"
 ```
 
-**Read Raw API Paths:**
-*Bypasses the KVv2 wrapper to read core Vault endpoints. Add a trailing slash `/` to perform a LIST operation instead of a GET.*
+**🧠 Smart API Reading:**
+*The CLI automatically routes system paths (like `sys/`, `auth/`, `identity/`) to bypass the KVv2 wrapper, letting you read core Vault configuration naturally.*
+```bash
+# Read a system policy
+vault-secret read sys/policies/acl/my-policy
+```
+
+**🔬 Read Raw API Paths:**
+*For ultimate control, bypass all logic. Add a trailing slash `/` to perform a LIST operation instead of a GET.*
 ```bash
 # GET a specific key
 vault-secret raw identity/oidc/.well-known/keys > vault-keys.json
 
-# LIST active leases
-vault-secret raw sys/leases/lookup/gcp/token/terraform-runner/
+# LIST active human/machine logins (Token Accessors)
+vault-secret raw auth/token/accessors/
 ```
 
-### 3. Automated AppRole Setup (Identity)
+### 3. Automated AppRole Setup (Identity) 🤖
 Manage machine identities and permissions for CI/CD or Orchestrators (like Rundeck).
 ```bash
 # Set up a new AppRole with an auto-generated minimal policy for a specific path
@@ -117,7 +131,7 @@ vault-approle delete my-service
 
 ---
 
-## Pytest Integration (Recommended Workflow)
+## 🧪 Pytest Integration (Recommended Workflow)
 To handle the `--interactive` flag and cleanly manage Vault authentication across your suite, create a `conftest.py`.
 
 ### Configure `conftest.py`
@@ -140,7 +154,7 @@ def vault_auth():
     return v
 ```
 
-### GCP Dynamic Authentication Fixture
+### ☁️ GCP Dynamic Authentication Fixture
 Seamlessly wrap Terraform execution with dynamic Google Cloud OAuth tokens generated by Vault.
 
 ```python
@@ -150,8 +164,11 @@ from ctlabs_tools.pytest.helper import Terraform
 
 @pytest.fixture(scope="session")
 def tf(is_interactive, vault_auth):
-    # 1. Ask Vault for a temporary GCP token
-    gcp_token = vault_auth.get_gcp_token(roleset_name="terraform-runner")
+    # 1. Ask Vault for a temporary GCP token from a specific project mount
+    gcp_token = vault_auth.get_gcp_token(
+        roleset_name="terraform-runner", 
+        mount_point="gcp/ctlabs-0815-123abc-05a-03"
+    )
     
     # 2. Inject it securely into the local environment 
     if gcp_token:
@@ -176,7 +193,7 @@ def tf(is_interactive, vault_auth):
 
 ---
 
-## Terraform Testing Examples
+## 🏗️ Terraform Testing Examples
 
 ### 1. Plan Integrity & Ephemeral Values
 Verify the plan doesn't violate core requirements before applying. Ephemeral values (Terraform 1.10+) don't exist in the state file, so use `search_plan` to verify them during the planning phase.
@@ -211,7 +228,7 @@ def test_apply_and_verify(tf):
 
 ---
 
-## ConfTest / Policy Evaluation
+## 🛡️ ConfTest / Policy Evaluation
 Evaluate your Terraform plans against OPA/Rego policies before applying them.
 
 ```python
@@ -232,7 +249,7 @@ def test_policies(tf, is_interactive, vault_auth):
 
 ---
 
-## Ansible Examples
+## 🐧 Ansible Examples
 Run configuration management against your newly provisioned infrastructure.
 
 ```python
@@ -252,7 +269,7 @@ def test_config_management(vault_auth, is_interactive):
 
 ---
 
-## Google Cloud Secret Manager (GSM) Integration
+## 📦 Google Cloud Secret Manager (GSM) Integration
 If you are bootstrapping identities via Google Cloud, you can fetch them securely.
 
 ```python
@@ -268,7 +285,7 @@ def test_fetch_gsm_bootstrap():
 
 ---
 
-## Remote Desktop Helper
+## 🖥️ Remote Desktop Helper
 Launch native RDP sessions dynamically based on deployment results (RoyalTSX on macOS, FreeRDP on Linux).
 
 ```python
