@@ -869,15 +869,22 @@ class HashiVault:
         client = self._get_client()
         if not client: return False
         try:
-            engines = client.sys.read_mounts()
-            if f"{mount_point}/" in engines:
+            # Bypass the buggy hvac.sys module and use the raw read that we know works!
+            res = client.read("sys/mounts")
+            engines = res.get('data', res) if isinstance(res, dict) else res
+            
+            if engines and f"{mount_point}/" in engines:
                 client.sys.disable_secrets_engine(path=mount_point)
                 print(f"✅ Disabled GCP secrets engine at '{mount_point}/'")
+            else:
+                print(f"ℹ️ Engine '{mount_point}/' was not mounted. Skipping unmount.")
+                
             return True
         except Exception as e:
-            # We don't want to halt if Vault is already partially destroyed
-            print(f"⚠️ Could not disable GCP engine: {e}")
+            error_msg = str(e).strip()
+            print(f"⚠️ Could not disable GCP engine: {error_msg if error_msg else type(e).__name__}")
             return False
+
 
     def list_leases(self, prefix):
         """Lists active leases for ANY Vault secrets engine."""
