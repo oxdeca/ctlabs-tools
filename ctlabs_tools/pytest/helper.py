@@ -773,15 +773,21 @@ class HashiVault:
     def get_gcp_token_info(self, token_string):
         """Introspects ANY existing GCP OAuth token using Google's public endpoint."""
         if not token_string: return {}
+        
+        import requests  # Import locally to guarantee it's available
         try:
-            r = requests.get(f"https://oauth2.googleapis.com/tokeninfo?access_token={token_string}", timeout=5)
+            # Bumped timeout to 10s just in case it's a slow network route
+            r = requests.get(f"https://oauth2.googleapis.com/tokeninfo?access_token={token_string}", timeout=10)
+            
             if r.status_code == 200:
                 return r.json()
             else:
-                # Google returns a 400 with an error description if the token is expired/invalid
-                return {"error": r.json().get("error_description", "Invalid or expired token")}
-        except Exception:
-            return {}
+                return {"error": r.json().get("error_description", f"Google API returned HTTP {r.status_code}")}
+                
+        except Exception as e:
+            # NO MORE SILENT FAILURES! Pass the exact error back to the CLI.
+            return {"error": f"Network/Python error: {e.__class__.__name__} - {str(e)}"}
+
 
     def configure_oidc_issuer(self, issuer_url):
         """Phase 1: Tells Vault to broadcast its identity for WIF."""
