@@ -760,10 +760,14 @@ class HashiVault:
         client = self._get_client()
         if not client: return None
         try:
-            # Reads from gcp/token/<roleset_name>
             res = client.read(f"{mount_point}/token/{roleset_name}")
+            
+            # SAFETY NET: Gracefully handle 404s instead of crashing
+            if not res:
+                print(f"❌ Vault Error: Roleset '{roleset_name}' not found at '{mount_point}/'.", file=sys.stderr)
+                return None
+                
             return res.get('token') or res.get('token_oauth2_secret') or res.get('data', {}).get('token')
-            #return res.get('data', {}).get('token_oauth2_secret')
         except Exception as e:
             print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}")
             return None

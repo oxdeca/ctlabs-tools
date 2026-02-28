@@ -236,11 +236,19 @@ def main():
             print(f"⚠️ Could not find any paths or keys matching the pattern '{pattern}'.")
 
     # 5. GET-CREDS
-    elif args.command == "get-creds":
+    elif args.command in ["get-creds"]:
         if path.startswith("gcp/"):
-            # Split from the right: "gcp/my-project/terraform-runner" -> Mount: "gcp/my-project", Roleset: "terraform-runner"
-            roleset_name = path.split('/')[-1]
-            dynamic_mount = path.rsplit('/', 1)[0]
+            parts = path.split('/')
+            
+            # FUTURE-PROOFING: Support overriding the roleset positionally or via path
+            if len(parts) >= 3:
+                # Syntax: gcp/project-id/custom-role
+                roleset_name = parts[-1]
+                dynamic_mount = path.rsplit('/', 1)[0]
+            else:
+                # Syntax: gcp/project-id [custom-role]
+                dynamic_mount = path
+                roleset_name = args.arg2 if args.arg2 else "terraform-runner"
             
             token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
             if token:
@@ -248,11 +256,12 @@ def main():
                 print(f"# ✅ Dynamically generated GCP Token for roleset '{roleset_name}' at '{dynamic_mount}/'!", file=sys.stderr)
                 print("# ⏳ This token will automatically expire in 1 hour.", file=sys.stderr)
             else:
-                print(f"# ❌ Failed to fetch GCP token for '{path}'.", file=sys.stderr)
+                # The helper.py script now prints the exact error, so we just cleanly exit
                 sys.exit(1)
         else:
             print(f"❌ Error: 'get-creds' currently only supports GCP rolesets via this script.", file=sys.stderr)
             sys.exit(1)
+
 
     # 6. LEASES
     elif args.command == "leases":
@@ -263,10 +272,16 @@ def main():
             print("\n   Try running: vault-secret raw auth/token/accessors/")
             sys.exit(0)
 
-        # Smart format for GCP token paths
+        # Apply the exact same smart roleset routing to GCP leases
         if path.startswith("gcp/"):
-            roleset_name = path.split('/')[-1]
-            dynamic_mount = path.rsplit('/', 1)[0]
+            parts = path.split('/')
+            if len(parts) >= 3:
+                roleset_name = parts[-1]
+                dynamic_mount = path.rsplit('/', 1)[0]
+            else:
+                dynamic_mount = path
+                roleset_name = args.arg2 if args.arg2 else "terraform-runner"
+                
             lookup_path = f"{dynamic_mount}/token/{roleset_name}"
         else:
             lookup_path = path
