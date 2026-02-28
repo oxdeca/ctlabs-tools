@@ -809,8 +809,8 @@ class HashiVault:
         if not client: return False
         
         import time
-        # Add a retry loop to handle GCP IAM propagation delays
-        for attempt in range(1, 4):
+        # BUMPED TO 6 ATTEMPTS
+        for attempt in range(1, 7):
             try:
                 client.write(
                     f'{mount_point}/roleset/{name}',
@@ -823,9 +823,9 @@ class HashiVault:
                 return True
             except Exception as e:
                 error_msg = str(e)
-                # Catch both JWT signature failures AND Vault hanging (timeouts)
-                if attempt < 3 and ("Invalid JWT Signature" in error_msg or "timed out" in error_msg.lower()):
-                    print(f"  ⏳ GCP IAM sync delay detected. Waiting 30 seconds for Google to catch up... (Attempt {attempt+1}/3)")
+                # ADDED API ENABLEMENT ERRORS TO THE CATCH LIST
+                if attempt < 6 and ("Invalid JWT Signature" in error_msg or "timed out" in error_msg.lower() or "accessNotConfigured" in error_msg or "SERVICE_DISABLED" in error_msg):
+                    print(f"  ⏳ GCP IAM sync delay detected. Waiting 30 seconds for Google to catch up... (Attempt {attempt}/6)")
                     time.sleep(30)
                 else:
                     print(f"❌ Error creating roleset '{name}': {e}")

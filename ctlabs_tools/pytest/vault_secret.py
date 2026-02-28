@@ -23,23 +23,33 @@ def get_args():
     
     return parser.parse_args()
 
-def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False):
-    """Silently runs a gcloud command and halts if it fails (unless ignored)."""
-    try:
-        res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
-        if capture_json:
-            return res.stdout.strip()
-        return True
-    except subprocess.CalledProcessError as e:
-        if ignore_errors:
-            if not quiet:
-                error_line = e.stderr.strip().splitlines()[0] if e.stderr else "Unknown error"
-                print(f"  ⚠️ Ignored GCP Error: {error_line}", file=sys.stderr)
-            return False
+def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, retries=1, retry_delay=5):
+    """Silently runs a gcloud command with built-in polling/retry logic."""
+    for attempt in range(1, retries + 1):
+        try:
+            res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
+            if capture_json:
+                return res.stdout.strip()
+            return True
+        except subprocess.CalledProcessError as e:
+            # If we have retries left, wait and loop again
+            if attempt < retries:
+                if not quiet:
+                    cmd_name = cmd_list[1] if len(cmd_list) > 1 else "command"
+                    print(f"  ⏳ GCP not ready. Retrying '{cmd_name}' in {retry_delay}s (Attempt {attempt}/{retries})...")
+                time.sleep(retry_delay)
+                continue
             
-        print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
-        print(f"Error output: {e.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
+            # If we are out of retries, handle the error
+            if ignore_errors:
+                if not quiet:
+                    error_line = e.stderr.strip().splitlines()[0] if e.stderr else "Unknown error"
+                    print(f"  ⚠️ Ignored GCP Error: {error_line}", file=sys.stderr)
+                return False
+                
+            print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
+            print(f"Error output: {e.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
 
 def main():
     args = get_args()
@@ -76,35 +86,27 @@ def main():
         if action == "create":
             print(f"🚀 Initializing Zero-Touch GCP Secrets Engine at '{custom_mount}/'...")
             
+            print(f"  ├─ Enabling Required GCP APIs (IAM, Resource Manager, Credentials)...")
+            # Turn on the APIs, give it 3 retries just in case GCP is stuttering
+            run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project_id], retries=3)
+
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
-            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", project_id])
+            # Automatically retry 5 times if the project is still waking up
+            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", project_id], retries=5)
             
             print(f"  ├─ Granting IAM Permissions (Polling for GCP synchronization)...")
-            
-            # 🧠 SMART POLLING: Loop through all required roles and poll GCP until each one is accepted
             roles_to_grant = [
                 "roles/iam.serviceAccountAdmin",
                 "roles/iam.serviceAccountKeyAdmin",
                 "roles/resourcemanager.projectIamAdmin"
             ]
             
+            # The manual loops are gone! run_gcloud handles the polling for us.
             for role in roles_to_grant:
-                iam_success = False
-                for attempt in range(1, 13):
-                    if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True):
-                        iam_success = True
-                        break
-                    
-                    # Only print the retry message if it failed
-                    print(f"  ⏳ GCP IAM settling... Retrying {role.split('/')[1]} in 5s (Attempt {attempt}/12)")
-                    time.sleep(5)
-                    
-                if not iam_success:
-                    print(f"❌ Error: Failed to grant {role} within 60 seconds.", file=sys.stderr)
-                    sys.exit(1)
+                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True, retries=12)
             
             print(f"  ├─ Generating JSON Key in-memory...")
-            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project_id], capture_json=True)
+            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project_id], capture_json=True, retries=3)
             
             print(f"  ├─ Configuring Vault Engine at '{custom_mount}/'...")
             if not vault.setup_gcp_engine(creds_json=creds_json, mount_point=custom_mount):
