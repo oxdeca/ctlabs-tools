@@ -865,6 +865,29 @@ class HashiVault:
             print(f"❌ Error listing leases for {prefix}: {e}")
             return []
 
+    def list_gcp_engines(self):
+        """Fetches a list of all mounted GCP secrets engines."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            # Fetch all mounts
+            engines = client.sys.read_mounts()
+            
+            # hvac sometimes returns the dict directly, sometimes wrapped in 'data'
+            data = engines.get('data', engines) if isinstance(engines, dict) else engines
+            
+            gcp_mounts = []
+            for path, config in data.items():
+                if config.get('type') == 'gcp':
+                    gcp_mounts.append(path)
+                    
+            return gcp_mounts
+        except Exception as e:
+            if "permission denied" in str(e).lower() or e.__class__.__name__ == 'Forbidden':
+                print("❌ Permission Denied: Your policy needs 'read' access to 'sys/mounts'.")
+            else:
+                print(f"❌ Error listing GCP mounts: {e}")
+            return None
 
 
 

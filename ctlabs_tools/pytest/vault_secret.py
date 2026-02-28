@@ -70,13 +70,29 @@ def main():
             print("❌ Error: Unsupported backend provider. Currently only 'gcp' is supported.", file=sys.stderr)
             sys.exit(1)
             
-        if action not in ["create", "destroy"]:
-            print("❌ Error: Action must be 'create' or 'destroy'. Example: vault-secret backend gcp create <project_id>", file=sys.stderr)
+        # 1. ADDED 'list' to the allowed actions
+        if action not in ["create", "destroy", "list"]:
+            print("❌ Error: Action must be 'create', 'destroy', or 'list'.", file=sys.stderr)
             sys.exit(1)
             
-        if not project_id:
-            print("❌ Error: Project ID is required. Example: vault-secret backend gcp create <project_id>", file=sys.stderr)
+        # 2. Made project_id strictly required ONLY for create/destroy
+        if action in ["create", "destroy"] and not project_id:
+            print(f"❌ Error: Project ID is required for '{action}'. Example: vault-secret backend gcp {action} <project_id>", file=sys.stderr)
             sys.exit(1)
+
+        # 3. NEW LIST ACTION
+        if action == "list":
+            engines = vault.list_gcp_engines()
+            if engines is None:
+                sys.exit(1)
+                
+            if not engines:
+                print("ℹ️ No GCP Secrets Engines are currently mounted.")
+            else:
+                print("🌐 Active GCP Secrets Engines:")
+                for e in engines:
+                    print(f"  ├─ {e}")
+            sys.exit(0)
 
         # 🧠 SMART MOUNT: Automatically map the mount point to gcp/<project_id>
         custom_mount = f"gcp/{project_id}"
