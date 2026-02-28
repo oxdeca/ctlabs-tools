@@ -31,25 +31,30 @@ def get_args():
     p_creds.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_creds.add_argument("roleset", nargs="?", default="", help="Optional roleset name (defaults to terraform-runner)")
 
-    # 4. LEASES (Dynamic Identity)
+    # 4 INFO (Introspect active tokens)
+    p_info = subparsers.add_parser("info", help="Get information about active sessions/tokens")
+    p_info.add_argument("provider", choices=["gcp"], help="The provider to inspect (e.g., gcp)")
+    p_info.add_argument("token", nargs="?", default="", help="Optional token string (defaults to env var)")
+
+    # 5. LEASES (Dynamic Identity)
     p_leases = subparsers.add_parser("leases", help="List active leases/tokens")
     p_leases.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_leases.add_argument("roleset", nargs="?", default="", help="Optional roleset name")
 
-    # 5. WRITE (Static Secrets)
+    # 6. WRITE (Static Secrets)
     p_write = subparsers.add_parser("write", help="Write a static secret payload")
     p_write.add_argument("path", help="The Vault path (e.g., kvv2/apps/my-secret)")
     p_write.add_argument("--data", required=True, help="JSON string of the secret data")
 
-    # 6. READ (Static Secrets)
+    # 7. READ (Static Secrets)
     p_read = subparsers.add_parser("read", help="Read a static secret payload")
     p_read.add_argument("path", help="The Vault path (e.g., kvv2/apps/my-secret)")
 
-    # 7. LIST (Static Secrets)
+    # 8. LIST (Static Secrets)
     p_list = subparsers.add_parser("list", help="List folders or secret keys")
     p_list.add_argument("path", help="The Vault path (e.g., kvv2/apps)")
 
-    # 8. SEARCH (Static Secrets)
+    # 9. SEARCH (Static Secrets)
     p_search = subparsers.add_parser("search", help="Search folders, secrets, and payload keys")
     p_search.add_argument("path", help="The base Vault path to search")
     p_search.add_argument("pattern", help="Regex pattern to search for")
@@ -112,7 +117,7 @@ def main():
     if cmd == "backend":
         provider = args.provider
         action = args.action
-        
+
         # 🧠 SMART SANITIZER: Clean up accidental 'gcp/' prefixes or trailing slashes
         project_id = args.project_id
         if project_id:
@@ -241,6 +246,40 @@ def main():
             print(f"❌ Error: '{cmd}' currently only supports GCP rolesets via this script.", file=sys.stderr)
             sys.exit(1)
 
+    # -------------------------------------------------------------------------
+    # 2.5 INFO COMMAND
+    # -------------------------------------------------------------------------
+    if cmd == "info":
+        provider = args.provider
+        
+        if provider == "gcp":
+            # Smart fallback: Use provided argument OR the environment variable
+            token = args.token or os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN")
+            
+            if not token:
+                print("❌ Error: No token provided and $GOOGLE_OAUTH_ACCESS_TOKEN is not set in this terminal.", file=sys.stderr)
+                sys.exit(1)
+                
+            print("🔍 Introspecting GCP Token with Google...", file=sys.stderr)
+            metadata = vault.get_gcp_token_info(token)
+            
+            if metadata and "expires_in" in metadata:
+                email = metadata.get("email", "Vault Managed Account (Scope hidden)")
+                expires_in = int(metadata.get("expires_in", 3600))
+                mins = expires_in // 60
+                
+                print(f"👤 Authenticated as : {email}")
+                print(f"⏳ Time Remaining  : {mins} minutes ({expires_in}s)")
+                if "scope" in metadata:
+                    print(f"🌐 Granted Scopes  : {metadata['scope']}")
+                sys.exit(0)
+                
+            elif metadata and "error" in metadata:
+                print(f"⚠️ Token validation failed: {metadata['error']}", file=sys.stderr)
+                sys.exit(1)
+            else:
+                print(f"⚠️ Unexpected response from Google: {metadata}", file=sys.stderr)
+                sys.exit(1)
 
     # -------------------------------------------------------------------------
     # 3. STANDARD KV SECRETS COMMANDS
