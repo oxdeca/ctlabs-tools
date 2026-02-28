@@ -893,7 +893,6 @@ class HashiVault:
             print(f"❌ Error listing leases for {prefix}: {e}")
             return []
 
-<<<<<<< Updated upstream
     def list_engines(self, backend_type=None):
         """Fetches a list of mounted secrets engines, optionally filtered by type."""
         client = self._get_client()
@@ -918,11 +917,7 @@ class HashiVault:
             print(f"❌ Error listing {backend_type or 'all'} mounts: {error_msg if error_msg else e.__class__.__name__}", file=sys.stderr)
             return None
 
-
-
-=======
 # ----------------------------------------------------------------------------
->>>>>>> Stashed changes
 
 
 class GCPSecretManager:
