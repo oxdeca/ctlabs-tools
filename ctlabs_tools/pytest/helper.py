@@ -210,6 +210,8 @@ class Terraform:
             p = os.path.join(self.wd, f)
             if os.path.exists(p): os.remove(p)
 
+# ----------------------------------------------------------------------------
+
 
 class Ansible:
     def __init__(self, wd="./ctlabs-ansible", inventory="./inventories/sys01.ini", playbook="./playbooks/init.yml", roles="up,setup,base", interactive=False, auth_callback=None):
@@ -259,6 +261,8 @@ class Ansible:
                 pytest.fail("User aborted after task failure.")
             print("🔄 Retrying command...")
 
+# ----------------------------------------------------------------------------
+
 
 class ConfTest:
     def __init__(self, wd=".", input="tfplan.json", interactive=False, auth_callback=None):
@@ -294,6 +298,8 @@ class ConfTest:
                 pytest.fail("User aborted policy test.")
             print("🔄 Retrying command...")
 
+# ----------------------------------------------------------------------------
+
 
 class HashiVault:
     def __init__(self, grace_period=300, timeout=90):
@@ -306,18 +312,27 @@ class HashiVault:
         self._memory_token = None
         self._memory_url   = None
 
-    def approle_login(self, vault_url, role_id, secret_id):
-        client = hvac.Client(url=vault_url, verify=False)
-        try:
-            res = client.auth.approle.login(role_id=role_id, secret_id=secret_id)
-            self._memory_token = res['auth']['client_token']
-            self._memory_url = vault_url
-            print("✅ AppRole login successful. Token stored in memory.")
-            return True
-        except Exception as e:
-            print(f"❌ AppRole authentication failed: {e}")
-            return False
+    def _get_client(self):
+        if self._memory_token and self._memory_url:
+            return hvac.Client(url=self._memory_url, token=self._memory_token, verify=False)
+            
+        secrets = self._decrypt_secrets()
+        if not secrets: return None
+            
+        is_valid, _ = self.check_expiration()
+        if not is_valid: return None
 
+        skip_verify = secrets.get("VAULT_SKIP_VERIFY", "false").lower() == "true"
+        return hvac.Client(
+            url=secrets.get("VAULT_ADDR"), 
+            token=secrets.get("VAULT_TOKEN"), 
+            verify=not skip_verify,
+            timeout=self.timeout
+        )
+
+    #
+    # locally cached vault token store
+    #
     def _decrypt_secrets(self):
         if not os.path.exists(self.key_path) or not os.path.exists(self.gpg_path):
             return None
@@ -381,97 +396,6 @@ class HashiVault:
         os.environ["VAULT_SKIP_VERIFY"] = "true" 
         return True
 
-    def _get_client(self):
-        if self._memory_token and self._memory_url:
-            return hvac.Client(url=self._memory_url, token=self._memory_token, verify=False)
-            
-        secrets = self._decrypt_secrets()
-        if not secrets: return None
-            
-        is_valid, _ = self.check_expiration()
-        if not is_valid: return None
-
-        skip_verify = secrets.get("VAULT_SKIP_VERIFY", "false").lower() == "true"
-        return hvac.Client(
-            url=secrets.get("VAULT_ADDR"), 
-            token=secrets.get("VAULT_TOKEN"), 
-            verify=not skip_verify,
-            timeout=self.timeout
-        )
-
-    def read_secret(self, path, mount_point='secret'):
-        client = self._get_client()
-        if not client: return None
-
-        try:
-            if mount_point.lower() == 'cubbyhole':
-                response = client.read(f"cubbyhole/{path}")
-                if response and 'data' in response:
-                    return response['data']
-                return None
-            else:
-                response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount_point)
-                return response['data']['data']
-        except Exception as e:
-            print(f"❌ Error reading {mount_point}/{path}: {e}")
-            return None
-
-    def read_raw_path(self, path):
-        """Reads the raw data from any Vault API path, handling both Vault-wrapped and raw responses."""
-        client = self._get_client()
-        if not client: return None
-        try:
-            if path.endswith('/'):
-                res = client.list(path)
-            else:
-                res = client.read(path)
-
-            if not res: 
-                return None
-            
-            if 'data' in res and 'request_id' in res:
-                return res['data']
-            
-            return res
-        except Exception as e:
-            print(f"❌ Error reading raw path '{path}': {e}")
-            return None
-
-    def write_secret(self, path, secret_data, mount_point='secret'):
-        client = self._get_client()
-        if not client: return False
-
-        try:
-            if mount_point.lower() == 'cubbyhole':
-                client.write(f"cubbyhole/{path}", **secret_data)
-            else:
-                client.secrets.kv.v2.create_or_update_secret(
-                    path=path, 
-                    secret=secret_data, 
-                    mount_point=mount_point
-                )
-            print(f"✅ Successfully wrote secret to {mount_point}/{path}")
-            return True
-        except Exception as e:
-            print(f"❌ Error writing secret to Vault: {e}")
-            return False
-
-    def resolve_mapped_config(self, config):
-        results = {}
-        mount_point = config.get("mount", "kvv2")
-        
-        for secret_def in config.get("secrets", []):
-            name = secret_def["name"]
-            path = secret_def["path"]
-            
-            data = self.read_secret(path=path, mount_point=mount_point)
-            if data:
-                results[name] = data.get(name, data)
-            else:
-                results[name] = None
-                
-        return results
-
     def ensure_valid_token(self, interactive=False):
         while True:
             # 1. Try Local GPG Cache or Memory (Human Dev Workflow)
@@ -510,181 +434,44 @@ class HashiVault:
             print("🔄 Checking for new Vault secrets...")
             # The loop goes back to the top and checks load_secrets() again!
 
+    #
+    # Secrets
+    #
+    def read_secret(self, path, mount_point='secret'):
+        client = self._get_client()
+        if not client: return None
 
-    def create_or_update_approle(self, role_name, policies, ttl="1h"):
+        try:
+            if mount_point.lower() == 'cubbyhole':
+                response = client.read(f"cubbyhole/{path}")
+                if response and 'data' in response:
+                    return response['data']
+                return None
+            else:
+                response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount_point)
+                return response['data']['data']
+        except Exception as e:
+            print(f"❌ Error reading {mount_point}/{path}: {e}")
+            return None
+
+    def write_secret(self, path, secret_data, mount_point='secret'):
         client = self._get_client()
         if not client: return False
+
         try:
-            client.auth.approle.create_or_update_approle(
-                role_name=role_name,
-                token_policies=policies,
-                token_ttl=ttl,
-                bind_secret_id=True
-            )
+            if mount_point.lower() == 'cubbyhole':
+                client.write(f"cubbyhole/{path}", **secret_data)
+            else:
+                client.secrets.kv.v2.create_or_update_secret(
+                    path=path, 
+                    secret=secret_data, 
+                    mount_point=mount_point
+                )
+            print(f"✅ Successfully wrote secret to {mount_point}/{path}")
             return True
         except Exception as e:
-            print(f"❌ Error setting up AppRole {role_name}: {e}")
+            print(f"❌ Error writing secret to Vault: {e}")
             return False
-
-    def approle_login(self, vault_url, role_id, secret_id):
-        client = hvac.Client(url=vault_url, verify=False)
-        try:
-            res = client.auth.approle.login(role_id=role_id, secret_id=secret_id)
-            self._memory_token = res['auth']['client_token']
-            self._memory_url = vault_url
-            # BUGFIX: Track actual expiration
-            lease = res['auth'].get('lease_duration', 3600)
-            self._memory_expiry = int(time.time()) + lease
-            print("✅ AppRole login successful. Token stored in memory.")
-            return True
-        except Exception as e:
-            print(f"❌ AppRole authentication failed: {e}")
-            return False
-
-    def get_approle_credentials(self, role_name):
-        client = self._get_client()
-        if not client: return None
-        try:
-            role_id = client.auth.approle.read_role_id(role_name=role_name)['data']['role_id']
-            secret_id = client.auth.approle.generate_secret_id(role_name=role_name)['data']['secret_id']
-            return {"role_id": role_id, "secret_id": secret_id}
-        except Exception as e:
-            print(f"❌ Error fetching AppRole creds: {e}")
-            return None
-
-    def create_manager_policy(self, manager_name, target_role):
-        """Creates a policy allowing a manager to issue SecretIDs for a target role."""
-        client = self._get_client()
-        if not client: return None
-
-        policy_name = f"manager-{manager_name}-for-{target_role}"
-        # Policy: Only allow generating SecretIDs for the specific target
-        policy_hcl = f"""
-        path "auth/approle/role/{target_role}/secret-id" {{
-          capabilities = ["update"]
-        }}
-        """
-        
-        try:
-            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
-            return policy_name
-        except Exception as e:
-            print(f"❌ Failed to create manager policy: {e}")
-            return None
-
-    def create_minimal_policy(self, role_name, secret_path, gcp_roleset=None):
-        """Creates a standard restricted policy for a specific AppRole (KVv2 Aware)."""
-        client = self._get_client()
-        if not client: return None
-
-        policy_name = f"policy-{role_name}"
-        
-        # BUGFIX: Handle KVv2 data/ and metadata/ routing
-        # If the user passes 'kv/my-app', we split it to 'kv/data/my-app'
-        parts = secret_path.split('/', 1)
-        if len(parts) > 1:
-            mount = parts[0]
-            path = parts[1]
-            data_path = f"{mount}/data/{path}"
-            meta_path = f"{mount}/metadata/{path}"
-        else:
-            data_path = secret_path
-            meta_path = secret_path
-
-        policy_hcl = f"""
-        # Allow reading the actual secret data
-        path "{data_path}/*" {{ capabilities = ["read", "list"] }}
-        path "{data_path}"   {{ capabilities = ["read", "list"] }}
-        
-        # Allow reading the secret metadata (required by many tools)
-        path "{meta_path}/*" {{ capabilities = ["read", "list"] }}
-        path "{meta_path}"   {{ capabilities = ["read", "list"] }}
-        """
-
-        if gcp_roleset:
-            policy_hcl += f"""
-            # Allow generating dynamic GCP OAuth tokens for {gcp_roleset}
-            path "gcp/token/{gcp_roleset}" {{
-              capabilities = ["read"]
-            }}
-            """
-        
-        try:
-            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
-            print(f"✅ Created minimal KVv2 policy: {policy_name}")
-            return policy_name
-        except Exception as e:
-            print(f"❌ Failed to create policy: {e}")
-            return None
-
-    def setup_automated_approle(self, role_name, secret_path):
-        """High-level helper to create policy and role in one shot."""
-        # 1. Create the restricted policy
-        policy_name = self.create_minimal_policy(role_name, secret_path)
-        if not policy_name: return False
-
-        # 2. Create the AppRole linked to that policy
-        return self.create_or_update_approle(role_name, [policy_name])
-
-    def list_approles(self):
-        """Fetches a list of all configured AppRoles."""
-        client = self._get_client()
-        if not client: return None
-        try:
-            # hvac returns a dict with 'keys' if successful
-            res = client.auth.approle.list_roles()
-            return res.get('data', {}).get('keys', [])
-        except Exception as e:
-            # A 404/InvalidPath usually just means no roles exist yet
-            if "404" in str(e): return []
-            print(f"❌ Error listing AppRoles: {e}")
-            return None
-
-    def delete_approle(self, role_name):
-        """Deletes a specific AppRole."""
-        client = self._get_client()
-        if not client: return False
-        try:
-            client.auth.approle.delete_role(role_name=role_name)
-            return True
-        except Exception as e:
-            print(f"❌ Error deleting AppRole {role_name}: {e}")
-            return False
-
-    def delete_policy(self, policy_name):
-        """Deletes a specific Vault policy."""
-        client = self._get_client()
-        if not client: return False
-        try:
-            client.sys.delete_policy(name=policy_name)
-            return True
-        except Exception as e:
-            # Don't print an error if it just doesn't exist
-            if "404" not in str(e):
-                print(f"⚠️ Could not delete policy {policy_name}: {e}")
-            return False
-
-    def lookup_token(self):
-        """Fetches metadata about the currently active token."""
-        client = self._get_client()
-        if not client: return None
-        try:
-            res = client.auth.token.lookup_self()
-            return res.get('data', {})
-        except Exception as e:
-            print(f"❌ Error looking up token: {e}")
-            return None
-
-    def read_approle(self, role_name):
-        """Fetches detailed properties of a specific AppRole."""
-        client = self._get_client()
-        if not client: return None
-        try:
-            res = client.auth.approle.read_role(role_name=role_name)
-            return res.get('data', {})
-        except Exception as e:
-            print(f"❌ Error reading AppRole {role_name}: {e}")
-            return None
 
     def list_secrets(self, path, mount_point='secret'):
         client = self._get_client()
@@ -755,6 +542,224 @@ class HashiVault:
 
         yield from _recurse(base_path, is_folder=True)
 
+    def resolve_mapped_config(self, config):
+        results = {}
+        mount_point = config.get("mount", "kvv2")
+        
+        for secret_def in config.get("secrets", []):
+            name = secret_def["name"]
+            path = secret_def["path"]
+            
+            data = self.read_secret(path=path, mount_point=mount_point)
+            if data:
+                results[name] = data.get(name, data)
+            else:
+                results[name] = None
+                
+        return results
+
+    #
+    #  RAW Data
+    #
+    def read_raw_path(self, path):
+        """Reads the raw data from any Vault API path, handling both Vault-wrapped and raw responses."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            if path.endswith('/'):
+                res = client.list(path)
+            else:
+                res = client.read(path)
+
+            if not res: 
+                return None
+            
+            if 'data' in res and 'request_id' in res:
+                return res['data']
+            
+            return res
+        except Exception as e:
+            print(f"❌ Error reading raw path '{path}': {e}")
+            return None
+
+    #
+    # AppRoles
+    #
+    def approle_login(self, vault_url, role_id, secret_id):
+        client = hvac.Client(url=vault_url, verify=False)
+        try:
+            res = client.auth.approle.login(role_id=role_id, secret_id=secret_id)
+            self._memory_token = res['auth']['client_token']
+            self._memory_url = vault_url
+            lease = res['auth'].get('lease_duration', 3600)
+            self._memory_expiry = int(time.time()) + lease
+            print("✅ AppRole login successful. Token stored in memory.")
+            return True
+        except Exception as e:
+            print(f"❌ AppRole authentication failed: {e}")
+            return False
+
+    def create_or_update_approle(self, role_name, policies, ttl="1h"):
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.auth.approle.create_or_update_approle(
+                role_name=role_name,
+                token_policies=policies,
+                token_ttl=ttl,
+                bind_secret_id=True
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error setting up AppRole {role_name}: {e}")
+            return False
+
+    def read_approle(self, role_name):
+        """Fetches detailed properties of a specific AppRole."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.auth.approle.read_role(role_name=role_name)
+            return res.get('data', {})
+        except Exception as e:
+            print(f"❌ Error reading AppRole {role_name}: {e}")
+            return None
+
+    def get_approle_credentials(self, role_name):
+        client = self._get_client()
+        if not client: return None
+        try:
+            role_id = client.auth.approle.read_role_id(role_name=role_name)['data']['role_id']
+            secret_id = client.auth.approle.generate_secret_id(role_name=role_name)['data']['secret_id']
+            return {"role_id": role_id, "secret_id": secret_id}
+        except Exception as e:
+            print(f"❌ Error fetching AppRole creds: {e}")
+            return None
+
+    def list_approles(self):
+        """Fetches a list of all configured AppRoles."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            # hvac returns a dict with 'keys' if successful
+            res = client.auth.approle.list_roles()
+            return res.get('data', {}).get('keys', [])
+        except Exception as e:
+            # A 404/InvalidPath usually just means no roles exist yet
+            if "404" in str(e): return []
+            print(f"❌ Error listing AppRoles: {e}")
+            return None
+
+    def delete_approle(self, role_name):
+        """Deletes a specific AppRole."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.auth.approle.delete_role(role_name=role_name)
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting AppRole {role_name}: {e}")
+            return False
+
+    def create_manager_policy(self, manager_name, target_role):
+        """Creates a policy allowing a manager to issue SecretIDs for a target role."""
+        client = self._get_client()
+        if not client: return None
+
+        policy_name = f"manager-{manager_name}-for-{target_role}"
+        # Policy: Only allow generating SecretIDs for the specific target
+        policy_hcl = f"""
+        path "auth/approle/role/{target_role}/secret-id" {{
+          capabilities = ["update"]
+        }}
+        """
+        
+        try:
+            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
+            return policy_name
+        except Exception as e:
+            print(f"❌ Failed to create manager policy: {e}")
+            return None
+
+    # gcp tokens
+    def create_minimal_policy(self, role_name, secret_path, gcp_roleset=None):
+        """Creates a standard restricted policy for a specific AppRole (KVv2 Aware)."""
+        client = self._get_client()
+        if not client: return None
+
+        policy_name = f"policy-{role_name}"
+        
+        # BUGFIX: Handle KVv2 data/ and metadata/ routing
+        # If the user passes 'kv/my-app', we split it to 'kv/data/my-app'
+        parts = secret_path.split('/', 1)
+        if len(parts) > 1:
+            mount = parts[0]
+            path = parts[1]
+            data_path = f"{mount}/data/{path}"
+            meta_path = f"{mount}/metadata/{path}"
+        else:
+            data_path = secret_path
+            meta_path = secret_path
+
+        policy_hcl = f"""
+        # Allow reading the actual secret data
+        path "{data_path}/*" {{ capabilities = ["read", "list"] }}
+        path "{data_path}"   {{ capabilities = ["read", "list"] }}
+        
+        # Allow reading the secret metadata (required by many tools)
+        path "{meta_path}/*" {{ capabilities = ["read", "list"] }}
+        path "{meta_path}"   {{ capabilities = ["read", "list"] }}
+        """
+
+        if gcp_roleset:
+            policy_hcl += f"""
+            # Allow generating dynamic GCP OAuth tokens for {gcp_roleset}
+            path "gcp/token/{gcp_roleset}" {{
+              capabilities = ["read"]
+            }}
+            """
+        
+        try:
+            client.sys.create_or_update_policy(name=policy_name, policy=policy_hcl)
+            print(f"✅ Created minimal KVv2 policy: {policy_name}")
+            return policy_name
+        except Exception as e:
+            print(f"❌ Failed to create policy: {e}")
+            return None
+
+    def setup_automated_approle(self, role_name, secret_path):
+        """High-level helper to create policy and role in one shot."""
+        # 1. Create the restricted policy
+        policy_name = self.create_minimal_policy(role_name, secret_path)
+        if not policy_name: return False
+
+        # 2. Create the AppRole linked to that policy
+        return self.create_or_update_approle(role_name, [policy_name])
+
+    def delete_policy(self, policy_name):
+        """Deletes a specific Vault policy."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.sys.delete_policy(name=policy_name)
+            return True
+        except Exception as e:
+            # Don't print an error if it just doesn't exist
+            if "404" not in str(e):
+                print(f"⚠️ Could not delete policy {policy_name}: {e}")
+            return False
+
+    def lookup_token(self):
+        """Fetches metadata about the currently active token."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.auth.token.lookup_self()
+            return res.get('data', {})
+        except Exception as e:
+            print(f"❌ Error looking up token: {e}")
+            return None
+
     def get_gcp_token(self, roleset_name, mount_point='gcp'):
         """Generates a dynamic, short-lived GCP OAuth token from Vault."""
         client = self._get_client()
@@ -801,6 +806,9 @@ class HashiVault:
             print(f"❌ Error setting OIDC issuer: {e}")
             return False
 
+    #
+    # secret engines
+    #
     def setup_gcp_engine(self, creds_json, mount_point='gcp'):
         """Phase 1: Enables GCP engine and configures it with the Master JSON key."""
         client = self._get_client()
@@ -885,6 +893,7 @@ class HashiVault:
             print(f"❌ Error listing leases for {prefix}: {e}")
             return []
 
+<<<<<<< Updated upstream
     def list_engines(self, backend_type=None):
         """Fetches a list of mounted secrets engines, optionally filtered by type."""
         client = self._get_client()
@@ -911,6 +920,9 @@ class HashiVault:
 
 
 
+=======
+# ----------------------------------------------------------------------------
+>>>>>>> Stashed changes
 
 
 class GCPSecretManager:
@@ -937,7 +949,7 @@ class GCPSecretManager:
             print(f"❌ Failed to fetch {secret_id} from GSM: {e}")
             return None
 
-
+# ----------------------------------------------------------------------------
 
 
 class RemoteDesktop:

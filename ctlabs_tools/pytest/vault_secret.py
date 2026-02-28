@@ -59,8 +59,36 @@ def main():
         sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # BACKEND MANAGER
+    # VALIDATION: All standard commands require a valid path
     # -------------------------------------------------------------------------
+    path = args.arg1
+    if not path:
+        print("❌ Error: 'path' is required for this command.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.command == "raw":
+        data = vault.read_raw_path(path)
+        if data:
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"⚠️ No data found at {path}")
+        sys.exit(0)
+
+    # Split the mount point from the secret path
+    parts = path.split('/', 1)
+    if len(parts) < 2:
+        print("❌ Error: Path must include the mount point (e.g., kvv2/my-secret)", file=sys.stderr)
+        sys.exit(1)
+        
+    mount_point, secret_path = parts[0], parts[1]
+
+    # -------------------------------------------------------------------------
+    # Commands
+    # -------------------------------------------------------------------------
+
+    #
+    # backend
+    #
     if args.command == "backend":
         provider = args.arg1.lower()
         action = args.arg2.lower()
@@ -155,33 +183,9 @@ def main():
             print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
             sys.exit(0)
 
-    # -------------------------------------------------------------------------
-    # VALIDATION: All standard commands require a valid path
-    # -------------------------------------------------------------------------
-    path = args.arg1
-    if not path:
-        print("❌ Error: 'path' is required for this command.", file=sys.stderr)
-        sys.exit(1)
-
-    if args.command == "raw":
-        data = vault.read_raw_path(path)
-        if data:
-            print(json.dumps(data, indent=2))
-        else:
-            print(f"⚠️ No data found at {path}")
-        sys.exit(0)
-
-    # Split the mount point from the secret path
-    parts = path.split('/', 1)
-    if len(parts) < 2:
-        print("❌ Error: Path must include the mount point (e.g., kvv2/my-secret)", file=sys.stderr)
-        sys.exit(1)
-        
-    mount_point, secret_path = parts[0], parts[1]
-
-    # -------------------------------------------------------------------------
-    # EXISTING COMMANDS
-    # -------------------------------------------------------------------------
+    #
+    # write
+    #
     if args.command == "write":
         if not args.data:
             print("❌ Error: --data JSON string is required to write a secret.")
@@ -195,6 +199,9 @@ def main():
         if vault.write_secret(path=secret_path, secret_data=secret_dict, mount_point=mount_point):
             print(f"✅ Successfully wrote data to {path}")
 
+    #
+    # read
+    #
     elif args.command == "read":
         # 3. SMART ROUTING: Auto-detect system paths vs KV paths
         known_raw_mounts = ["sys", "auth", "identity", "pki", "transit"]
@@ -212,6 +219,9 @@ def main():
         else:
             print(f"⚠️ No data found at {path}")
 
+    #
+    # list
+    #
     elif args.command == "list":
         keys = vault.list_secrets(path=secret_path, mount_point=mount_point)
         if keys:
@@ -227,6 +237,9 @@ def main():
             else:
                 print(f"ℹ️ No paths or secrets found at {path}")
 
+    #
+    # search
+    #
     elif args.command == "search":
         # 4. PATTERN ALIAS: Take it from the flag OR the positional argument
         pattern = args.pattern or args.arg2
@@ -253,7 +266,9 @@ def main():
         if not found_any:
             print(f"⚠️ Could not find any paths or keys matching the pattern '{pattern}'.")
 
-    # 5. GET-CREDS
+    #
+    # get-creds
+    #
     elif args.command in ["get-creds"]:
         if path.startswith("gcp/"):
             parts = path.split('/')
@@ -294,8 +309,9 @@ def main():
             print(f"❌ Error: 'get-creds' currently only supports GCP rolesets via this script.", file=sys.stderr)
             sys.exit(1)
 
-
-    # 6. LEASES
+    #
+    # leases
+    #
     elif args.command == "leases":
         if path.startswith("auth/") or mount_point == "auth":
             print("ℹ️  Vault Architecture Note:")
