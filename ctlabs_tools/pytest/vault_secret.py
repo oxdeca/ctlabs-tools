@@ -271,19 +271,21 @@ def main():
             if token:
                 print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
                 print(f"# ✅ Dynamically generated GCP Token at '{dynamic_mount}/'!", file=sys.stderr)
-                
                 # 2. Pure introspection
                 metadata = vault.get_gcp_token_info(token)
                 
-                if metadata and "email" in metadata:
-                    email = metadata.get("email")
+                # Check for expires_in instead of email!
+                if metadata and "expires_in" in metadata:
+                    # Fallback gracefully if the "email" scope wasn't requested
+                    email = metadata.get("email", f"Vault Managed Account ({roleset_name})")
                     expires_in = int(metadata.get("expires_in", 3600))
                     mins = expires_in // 60
                     
                     print(f"# 👤 Authenticated as: {email}", file=sys.stderr)
                     print(f"# ⏳ Valid for exactly {mins} minutes ({expires_in}s).", file=sys.stderr)
-                elif metadata.get("error"):
-                    print(f"# ⚠️ Token validation warning: {metadata['error']}", file=sys.stderr)
+                    
+                elif metadata and metadata.get("error"):
+                    print(f"# ⚠️ Token validation warning: {metadata['error']}", file=sys.stderr)                
             else:
                 sys.exit(1)
         else:

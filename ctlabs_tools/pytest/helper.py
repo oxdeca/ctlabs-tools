@@ -831,7 +831,10 @@ class HashiVault:
                     f'{mount_point}/roleset/{name}',
                     project=project_id,
                     secret_type="access_token",
-                    token_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    token_scopes=[
+                        "https://www.googleapis.com/auth/cloud-platform",
+                        "https://www.googleapis.com/auth/userinfo.email"
+                    ],
                     bindings=bindings_hcl
                 )
                 print(f"✅ Created GCP roleset '{name}' in project '{project_id}'")
