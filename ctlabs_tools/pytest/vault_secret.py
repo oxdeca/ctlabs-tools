@@ -74,7 +74,6 @@ def main():
         sa_email = f"{sa_name}@{project_id}.iam.gserviceaccount.com"
 
         if action == "create":
-            # UPDATED PRINT: Show the new mount point
             print(f"🚀 Initializing Zero-Touch GCP Secrets Engine at '{custom_mount}/'...")
             
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
@@ -82,25 +81,31 @@ def main():
             
             print(f"  ├─ Granting IAM Permissions (Polling for GCP synchronization)...")
             
-            iam_success = False
-            for attempt in range(1, 13):
-                if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"], ignore_errors=True, quiet=True):
-                    iam_success = True
-                    break
-                print(f"  ⏳ GCP IAM settling... Retrying in 5s (Attempt {attempt}/12)")
-                time.sleep(5)
-                
-            if not iam_success:
-                print("❌ Error: Service account failed to propagate to GCP IAM within 60 seconds.", file=sys.stderr)
-                sys.exit(1)
-                
-            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"])
-            run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/resourcemanager.projectIamAdmin"])
+            # 🧠 SMART POLLING: Loop through all required roles and poll GCP until each one is accepted
+            roles_to_grant = [
+                "roles/iam.serviceAccountAdmin",
+                "roles/iam.serviceAccountKeyAdmin",
+                "roles/resourcemanager.projectIamAdmin"
+            ]
+            
+            for role in roles_to_grant:
+                iam_success = False
+                for attempt in range(1, 13):
+                    if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True):
+                        iam_success = True
+                        break
+                    
+                    # Only print the retry message if it failed
+                    print(f"  ⏳ GCP IAM settling... Retrying {role.split('/')[1]} in 5s (Attempt {attempt}/12)")
+                    time.sleep(5)
+                    
+                if not iam_success:
+                    print(f"❌ Error: Failed to grant {role} within 60 seconds.", file=sys.stderr)
+                    sys.exit(1)
             
             print(f"  ├─ Generating JSON Key in-memory...")
             creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project_id], capture_json=True)
             
-            # UPDATED PRINT & METHOD CALL: Pass the custom_mount
             print(f"  ├─ Configuring Vault Engine at '{custom_mount}/'...")
             if not vault.setup_gcp_engine(creds_json=creds_json, mount_point=custom_mount):
                 print("❌ Aborting setup due to Vault engine configuration failure.", file=sys.stderr)
@@ -113,7 +118,6 @@ def main():
               }}
             """
             
-            # UPDATED METHOD CALL: Pass the custom_mount
             if not vault.create_gcp_roleset(name="terraform-runner", project_id=project_id, bindings_hcl=bindings_hcl, mount_point=custom_mount):
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
