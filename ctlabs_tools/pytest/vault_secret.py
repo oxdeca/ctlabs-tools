@@ -82,14 +82,16 @@ def main():
 
         # 3. NEW LIST ACTION
         if action == "list":
-            engines = vault.list_gcp_engines()
+            # Pass the dynamically captured 'provider' (e.g., 'gcp', 'aws', 'database')
+            engines = vault.list_engines(backend_type=provider)
+            
             if engines is None:
                 sys.exit(1)
                 
             if not engines:
-                print("ℹ️ No GCP Secrets Engines are currently mounted.")
+                print(f"ℹ️ No '{provider}' Secrets Engines are currently mounted.")
             else:
-                print("🌐 Active GCP Secrets Engines:")
+                print(f"🌐 Active '{provider}' Secrets Engines:")
                 for e in engines:
                     print(f"  ├─ {e}")
             sys.exit(0)

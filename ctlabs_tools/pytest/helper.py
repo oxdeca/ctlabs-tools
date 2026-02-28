@@ -865,28 +865,28 @@ class HashiVault:
             print(f"❌ Error listing leases for {prefix}: {e}")
             return []
 
-    def list_gcp_engines(self):
-        """Fetches a list of all mounted GCP secrets engines."""
+    def list_engines(self, backend_type=None):
+        """Fetches a list of mounted secrets engines, optionally filtered by type."""
         client = self._get_client()
         if not client: return None
         try:
-            # Fetch all mounts
-            engines = client.sys.read_mounts()
+            engines = client.read("sys/mounts")
             
-            # hvac sometimes returns the dict directly, sometimes wrapped in 'data'
+            if not engines:
+                return []
+                
             data = engines.get('data', engines) if isinstance(engines, dict) else engines
             
-            gcp_mounts = []
+            mounts = []
             for path, config in data.items():
-                if config.get('type') == 'gcp':
-                    gcp_mounts.append(path)
+                # If backend_type is provided, filter by it. Otherwise, return all!
+                if backend_type is None or config.get('type') == backend_type:
+                    mounts.append(path)
                     
-            return gcp_mounts
+            return mounts
         except Exception as e:
-            if "permission denied" in str(e).lower() or e.__class__.__name__ == 'Forbidden':
-                print("❌ Permission Denied: Your policy needs 'read' access to 'sys/mounts'.")
-            else:
-                print(f"❌ Error listing GCP mounts: {e}")
+            error_msg = str(e).strip()
+            print(f"❌ Error listing {backend_type or 'all'} mounts: {error_msg if error_msg else e.__class__.__name__}", file=sys.stderr)
             return None
 
 
