@@ -21,15 +21,17 @@ def get_args():
     p_backend.add_argument("provider", choices=["gcp"], help="The backend provider (e.g., gcp)")
     p_backend.add_argument("action", choices=["create", "destroy", "list"], help="The action to perform")
     p_backend.add_argument("project_id", nargs="?", default="", help="GCP Project ID (required for create/destroy)")
+    p_backend.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name (default: vault-gcp-master)")
+    p_backend.add_argument("--roleset-name", default="terraform-runner", help="Name of the dynamic roleset (default: terraform-runner)")
 
     # 2. RAW API
     p_raw = subparsers.add_parser("raw", help="Read raw JSON from any Vault API path")
     p_raw.add_argument("path", help="The exact Vault API path")
 
-    # 3. GET-CREDS (Dynamic Identity)
-    p_creds = subparsers.add_parser("get-creds", help="Generate dynamic credentials")
-    p_creds.add_argument("path", help="The engine path (e.g., gcp/my-project)")
-    p_creds.add_argument("roleset", nargs="?", default="", help="Optional roleset name (defaults to terraform-runner)")
+    # 3. GET-TOKEN (Dynamic Identity)
+    p_token = subparsers.add_parser("get-token", help="Generate dynamic OAuth tokens")
+    p_token.add_argument("path", help="The engine path (e.g., gcp/my-project)")
+    p_token.add_argument("roleset", nargs="?", default="", help="Optional roleset name (defaults to terraform-runner)")
 
     # 4 INFO (Introspect active tokens)
     p_info = subparsers.add_parser("info", help="Get information about active sessions/tokens")
@@ -142,7 +144,7 @@ def main():
             sys.exit(0)
 
         custom_mount = f"gcp/{project_id}"
-        sa_name = "vault-gcp-master"
+        sa_name = args.sa_name
         sa_email = f"{sa_name}@{project_id}.iam.gserviceaccount.com"
 
         if action == "create":
@@ -170,13 +172,14 @@ def main():
                 print("❌ Aborting setup due to Vault engine configuration failure.", file=sys.stderr)
                 sys.exit(1)
             
-            print(f"  ├─ Creating 'terraform-runner' roleset...")
+            roleset_name = args.roleset_name
+            print(f"  ├─ Creating '{roleset_name}' roleset...")
             bindings_hcl = f"""
               resource "//cloudresourcemanager.googleapis.com/projects/{project_id}" {{
                 roles = ["roles/editor"]
               }}
             """
-            if not vault.create_gcp_roleset(name="terraform-runner", project_id=project_id, bindings_hcl=bindings_hcl, mount_point=custom_mount):
+            if not vault.create_gcp_roleset(name=roleset_name, project_id=project_id, bindings_hcl=bindings_hcl, mount_point=custom_mount):
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
             
@@ -195,7 +198,7 @@ def main():
     # -------------------------------------------------------------------------
     # 2. GCP DYNAMIC COMMANDS (Custom Path Logic)
     # -------------------------------------------------------------------------
-    if cmd in ["get-creds", "leases"]:
+    if cmd in ["get-token", "leases"]:
         path = args.path
         if path.startswith("gcp/"):
             parts = path.split('/')
@@ -206,7 +209,7 @@ def main():
                 dynamic_mount = path
                 roleset_name = args.roleset if args.roleset else "terraform-runner"
             
-            if cmd == "get-creds":
+            if cmd == "get-token":
                 token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
                 if token:
                     print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
