@@ -65,6 +65,11 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             if capture_json:
                 return res.stdout.strip()
             return True
+        except FileNotFoundError:
+            # Catch missing executables beautifully
+            print(f"\n❌ Environment Error: '{cmd_list[0]}' command not found.", file=sys.stderr)
+            print("Please ensure the Google Cloud SDK is installed and available in your PATH.", file=sys.stderr)
+            sys.exit(1)
         except subprocess.CalledProcessError as e:
             if attempt < retries:
                 if not quiet:
@@ -82,7 +87,6 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}", file=sys.stderr)
             print(f"Error output: {e.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
-
 
 def main():
     args = get_args()
@@ -108,7 +112,13 @@ def main():
     if cmd == "backend":
         provider = args.provider
         action = args.action
+        
+        # 🧠 SMART SANITIZER: Clean up accidental 'gcp/' prefixes or trailing slashes
         project_id = args.project_id
+        if project_id:
+            if project_id.startswith("gcp/"):
+                project_id = project_id[4:]
+            project_id = project_id.strip("/")
             
         if action in ["create", "destroy"] and not project_id:
             print(f"❌ Error: Project ID is required for '{action}'. Example: vault-secret backend {provider} {action} <project_id>", file=sys.stderr)
