@@ -74,15 +74,14 @@ def main():
         sa_email = f"{sa_name}@{project_id}.iam.gserviceaccount.com"
 
         if action == "create":
-            print(f"🚀 Initializing Zero-Touch GCP Secrets Engine...")
+            # UPDATED PRINT: Show the new mount point
+            print(f"🚀 Initializing Zero-Touch GCP Secrets Engine at '{custom_mount}/'...")
             
             print(f"  ├─ Creating Service Account '{sa_name}' in GCP...")
             run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", project_id])
             
             print(f"  ├─ Granting IAM Permissions (Polling for GCP synchronization)...")
             
-            # 🧠 SMART POLLING: Try to attach the first IAM role. If GCP says the account doesn't 
-            # exist yet, wait 5s and retry. Max timeout: 60 seconds (12 attempts).
             iam_success = False
             for attempt in range(1, 13):
                 if run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountAdmin"], ignore_errors=True, quiet=True):
@@ -95,15 +94,15 @@ def main():
                 print("❌ Error: Service account failed to propagate to GCP IAM within 60 seconds.", file=sys.stderr)
                 sys.exit(1)
                 
-            # If the loop above succeeded, GCP's databases are synced! We can fire the next two instantly.
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"])
             run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project_id, f"--member=serviceAccount:{sa_email}", "--role=roles/resourcemanager.projectIamAdmin"])
             
             print(f"  ├─ Generating JSON Key in-memory...")
             creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project_id], capture_json=True)
             
-            print(f"  ├─ Configuring Vault Engine...")
-            if not vault.setup_gcp_engine(creds_json=creds_json):
+            # UPDATED PRINT & METHOD CALL: Pass the custom_mount
+            print(f"  ├─ Configuring Vault Engine at '{custom_mount}/'...")
+            if not vault.setup_gcp_engine(creds_json=creds_json, mount_point=custom_mount):
                 print("❌ Aborting setup due to Vault engine configuration failure.", file=sys.stderr)
                 sys.exit(1)
             
@@ -114,19 +113,19 @@ def main():
               }}
             """
             
-            # 🧠 Note: We can remove the sleep here because our create_gcp_roleset method inside helper.py 
-            # ALREADY has a built-in retry loop for handling the final IAM propagation delay!
-            if not vault.create_gcp_roleset(name="terraform-runner", project_id=project_id, bindings_hcl=bindings_hcl):
+            # UPDATED METHOD CALL: Pass the custom_mount
+            if not vault.create_gcp_roleset(name="terraform-runner", project_id=project_id, bindings_hcl=bindings_hcl, mount_point=custom_mount):
                 print("❌ Aborting setup due to Vault roleset creation failure.", file=sys.stderr)
                 sys.exit(1)
             
-            print("\n🎉 GCP Backend successfully created!")
+            print(f"\n🎉 GCP Backend successfully created at '{custom_mount}/'!")
             sys.exit(0)
 
         elif action == "destroy":
-            print(f"🧹 Tearing down GCP Secrets Engine & orphaned resources...")
+            # UPDATED PRINT & METHOD CALL: Pass the custom_mount
+            print(f"🧹 Tearing down GCP Secrets Engine at '{custom_mount}/'...")
             print(f"  ├─ Unmounting Vault engine...")
-            vault.teardown_gcp_engine()
+            vault.teardown_gcp_engine(mount_point=custom_mount)
             print(f"  ├─ Deleting Master Service Account '{sa_name}' from GCP...")
             run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project_id, "--quiet"], ignore_errors=True)
             print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
