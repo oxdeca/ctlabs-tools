@@ -3,6 +3,7 @@
 # License : MIT
 # -----------------------------------------------------------------------------
 
+import hvac
 import jmespath
 import json
 import os
