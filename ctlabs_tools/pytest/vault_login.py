@@ -184,7 +184,17 @@ def main():
         info = vault.lookup_token()
         print("\n🔐 Current Vault Token Info:")
         if info:
-            print(f"  • Display Name : {info.get('display_name', 'N/A')}")
+            display_name = info.get('display_name', 'N/A')
+            
+            # 🧠 SMART UX: Extract the exact AppRole name from the token metadata!
+            meta = info.get('meta', {})
+            if meta and 'role_name' in meta:
+                if display_name == "approle":
+                    display_name = f"approle-{meta['role_name']}"
+                else:
+                    display_name = f"{display_name}-{meta['role_name']}"
+
+            print(f"  • Display Name : {display_name}")
             print(f"  • Policies     : {', '.join(info.get('policies', []))}")
             print(f"  • Entity ID    : {info.get('entity_id', 'N/A')}")
             print(f"  • TTL          : {info.get('creation_ttl', 'N/A')}s")
