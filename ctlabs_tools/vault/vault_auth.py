@@ -69,7 +69,7 @@ def main():
     name = getattr(args, 'name', '')
 
     # Ensure name is provided for everything except 'list'
-    if action != "list" and not name:
+    if cmd != "alias" and action != "list" and not name:
         print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
         sys.exit(1)
 
