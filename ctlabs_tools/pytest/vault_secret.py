@@ -23,54 +23,54 @@ def get_args():
     p_backend.add_argument("project_id", nargs="?", default="", help="GCP Project ID (required for create/destroy)")
     p_backend.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name (default: vault-gcp-master)")
     p_backend.add_argument("--roleset-name", default="terraform-runner", help="Name of the dynamic roleset (default: terraform-runner)")
-    p_roleset.add_argument("--bindings", help="Path to a custom HCL bindings file")
 
-    # 1.5 ROLESET MANAGER
+    # 2 ROLESET MANAGER
     p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
     p_roleset.add_argument("action", choices=["create", "read", "list", "delete"], help="The action to perform")
     p_roleset.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_roleset.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset (required for create/read/delete)")
     p_roleset.add_argument("--roles", default="roles/editor", help="Comma-separated GCP roles to grant (used with 'create')")
+    p_roleset.add_argument("--bindings", help="Path to a custom HCL bindings file")
 
-    # 2. RAW API
+    # 3. RAW API
     p_raw = subparsers.add_parser("raw", help="Read raw JSON from any Vault API path")
     p_raw.add_argument("path", help="The exact Vault API path")
 
-    # 3. GET-TOKEN (Dynamic Identity)
+    # 4. GET-TOKEN (Dynamic Identity)
     p_token = subparsers.add_parser("get-token", help="Generate dynamic OAuth tokens")
     p_token.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_token.add_argument("roleset", nargs="?", default="", help="Optional roleset name (defaults to terraform-runner)")
 
-    # 4. EXEC (Secure Subprocess Wrapper)
+    # 5. EXEC (Secure Subprocess Wrapper)
     p_exec = subparsers.add_parser("exec", help="Run a command with dynamically injected GCP credentials")
     p_exec.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_exec.add_argument("roleset", nargs="?", default="", help="Optional roleset name")
     p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
 
-    # 5 INFO (Introspect active tokens)
+    # 6 INFO (Introspect active tokens)
     p_info = subparsers.add_parser("info", help="Get information about active sessions/tokens")
     p_info.add_argument("provider", choices=["gcp"], help="The provider to inspect (e.g., gcp)")
     p_info.add_argument("token", nargs="?", default="", help="Optional token string (defaults to env var)")
 
-    # 6. LEASES (Dynamic Identity)
+    # 7. LEASES (Dynamic Identity)
     p_leases = subparsers.add_parser("leases", help="List active leases/tokens")
     p_leases.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_leases.add_argument("roleset", nargs="?", default="", help="Optional roleset name")
 
-    # 7. WRITE (Static Secrets)
+    # 8. WRITE (Static Secrets)
     p_write = subparsers.add_parser("write", help="Write a static secret payload")
     p_write.add_argument("path", help="The Vault path (e.g., kvv2/apps/my-secret)")
     p_write.add_argument("--data", required=True, help="JSON string of the secret data")
 
-    # 8. READ (Static Secrets)
+    # 9. READ (Static Secrets)
     p_read = subparsers.add_parser("read", help="Read a static secret payload")
     p_read.add_argument("path", help="The Vault path (e.g., kvv2/apps/my-secret)")
 
-    # 9. LIST (Static Secrets)
+    # 10. LIST (Static Secrets)
     p_list = subparsers.add_parser("list", help="List folders or secret keys")
     p_list.add_argument("path", help="The Vault path (e.g., kvv2/apps)")
 
-    # 10. SEARCH (Static Secrets)
+    # 11. SEARCH (Static Secrets)
     p_search = subparsers.add_parser("search", help="Search folders, secrets, and payload keys")
     p_search.add_argument("path", help="The base Vault path to search")
     p_search.add_argument("pattern", help="Regex pattern to search for")
