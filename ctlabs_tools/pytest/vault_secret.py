@@ -44,7 +44,7 @@ def get_args():
     p_exec = subparsers.add_parser("exec", help="Run a command with dynamically injected GCP credentials")
     p_exec.add_argument("path", help="The engine path (e.g., gcp/my-project)")
     p_exec.add_argument("roleset", nargs="?", default="", help="Optional roleset name")
-    p_exec.add_argument("command", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--', e.g., -- terraform plan)")
+    p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
 
     # 5 INFO (Introspect active tokens)
     p_info = subparsers.add_parser("info", help="Get information about active sessions/tokens")
@@ -267,16 +267,36 @@ def main():
                 roleset_name = args.roleset if args.roleset else "terraform-runner"
             
             if cmd == "get-token":
-                # ... [Keep existing get-token logic] ...
-                pass
+                token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
+                if token:
+                    print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
+                    print(f'export CLOUDSDK_AUTH_ACCESS_TOKEN="{token}"')
+                    print(f"# ✅ Dynamically generated GCP Token at '{dynamic_mount}/'!", file=sys.stderr)
+                    
+                    metadata = vault.get_gcp_token_info(token)
+                    if metadata and "expires_in" in metadata:
+                        email = metadata.get("email", f"Vault Managed Account ({roleset_name})")
+                        expires_in = int(metadata.get("expires_in", 3600))
+                        mins = expires_in // 60
+                        print(f"# 👤 Authenticated as: {email}", file=sys.stderr)
+                        print(f"# ⏳ Valid for exactly {mins} minutes ({expires_in}s).", file=sys.stderr)
+                    elif metadata and "error" in metadata:
+                        print(f"# ⚠️ Could not fetch token details from Google: {metadata['error']}", file=sys.stderr)
+                    else:
+                        print(f"# ⚠️ Unexpected response from Google: {metadata}", file=sys.stderr)                
+                else:
+                    sys.exit(1)
+                sys.exit(0)
 
             elif cmd == "exec":
-                command = args.command
-                # Strip the '--' if the user provided it to separate the command
-                if command and command[0] == "--":
-                    command = command[1:]
+                # 🧠 FIX: Grab the renamed variable
+                command_list = args.exec_cmd
                 
-                if not command:
+                # Strip the '--' if the user provided it to separate the command
+                if command_list and command_list[0] == "--":
+                    command_list = command_list[1:]
+                
+                if not command_list:
                     print("❌ Error: No command provided to execute.", file=sys.stderr)
                     print("Usage: vault-secret exec gcp/my-project devops -- terraform plan", file=sys.stderr)
                     sys.exit(1)
@@ -292,14 +312,14 @@ def main():
                 os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = token
                 os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = token
                 
-                print(f"🚀 Executing: {' '.join(command)}\n" + "-"*40, file=sys.stderr)
+                print(f"🚀 Executing: {' '.join(command_list)}\n" + "-"*40, file=sys.stderr)
                 
                 try:
                     # Run the command and immediately exit with its return code!
                     import subprocess
-                    sys.exit(subprocess.run(command, env=os.environ).returncode)
+                    sys.exit(subprocess.run(command_list, env=os.environ).returncode)
                 except FileNotFoundError:
-                    print(f"\n❌ Error: Command not found: {command[0]}", file=sys.stderr)
+                    print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
                     sys.exit(1)
                 
             elif cmd == "leases":
