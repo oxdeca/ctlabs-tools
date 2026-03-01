@@ -106,7 +106,7 @@ def main():
     args = get_args()
     vault = HashiVault(timeout=args.timeout)
     
-    if not vault.ensure_valid_token(interactive=True):
+    if not vault.ensure_valid_token():
         sys.exit(1)
 
     cmd = args.command

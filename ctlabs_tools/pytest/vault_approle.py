@@ -46,7 +46,7 @@ def main():
     vault = HashiVault()
     
     # Ensure we have an admin token from vault-login (or env vars)
-    if not vault.ensure_valid_token(interactive=True):
+    if not vault.ensure_valid_token():
         sys.exit(1)
 
     if args.command == "create":
