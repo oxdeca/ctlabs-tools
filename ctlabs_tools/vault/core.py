@@ -840,6 +840,59 @@ class HashiVault:
             if "404" not in str(e): print(f"❌ Error listing {auth_type} groups: {e}")
             return []
 
+    # -------------------------------------------------------------------------
+    # IDENTITY ENTITY MANAGEMENT
+    # -------------------------------------------------------------------------
+    def create_entity(self, name, policies=None):
+        """Creates or updates a Vault Identity Entity."""
+        client = self._get_client()
+        if not client: return False
+        
+        payload = {}
+        if policies:
+            payload['policies'] = policies if isinstance(policies, list) else [p.strip() for p in policies.split(",")]
+            
+        try:
+            # Vault standardizes entity creation by name here
+            client.write(f"identity/entity/name/{name}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating entity '{name}': {e}")
+            return False
+
+    def read_entity(self, name):
+        """Reads configuration details for an entity."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"identity/entity/name/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading entity '{name}': {e}")
+            return None
+
+    def delete_entity(self, name):
+        """Deletes an identity entity."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"identity/entity/name/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting entity '{name}': {e}")
+            return False
+
+    def list_entities(self):
+        """Lists all identity entities."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list("identity/entity/name")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing entities: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 
 

@@ -41,6 +41,12 @@ def get_args():
     p_group.add_argument("--method", choices=["ldap", "okta"], default="ldap", help="Auth method (default: ldap)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
 
+    # 5. ENTITY
+    p_entity = subparsers.add_parser("entity", help="Manage Vault Identity Entities")
+    p_entity.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_entity.add_argument("name", nargs="?", default="", help="Name of the entity")
+    p_entity.add_argument("--policies", help="Comma-separated list of policies to assign")
+
     return parser.parse_args()
 
 def main():
@@ -201,6 +207,37 @@ def main():
             elif action == "delete":
                 if vault.delete_group(name, auth_type=method):
                     print(f"✅ Deleted group mapping '{name}' ({method}).")
+
+    # -------------------------------------------------------------------------
+    # 5. ENTITY MANAGEMENT (Identity Secrets Engine)
+    # -------------------------------------------------------------------------
+    elif cmd == "entity":
+        if action == "list":
+            entities = vault.list_entities()
+            if entities:
+                print("👤 Existing Identity Entities:")
+                for e in entities: print(f"  ├─ {e}")
+            else:
+                print("ℹ️ No entities found.")
+                
+        else:
+            if not name:
+                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+                sys.exit(1)
+                
+            if action in ["create", "update"]:
+                if vault.create_entity(name, policies=args.policies):
+                    print(f"✅ Entity '{name}' successfully created/updated.")
+                    
+            elif action in ["read", "info"]:
+                details = vault.read_entity(name)
+                if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ Entity '{name}' not found.")
+                
+            elif action == "delete":
+                if vault.delete_entity(name):
+                    print(f"✅ Deleted entity '{name}'.")
+
 
 if __name__ == "__main__":
     main()
