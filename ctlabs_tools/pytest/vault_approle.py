@@ -19,8 +19,8 @@ def get_args():
     create_parser.add_argument("--type",     choices=["standard", "manager"], default="standard", help="Type of role to create (default: standard)")
     create_parser.add_argument("--target",   help="Target role name (Required if type=manager)")
     create_parser.add_argument("--path",     help="Vault KV path to auto-generate a minimal read policy (e.g., kvv2/apps/my-app)")
-    create_parser.add_argument("--policies", help="Comma-separated list of existing policies (if not using auto-generation)")
-    create_parser.add_argument("--gcp-role", help="Optional GCP roleset name to grant token generation access (e.g., terraform-runner)")
+    # 🧠 UPDATED: Tell the user to pass the full engine path + roleset
+    create_parser.add_argument("--gcp-role", help="Full GCP path and roleset (e.g., gcp/ctlabs-prj-123/devops)")
 
     # Command: Get Credentials
     creds_parser = subparsers.add_parser("get-creds", help="Get RoleID and generate a new SecretID")
@@ -29,6 +29,10 @@ def get_args():
     # Command: List AppRoles
     list_parser = subparsers.add_parser("list", help="List all existing AppRoles")
     list_parser.add_argument("--details", action="store_true", help="Show policies and TTLs for each role")
+
+    # 🧠 NEW: Command: Info AppRole
+    info_parser = subparsers.add_parser("info", help="Show detailed configuration of a specific AppRole")
+    info_parser.add_argument("name", help="Name of the AppRole to inspect")
 
     # Command: Delete AppRole
     delete_parser = subparsers.add_parser("delete", help="Delete an AppRole and its associated default policy")
@@ -92,6 +96,15 @@ def main():
                             print(f"  - {r} (Error fetching details)")
                     else:
                         print(f"  - {r}")
+
+    # 🧠 NEW: Info Logic
+    elif args.command == "info":
+        details = vault.read_approle(args.name)
+        if details:
+            print(f"🔍 Configuration details for AppRole '{args.name}':")
+            print(json.dumps(details, indent=2))
+        else:
+            print(f"⚠️ AppRole '{args.name}' not found or permission denied.", file=sys.stderr)
 
     elif args.command == "delete":
         if vault.delete_approle(args.name):

@@ -761,9 +761,17 @@ class HashiVault:
         """
 
         if gcp_roleset:
+            # 🧠 SMART FIX: Automatically inject the /token/ pathing for the user
+            # e.g., "gcp/my-project/devops" -> "gcp/my-project/token/devops"
+            parts = gcp_roleset.rsplit('/', 1)
+            if len(parts) == 2:
+                gcp_path = f"{parts[0]}/token/{parts[1]}"
+            else:
+                gcp_path = f"gcp/token/{gcp_roleset}" # Fallback for old default mounts
+
             policy_hcl += f"""
             # Allow generating dynamic GCP OAuth tokens for {gcp_roleset}
-            path "gcp/token/{gcp_roleset}" {{
+            path "{gcp_path}" {{
               capabilities = ["read"]
             }}
             """
@@ -969,7 +977,6 @@ class HashiVault:
             error_msg = str(e).strip()
             print(f"⚠️ Could not disable GCP engine: {error_msg if error_msg else type(e).__name__}")
             return False
-
 
     def list_leases(self, prefix):
         """Lists active leases for ANY Vault secrets engine."""
