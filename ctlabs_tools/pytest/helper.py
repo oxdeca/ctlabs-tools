@@ -1073,23 +1073,47 @@ class HashiVault:
     # -------------------------------------------------------------------------
     # POLICY MANAGEMENT
     # -------------------------------------------------------------------------
+    def create_policy(self, name, rules):
+        """Creates or updates an ACL policy using the modern endpoint."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            # Directly hit the modern ACL path
+            client.write(f"sys/policies/acl/{name}", policy=rules)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating policy '{name}': {e}")
+            return False
+
     def read_policy(self, name):
-        """Reads an existing ACL policy."""
+        """Reads an existing ACL policy using the modern endpoint."""
         client = self._get_client()
         if not client: return None
         try:
-            return client.sys.read_policy(name=name)
+            res = client.read(f"sys/policies/acl/{name}")
+            return res.get('data', {}).get('policy') if res else None
         except Exception as e:
             if "404" not in str(e): print(f"❌ Error reading policy '{name}': {e}")
             return None
 
+    def delete_policy(self, name):
+        """Deletes an ACL policy using the modern endpoint."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"sys/policies/acl/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting policy '{name}': {e}")
+            return False
+
     def list_policies(self):
-        """Lists all ACL policies."""
+        """Lists all ACL policies using the modern endpoint."""
         client = self._get_client()
         if not client: return []
         try:
-            res = client.sys.list_policies()
-            return res.get('data', {}).get('policies', []) if res else []
+            res = client.list("sys/policies/acl")
+            return res.get('data', {}).get('keys', []) if res else []
         except Exception as e:
             print(f"❌ Error listing policies: {e}")
             return []

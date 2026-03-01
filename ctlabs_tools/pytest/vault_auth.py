@@ -151,8 +151,10 @@ def main():
             try:
                 with open(args.file, 'r') as f:
                     rules = f.read()
-                vault._get_client().sys.create_or_update_policy(name=name, policy=rules)
-                print(f"✅ Policy '{name}' successfully created/updated from {args.file}.")
+                    
+                # 🧠 FIX: Use our new clean abstraction layer
+                if vault.create_policy(name, rules):
+                    print(f"✅ Policy '{name}' successfully created/updated from {args.file}.")
             except Exception as e:
                 print(f"❌ Error managing policy '{name}': {e}", file=sys.stderr)
                 sys.exit(1)
