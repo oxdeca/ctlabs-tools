@@ -24,6 +24,13 @@ def get_args():
     p_backend.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name (default: vault-gcp-master)")
     p_backend.add_argument("--roleset-name", default="terraform-runner", help="Name of the dynamic roleset (default: terraform-runner)")
 
+    # 1.5 ROLESET MANAGER
+    p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
+    p_roleset.add_argument("action", choices=["create", "read", "list", "delete"], help="The action to perform")
+    p_roleset.add_argument("path", help="The engine path (e.g., gcp/my-project)")
+    p_roleset.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset (required for create/read/delete)")
+    p_roleset.add_argument("--roles", default="roles/editor", help="Comma-separated GCP roles to grant (used with 'create')")
+
     # 2. RAW API
     p_raw = subparsers.add_parser("raw", help="Read raw JSON from any Vault API path")
     p_raw.add_argument("path", help="The exact Vault API path")
@@ -194,6 +201,50 @@ def main():
             run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project_id, "--quiet"], ignore_errors=True)
             print("\n🎉 Backend successfully destroyed! No orphaned resources left behind.")
             sys.exit(0)
+    
+    if cmd == "roleset":
+        action = args.action
+        path = args.path.strip("/")
+        roleset_name = args.roleset_name
+        
+        if action in ["create", "read", "delete"] and not roleset_name:
+            print(f"❌ Error: 'roleset_name' is required for the '{action}' action.", file=sys.stderr)
+            sys.exit(1)
+
+        if action == "list":
+            keys = vault.list_gcp_rolesets(mount_point=path)
+            if keys:
+                print(f"👥 Active Rolesets at '{path}/':")
+                for k in keys:
+                    print(f"  ├─ {k}")
+            else:
+                print(f"ℹ️ No rolesets found at '{path}/'.")
+                
+        elif action == "read":
+            data = vault.read_gcp_roleset(name=roleset_name, mount_point=path)
+            if data:
+                print(json.dumps(data, indent=2))
+            else:
+                print(f"⚠️ Roleset '{roleset_name}' not found.")
+                
+        elif action == "delete":
+            vault.delete_gcp_roleset(name=roleset_name, mount_point=path)
+            
+        elif action == "create":
+            # Extract the project ID from the path (e.g., gcp/ctlabs-prj-123 -> ctlabs-prj-123)
+            project_id = path.split('/')[-1]
+            roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
+            
+            # Dynamically build the HCL bindings
+            bindings_hcl = f"""
+              resource "//cloudresourcemanager.googleapis.com/projects/{project_id}" {{
+                roles = [{", ".join(roles_list)}]
+              }}
+            """
+            print(f"🚀 Creating/Updating Roleset '{roleset_name}'...")
+            vault.create_gcp_roleset(name=roleset_name, project_id=project_id, bindings_hcl=bindings_hcl, mount_point=path)
+            
+        sys.exit(0)
 
     # -------------------------------------------------------------------------
     # 2. GCP DYNAMIC COMMANDS (Custom Path Logic)

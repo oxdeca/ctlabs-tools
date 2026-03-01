@@ -913,6 +913,42 @@ class HashiVault:
                     return False
         return False
 
+    def read_gcp_roleset(self, name, mount_point='gcp'):
+        """Reads the configuration of an existing GCP roleset."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f'{mount_point}/roleset/{name}')
+            return res.get('data') if res else None
+        except Exception as e:
+            print(f"❌ Error reading roleset '{name}': {e}")
+            return None
+
+    def delete_gcp_roleset(self, name, mount_point='gcp'):
+        """Deletes a GCP roleset and cleans up its underlying Service Account in GCP."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f'{mount_point}/roleset/{name}')
+            print(f"✅ Deleted roleset '{name}' at '{mount_point}/'. GCP Service Account queued for deletion.")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting roleset '{name}': {e}")
+            return False
+
+    def list_gcp_rolesets(self, mount_point='gcp'):
+        """Lists all configured rolesets under a specific GCP engine mount."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list(f'{mount_point}/roleset')
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            # Vault returns 404 on list if the path is empty
+            if "404" in str(e): return []
+            print(f"❌ Error listing rolesets at '{mount_point}/': {e}")
+            return []
+
     def teardown_gcp_engine(self, mount_point='gcp'):
         """Phase 3 (Cleanup): Disables the GCP secrets engine to clean up Vault."""
         client = self._get_client()
