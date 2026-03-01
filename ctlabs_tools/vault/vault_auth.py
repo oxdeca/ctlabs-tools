@@ -55,6 +55,15 @@ def get_args():
     p_alias.add_argument("alias_name", help="The login username or RoleID (e.g., p.smith)")
     p_alias.add_argument("--mount", default="userpass", help="The auth mount point (e.g., ldap, userpass, approle)")
 
+    # 7. KUBERNETES
+    p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles")
+    p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role")
+    p_k8s.add_argument("--sa-names", help="Comma-separated list of allowed K8s Service Accounts (required for create)")
+    p_k8s.add_argument("--sa-namespaces", help="Comma-separated list of allowed K8s Namespaces (required for create)")
+    p_k8s.add_argument("--policies", help="Comma-separated list of Vault policies to grant")
+    p_k8s.add_argument("--ttl", default="1h", help="Token TTL (default: 1h)")
+    
     return parser.parse_args()
 
 def main():
@@ -269,6 +278,37 @@ def main():
         elif action == "delete":
             if vault.delete_entity_alias(entity_name, alias_name, mount_point=mount):
                 print(f"✅ Alias '{alias_name}' ({mount}) successfully removed from Entity '{entity_name}'.")
+
+    # -------------------------------------------------------------------------
+    # 7. KUBERNETES MANAGEMENT
+    # -------------------------------------------------------------------------
+    elif cmd == "k8s":
+        if action == "list":
+            roles = vault.list_kubernetes_roles()
+            if roles:
+                print("⚓ Existing Kubernetes Roles:")
+                for r in roles: print(f"  ├─ {r}")
+            else:
+                print("ℹ️ No Kubernetes roles found.")
+                
+        else:
+            # Note: 'name' is already validated by the global check at the top
+            if action in ["create", "update"]:
+                if not args.sa_names or not args.sa_namespaces:
+                    print("❌ Error: --sa-names and --sa-namespaces are required to create a Kubernetes role.", file=sys.stderr)
+                    sys.exit(1)
+                    
+                if vault.create_kubernetes_role(name, sa_names=args.sa_names, sa_namespaces=args.sa_namespaces, policies=args.policies, ttl=args.ttl):
+                    print(f"✅ Kubernetes role '{name}' successfully created/updated.")
+                    
+            elif action in ["read", "info"]:
+                details = vault.read_kubernetes_role(name)
+                if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ Kubernetes role '{name}' not found.")
+                
+            elif action == "delete":
+                if vault.delete_kubernetes_role(name):
+                    print(f"✅ Deleted Kubernetes role '{name}'.")
 
 
 if __name__ == "__main__":

@@ -998,6 +998,62 @@ class HashiVault:
             print(f"❌ Error deleting alias: {e}")
             return False
 
+    # -------------------------------------------------------------------------
+    # KUBERNETES AUTH MANAGEMENT
+    # -------------------------------------------------------------------------
+    def create_kubernetes_role(self, name, sa_names, sa_namespaces, policies=None, ttl="1h"):
+        """Creates or updates a Kubernetes Auth Role."""
+        client = self._get_client()
+        if not client: return False
+        
+        payload = {
+            "bound_service_account_names": [sa.strip() for sa in sa_names.split(",")],
+            "bound_service_account_namespaces": [ns.strip() for ns in sa_namespaces.split(",")],
+            "token_ttl": ttl
+        }
+        if policies:
+            payload['token_policies'] = [p.strip() for p in policies.split(",")]
+            
+        try:
+            client.write(f"auth/kubernetes/role/{name}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating Kubernetes role '{name}': {e}")
+            return False
+
+    def read_kubernetes_role(self, name):
+        """Reads configuration details for a Kubernetes Auth Role."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"auth/kubernetes/role/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading Kubernetes role '{name}': {e}")
+            return None
+
+    def delete_kubernetes_role(self, name):
+        """Deletes a Kubernetes Auth Role."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"auth/kubernetes/role/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting Kubernetes role '{name}': {e}")
+            return False
+
+    def list_kubernetes_roles(self):
+        """Lists all Kubernetes Auth Roles."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list("auth/kubernetes/role")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing Kubernetes roles: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 
 
