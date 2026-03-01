@@ -1,0 +1,238 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/ctlabs_tools/pytest/vault_gcp.py
+# Purpose : Dedicated CLI for GCP Dynamic Secrets & Identity Management
+# -----------------------------------------------------------------------------
+import argparse
+import sys
+import json
+import os
+import subprocess
+import time
+from .helper import HashiVault
+
+def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, retries=1, retry_delay=5):
+    """Silently runs a gcloud command with built-in polling/retry logic."""
+    for attempt in range(1, retries + 1):
+        try:
+            res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
+            if capture_json:
+                return res.stdout.strip()
+            return True
+        except FileNotFoundError:
+            print(f"\n❌ Environment Error: '{cmd_list[0]}' command not found.", file=sys.stderr)
+            sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            if attempt < retries:
+                if not quiet:
+                    cmd_name = cmd_list[1] if len(cmd_list) > 1 else "command"
+                    print(f"  ⏳ GCP not ready. Retrying '{cmd_name}' in {retry_delay}s (Attempt {attempt}/{retries})...")
+                time.sleep(retry_delay)
+                continue
+            if ignore_errors:
+                return False
+            print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}\nError output: {e.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Vault GCP Identity & Engine Manager")
+    parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # 1. INFO
+    p_info = subparsers.add_parser("info", help="Introspect the current GCP session/token")
+    p_info.add_argument("token", nargs="?", default="", help="Optional token string (defaults to env var)")
+
+    # 2. EXEC
+    p_exec = subparsers.add_parser("exec", help="Run a command with JIT GCP credentials")
+    p_exec.add_argument("project", help="The GCP Project ID (where the Vault engine is mounted)")
+    p_exec.add_argument("roleset", nargs="?", default="terraform-runner", help="Roleset name (default: terraform-runner)")
+    p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
+
+    # 3. ENGINE
+    p_engine = subparsers.add_parser("engine", help="Manage GCP Secrets Engines")
+    p_engine.add_argument("action", choices=["create", "update", "delete", "list"], help="Action to perform")
+    p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID")
+    p_engine.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name")
+
+    # 4. ROLESET
+    p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
+    p_roleset.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_roleset.add_argument("project", nargs="?", default="", help="GCP Project ID")
+    p_roleset.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset")
+    p_roleset.add_argument("--roles", default="roles/editor", help="Comma-separated roles (for simple create)")
+    p_roleset.add_argument("--bindings", help="Path to YAML/HCL bindings file (for advanced/cross-project)")
+    p_roleset.add_argument("--master-sa", default="", help="Custom Vault Master SA email (used for cross-project auto-patching)")
+
+    return parser.parse_args()
+
+def main():
+    args = get_args()
+    vault = HashiVault(timeout=args.timeout)
+    if not vault.ensure_valid_token(interactive=False):
+        sys.exit(1)
+
+    cmd = args.command
+
+    # -------------------------------------------------------------------------
+    # INFO
+    # -------------------------------------------------------------------------
+    if cmd == "info":
+        token = args.token or os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN")
+        if not token:
+            print("❌ Error: No token provided and $GOOGLE_OAUTH_ACCESS_TOKEN is not set.", file=sys.stderr)
+            sys.exit(1)
+            
+        print("🔍 Introspecting GCP Token...", file=sys.stderr)
+        metadata = vault.get_gcp_token_info(token)
+        if metadata and "expires_in" in metadata:
+            email = metadata.get("email", "Vault Managed Account (Scope hidden)")
+            expires_in = int(metadata.get("expires_in", 3600))
+            print(f"👤 Authenticated as : {email}")
+            print(f"⏳ Time Remaining  : {expires_in // 60} minutes ({expires_in}s)")
+            if "scope" in metadata: print(f"🌐 Granted Scopes  : {metadata['scope']}")
+            sys.exit(0)
+        else:
+            print(f"⚠️ Token validation failed: {metadata.get('error', metadata)}", file=sys.stderr)
+            sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # EXEC
+    # -------------------------------------------------------------------------
+    elif cmd == "exec":
+        mount_point = f"gcp/{args.project}"
+        command_list = args.exec_cmd
+        if command_list and command_list[0] == "--":
+            command_list = command_list[1:]
+        
+        if not command_list:
+            print("❌ Error: No command provided to execute.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"🔒 Fetching secure token for '{args.roleset}' from '{mount_point}'...", file=sys.stderr)
+        token = vault.get_gcp_token(roleset_name=args.roleset, mount_point=mount_point)
+        if not token: sys.exit(1)
+
+        os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = token
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = token
+        print(f"🚀 Executing: {' '.join(command_list)}\n" + "-"*40, file=sys.stderr)
+        try:
+            sys.exit(subprocess.run(command_list, env=os.environ).returncode)
+        except FileNotFoundError:
+            print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
+            sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # ENGINE
+    # -------------------------------------------------------------------------
+    elif cmd == "engine":
+        action = args.action
+        project = args.project
+        
+        if action == "list":
+            engines = vault.list_engines(backend_type="gcp")
+            if engines:
+                print("🌐 Active GCP Secrets Engines:")
+                for e in engines: print(f"  ├─ {e}")
+            else:
+                print("ℹ️ No GCP Secrets Engines mounted.")
+            sys.exit(0)
+
+        if not project:
+            print("❌ Error: Project ID required for this action.", file=sys.stderr)
+            sys.exit(1)
+
+        mount_point = f"gcp/{project}"
+        sa_email = f"{args.sa_name}@{project}.iam.gserviceaccount.com"
+
+        if action in ["create", "update"]:
+            print(f"🚀 Initializing Zero-Touch GCP Engine at '{mount_point}/'...")
+            run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=3)
+            print(f"  ├─ Creating Service Account '{args.sa_name}'...")
+            run_gcloud(["gcloud", "iam", "service-accounts", "create", args.sa_name, "--display-name=Vault GCP Master", "--project", project], retries=2, ignore_errors=True)
+            print(f"  ├─ Granting IAM Permissions...")
+            for role in ["roles/iam.serviceAccountAdmin", "roles/iam.serviceAccountKeyAdmin", "roles/resourcemanager.projectIamAdmin"]:
+                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+            print(f"  ├─ Generating JSON Key in-memory...")
+            creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project], capture_json=True)
+            if vault.setup_gcp_engine(creds_json=creds_json, mount_point=mount_point):
+                print(f"🎉 GCP Backend ready at '{mount_point}/'!")
+
+        elif action == "delete":
+            print(f"🧹 Tearing down engine at '{mount_point}/'...")
+            vault.teardown_gcp_engine(mount_point=mount_point)
+            run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
+            print("🎉 Engine destroyed!")
+
+    # -------------------------------------------------------------------------
+    # ROLESET
+    # -------------------------------------------------------------------------
+    elif cmd == "roleset":
+        action = args.action
+        project = args.project
+        roleset_name = args.roleset_name
+        mount_point = f"gcp/{project}" if project else "gcp"
+
+        if action == "list":
+            keys = vault.list_gcp_rolesets(mount_point=mount_point)
+            if keys:
+                print(f"👥 Active Rolesets at '{mount_point}/':")
+                for k in keys: print(f"  ├─ {k}")
+            else:
+                print(f"ℹ️ No rolesets found.")
+            sys.exit(0)
+
+        if not project or not roleset_name:
+            print("❌ Error: Project and roleset_name are required.", file=sys.stderr)
+            sys.exit(1)
+
+        if action == "read":
+            data = vault.read_gcp_roleset(name=roleset_name, mount_point=mount_point)
+            if data: print(json.dumps(data, indent=2))
+            
+        elif action == "delete":
+            vault.delete_gcp_roleset(name=roleset_name, mount_point=mount_point)
+            
+        elif action in ["create", "update"]:
+            bindings_hcl = ""
+            
+            # 🧠 SMART UX: YAML Parser + Automatic Cross-Project IAM Patcher
+            if args.bindings:
+                try:
+                    with open(args.bindings, 'r') as f:
+                        if args.bindings.endswith(('.yaml', '.yml')):
+                            import yaml
+                            config = yaml.safe_load(f)
+                            
+                            # Determine Master SA for patching
+                            master_sa = args.master_sa or f"vault-gcp-master@{project}.iam.gserviceaccount.com"
+                            
+                            for res_type, uri_path in {'projects': 'projects', 'folders': 'folders', 'organizations': 'organizations'}.items():
+                                for item in config.get(res_type, []):
+                                    target_name = item['name']
+                                    
+                                    # 🔥 AUTO-PATCHER: If YAML references a different project, run gcloud to grant Vault rights automatically!
+                                    if res_type == 'projects' and target_name != project:
+                                        print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
+                                        run_gcloud([
+                                            "gcloud", "projects", "add-iam-policy-binding", target_name,
+                                            f"--member=serviceAccount:{master_sa}",
+                                            "--role=roles/resourcemanager.projectIamAdmin"
+                                        ], quiet=True, ignore_errors=True)
+
+                                    roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
+                                    bindings_hcl += f'\nresource "//cloudresourcemanager.googleapis.com/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
+                            print(f"📄 Parsed YAML bindings.")
+                        else:
+                            bindings_hcl = f.read()
+                except Exception as e:
+                    print(f"❌ Error reading bindings: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
+                bindings_hcl = f'\nresource "//cloudresourcemanager.googleapis.com/projects/{project}" {{\n  roles = [{", ".join(roles_list)}]\n}}\n'
+                
+            print(f"🚀 Creating Roleset '{roleset_name}'...")
+            vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
+
+if __name__ == "__main__":
+    main()
