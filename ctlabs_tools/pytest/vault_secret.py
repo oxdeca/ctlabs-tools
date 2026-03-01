@@ -264,6 +264,7 @@ def main():
                 token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
                 if token:
                     print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
+                    print(f'export CLOUDSDK_AUTH_ACCESS_TOKEN="{token}"')
                     print(f"# ✅ Dynamically generated GCP Token at '{dynamic_mount}/'!", file=sys.stderr)
                     
                     metadata = vault.get_gcp_token_info(token)

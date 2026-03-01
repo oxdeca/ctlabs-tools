@@ -37,20 +37,26 @@ HashiCorp Vault strictly separates **Who you are** (Identity) from **What you ar
 
 ## 📜 Required Vault Policies for GCP Tokens
 
-To successfully generate and manage GCP tokens, Vault requires specific policies depending on whether you are an Administrator (setting up the engine) or a Machine (consuming the tokens).
+To successfully generate and manage GCP tokens, Vault requires specific policies. You can enforce granular, team-based access by restricting which users/AppRoles can generate tokens for which rolesets.
 
-### 1. The CI/CD "Runner" Policy (Token Consumer)
-Your automated systems (or developers running Terraform) only need the `read` capability on the specific roleset path to generate a dynamic OAuth token.
+### 1. Team-Based Consumption Policies (The "Runner")
+Your developers or automated CI/CD runners only need the `read` capability on the exact roleset path they are authorized to use.
 
 ```hcl
-# Allow the AppRole to generate a dynamic token for the specific project and roleset
-path "gcp/ctlabs-0815-123abc-05a-03/token/terraform-runner" {
+# The DevOps Policy: Can only generate tokens for the 'devops' roleset
+path "gcp/ctlabs-0815-123abc-05a-03/token/devops" {
+  capabilities = ["read"]
+}
+
+# The Data Science Policy: Can only generate tokens for the 'data-science' roleset
+path "gcp/ctlabs-0815-123abc-05a-03/token/data-science" {
   capabilities = ["read"]
 }
 ```
+*If a Data Scientist tries to request the DevOps token, Vault will block them with a 403 Permission Denied error.*
 
 ### 2. The Administrator Policy (Engine Manager)
-The human or automation configuring the backend needs permissions to mount engines, configure the GCP master credentials, and create rolesets.
+The human or automation configuring the backend needs permissions to mount engines, configure the GCP master credentials, and manage rolesets.
 
 ```hcl
 # Allow mounting and unmounting the GCP secrets engine
@@ -103,14 +109,32 @@ vault-secret backend gcp list
 vault-secret backend gcp destroy ctlabs-0815-123abc-05a-03
 ```
 
+**👥 Team-Based Roleset Management:**
+*Create distinct identities inside GCP (Rolesets) mapped to different Vault ACL policies for granular audit logging.*
+```bash
+# List all active rolesets (teams) in a project
+vault-secret roleset list gcp/ctlabs-0815-123abc-05a-03
+
+# Create a new roleset for the DevOps team with specific GCP roles
+vault-secret roleset create gcp/ctlabs-0815-123abc-05a-03 devops --roles "roles/editor, roles/iam.securityAdmin"
+
+# Inspect the configuration of an existing roleset
+vault-secret roleset read gcp/ctlabs-0815-123abc-05a-03 devops
+
+# Delete a roleset and its underlying GCP Service Account
+vault-secret roleset delete gcp/ctlabs-0815-123abc-05a-03 devops
+```
+
 **🔑 Generate Dynamic Credentials:**
 *Injects a short-lived OAuth token directly into your environment.*
 ```bash
 # Fetch and export the 1-hour token (defaults to the 'terraform-runner' roleset)
 eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03)
 
-# Fetch a token for a specific custom roleset
-eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03 my-custom-runner)
+# Fetch a token for a specific custom team roleset
+eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03 devops)
+
+# 🧠 Smart Identity: If you don't specify a roleset, Vault will attempt to auto-detect your LDAP/Userpass username and request a roleset matching your name!
 ```
 
 **🔍 Introspect Active Tokens:**
@@ -123,8 +147,8 @@ vault-secret info gcp
 **📋 Track Active Leases:**
 *Check how many active tokens/keys are currently issued for any dynamic engine (requires `sys/leases/lookup/*` policy).*
 ```bash
-# Track GCP leases
-vault-secret leases gcp/ctlabs-0815-123abc-05a-03 terraform-runner
+# Track GCP leases for a specific team
+vault-secret leases gcp/ctlabs-0815-123abc-05a-03 devops
 ```
 
 **🗄️ Manage Static KVv2 Secrets:**
@@ -213,9 +237,9 @@ from ctlabs_tools.pytest.helper import Terraform
 
 @pytest.fixture(scope="session")
 def tf(is_interactive, vault_auth):
-    # 1. Ask Vault for a temporary GCP token from a specific project mount
+    # 1. Ask Vault for a temporary GCP token for the devops team
     gcp_token = vault_auth.get_gcp_token(
-        roleset_name="terraform-runner", 
+        roleset_name="devops", 
         mount_point="gcp/ctlabs-0815-123abc-05a-03"
     )
     

@@ -28,24 +28,28 @@ ENV_FILE = os.path.join(SECURE_DIR, ".env.gpg")
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Interactive Login Wrapper")
-    
-    # Session Management Flags
-    parser.add_argument("-s", "--status", action="store_true", help="Check the expiration of the locally cached token")
-    parser.add_argument("-c", "--clear", action="store_true", help="Clear the locally cached token (logout)")
-    
-    parser.add_argument("-a", "--addr", help="Vault Server Address (e.g., https://IP:PORT)")
-    parser.add_argument("-d", "--details", action="store_true", help="Show details of the currently loaded token")
-    
-    # Human Auth
-    parser.add_argument("-u", "--user", help="Vault Username (LDAP/Userpass)")
-    parser.add_argument("-p", "--password", help="Vault Password")
-    
-    # Machine Auth
-    parser.add_argument("--approle", action="store_true", help="Use AppRole authentication instead of userpass")
-    parser.add_argument("--role-id",   help="AppRole Role ID (or GCP Secret Manager path)")
-    parser.add_argument("--secret-id", help="AppRole Secret ID (or GCP Secret Manager path)")
-    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # 1. INFO Command (Replaces --status and --details)
+    subparsers.add_parser("info", help="Show details and expiration status of the currently loaded token")
+
+    # 2. CLEAR Command (Replaces --clear)
+    subparsers.add_parser("clear", help="Clear the locally cached token (logout)")
+
+    # 3. USER Command (Human Login)
+    p_user = subparsers.add_parser("user", help="Login via LDAP or Userpass")
+    p_user.add_argument("username", nargs="?", help="Vault Username")
+    p_user.add_argument("-p", "--password", dest="password", help="Vault Password (will prompt if omitted)")
+    p_user.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
+
+    # 4. APPROLE Command (Machine Login)
+    p_approle = subparsers.add_parser("approle", help="Login via AppRole")
+    p_approle.add_argument("role_id", nargs="?", help="AppRole Role ID (or GSM path)")
+    p_approle.add_argument("-p", "--secret-id", dest="secret_id", help="AppRole Secret ID or GSM path (will prompt if omitted)")
+    p_approle.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
+
     return parser.parse_args()
+
 
 def get_random_passphrase(length=32):
     """Generates and stores a random passphrase for local GPG encryption."""
@@ -56,6 +60,7 @@ def get_random_passphrase(length=32):
     os.chmod(KEY_FILE, 0o600)
     return pwd
 
+
 def check_vault_health(vault_addr):
     """Pings the Vault health endpoint."""
     print(f"🔍 Checking connection to {vault_addr}...")
@@ -64,6 +69,7 @@ def check_vault_health(vault_addr):
     except Exception:
         print(f"❌ Cannot reach Vault at {vault_addr}.")
         sys.exit(1)
+
 
 def resolve_gsm_secret(secret_value):
     """Checks if a string is a GSM path and unwraps it if necessary."""
@@ -74,7 +80,6 @@ def resolve_gsm_secret(secret_value):
             print("❌ Cannot fetch GSM secret: google-cloud-secret-manager not installed.")
             sys.exit(1)
             
-        # Extract project and secret details from path: projects/PROJECT/secrets/SECRET/versions/VERSION
         parts = secret_value.split("/")
         project = parts[1]
         secret_id = parts[3]
@@ -87,12 +92,12 @@ def resolve_gsm_secret(secret_value):
         return resolved_value
     return secret_value
 
+
 def login_approle(client, role_id_input, secret_id_input):
     """Handles AppRole login, unwrapping GSM secrets if necessary."""
     role_id = role_id_input or input("Enter AppRole Role ID (or GSM path): ").strip()
     secret_id = secret_id_input or getpass("Enter AppRole Secret ID (or GSM path): ").strip()
     
-    # Resolve through GSM if the user provided GCP paths
     role_id = resolve_gsm_secret(role_id)
     secret_id = resolve_gsm_secret(secret_id)
 
@@ -104,6 +109,7 @@ def login_approle(client, role_id_input, secret_id_input):
     except Exception as e:
         print(f"❌ AppRole authentication failed: {e}")
     return None, None
+
 
 def login_human(client, vault_user, vault_pass):
     """Handles LDAP and Userpass autodiscovery login."""
@@ -126,6 +132,7 @@ def login_human(client, vault_user, vault_pass):
             
     print("❌ Authentication failed: Invalid credentials or unsupported method.")
     return None, None
+
 
 def cache_local_token(vault_addr, token, lease_duration):
     """Encrypts and caches the token configuration for local dev tools."""
@@ -153,45 +160,50 @@ def cache_local_token(vault_addr, token, lease_duration):
     else:
         print(f"❌ GPG Error: {stderr.decode()}")
 
+
 def main():
     args = get_args()
     vault = HashiVault()
 
-    if args.details:
-        if vault.load_secrets():
-            info = vault.lookup_token()
-            if info:
-                print("\n🔐 Current Vault Token Info:")
-                print(f"  • Display Name : {info.get('display_name', 'N/A')}")
-                print(f"  • Policies     : {', '.join(info.get('policies', []))}")
-                print(f"  • Entity ID    : {info.get('entity_id', 'N/A')}")
-                print(f"  • TTL          : {info.get('creation_ttl', 'N/A')}s")
-                print(f"  • Renewable    : {info.get('renewable', False)}")
-            else:
-                print("❌ Token loaded, but could not fetch details from Vault.")
-        else:
-            print("ℹ️ No valid Vault token found. Please log in first.")
-        sys.exit(0)
-
-    if args.status:
-        is_valid, remaining = vault.check_expiration()
-        
-        if remaining <= 0:
-            print("❌ No valid token found, or the token has completely expired.")
+    # ---------------------------------------------------------
+    # 1. INFO COMMAND
+    # ---------------------------------------------------------
+    if args.command == "info":
+        if not vault.load_secrets():
+            print("ℹ️ No active Vault session found. Please log in first.")
             sys.exit(1)
             
+        is_valid, remaining = vault.check_expiration()
+        if remaining <= 0:
+            print("❌ The locally cached token has completely expired.")
+            sys.exit(1)
+
         hours, remainder = divmod(remaining, 3600)
         minutes, seconds = divmod(remainder, 60)
         
-        if is_valid:
-            print(f"✅ Token is valid and active.")
+        info = vault.lookup_token()
+        print("\n🔐 Current Vault Token Info:")
+        if info:
+            print(f"  • Display Name : {info.get('display_name', 'N/A')}")
+            print(f"  • Policies     : {', '.join(info.get('policies', []))}")
+            print(f"  • Entity ID    : {info.get('entity_id', 'N/A')}")
+            print(f"  • TTL          : {info.get('creation_ttl', 'N/A')}s")
+            print(f"  • Renewable    : {info.get('renewable', False)}")
         else:
-            print(f"⚠️ Token is alive but within the expiration grace period ({vault.grace_period}s).")
-            
-        print(f"⏳ Time remaining: {hours}h {minutes}m {seconds}s")
+            print("  ⚠️ Could not fetch details from Vault. Token may lack 'auth/token/lookup-self' permission.")
+        
+        print("\n⏳ Session Status:")
+        if is_valid:
+            print(f"  ✅ Token is valid and active.")
+        else:
+            print(f"  ⚠️ Token is alive but within the expiration grace period ({vault.grace_period}s).")
+        print(f"  ⏱️  Time remaining: {hours}h {minutes}m {seconds}s")
         sys.exit(0)
 
-    if args.clear:
+    # ---------------------------------------------------------
+    # 2. CLEAR COMMAND
+    # ---------------------------------------------------------
+    if args.command == "clear":
         cleared = False
         if os.path.exists(KEY_FILE):
             os.remove(KEY_FILE)
@@ -206,30 +218,38 @@ def main():
             print("ℹ️ No active session found to clear.")
         sys.exit(0)
 
-    vault_addr = args.addr or input("Enter Vault Address (e.g., https://IP:PORT): ").strip()
+    # ---------------------------------------------------------
+    # 3. LOGIN COMMANDS (User, AppRole, or Interactive Fallback)
+    # ---------------------------------------------------------
     
+    # Smart Address Resolution: CLI Flag -> Environment Variable -> Interactive Prompt
+    vault_addr = getattr(args, 'addr', None) or os.environ.get("VAULT_ADDR")
+    if not vault_addr:
+        vault_addr = input("Enter Vault Address (e.g., https://IP:PORT): ").strip()
+        
     check_vault_health(vault_addr)
-    
     client = hvac.Client(url=vault_addr, verify=False)
+    
     login_res = None
     used_method = None
 
-    # Determine workflow based on flags or interactive prompt
-    if args.approle:
+    if args.command == "approle":
         login_res, used_method = login_approle(client, args.role_id, args.secret_id)
-    elif args.user or args.password:
-        login_res, used_method = login_human(client, args.user, args.password)
+        
+    elif args.command == "user":
+        login_res, used_method = login_human(client, args.username, args.password)
+        
     else:
-        # Ask interactively if no flags provided
+        # Fallback to interactive mode if they just type `vault-login`
         print("\nSelect Authentication Method:")
         print("1. Human (LDAP/Userpass)")
         print("2. Machine (AppRole / GSM)")
         choice = input("Choice [1/2]: ").strip()
         
         if choice == "2":
-            login_res, used_method = login_approle(client, args.role_id, args.secret_id)
+            login_res, used_method = login_approle(client, None, None)
         else:
-            login_res, used_method = login_human(client, args.user, args.password)
+            login_res, used_method = login_human(client, None, None)
 
     if not login_res:
         sys.exit(1)
@@ -240,12 +260,12 @@ def main():
     token = login_res['auth']['client_token']
     
     # Vault sometimes returns '0' or missing lease_duration for root/special tokens
-    # Defaulting to 8 hours (28800s) if missing
     lease_duration = login_res['auth'].get('lease_duration', 28800) 
     if lease_duration == 0: lease_duration = 28800
 
     # Save to Dev/Test cache so Terraform/Ansible wrappers can pick it up
     cache_local_token(vault_addr, token, lease_duration)
+
 
 if __name__ == "__main__":
     try:
