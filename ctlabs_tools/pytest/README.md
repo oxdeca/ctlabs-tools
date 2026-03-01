@@ -8,10 +8,10 @@ Install directly from GitHub using pip:
 
 ```bash
 # Install latest from main
-pip install git+[https://github.com/oxdeca/ctlabs-tools.git](https://github.com/oxdeca/ctlabs-tools.git)
+pip install git+https://github.com/oxdeca/ctlabs-tools.git
 
 # or from the dev branch
-pip install git+[https://github.com/oxdeca/ctlabs-tools.git@dev](https://github.com/oxdeca/ctlabs-tools.git@dev)
+pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
 ```
 
 ## 🧩 Importing in your Tests
@@ -80,21 +80,28 @@ path "gcp/*" {
 ## 💻 Vault CLI Utilities
 The installation automatically registers these CLI commands in your terminal for managing your Vault environment.
 
-### 1. Interactive Human Login 🧑‍💻
-Authenticate manually via LDAP/Userpass. This caches a secure GPG-encrypted token for your local session.
+### 1. Interactive Login (`vault-login`) 🧑‍💻
+Authenticate to Vault and securely cache a GPG-encrypted session token locally for your dev tools.
 ```bash
-# Log in to Vault
-vault-login --addr [https://vault.example.com](https://vault.example.com)
+# Log in manually (LDAP/Userpass)
+vault-login user my-username -a https://vault.example.com
 
-# Inspect the currently active session token and its policies
-vault-login --details
+# Log in as a Machine (AppRole)
+vault-login approle my-role-id
+
+# Inspect the currently active session token, expiration, and policies
+vault-login info
+
+# Clear the local cache and log out securely
+vault-login clear
 ```
+*(Tip: Set `export VAULT_ADDR="https://..."` in your bashrc to avoid typing `-a` every time!)*
 
-### 2. Secret Data Management & Dynamic Engines ⚙️
+### 2. Secret Data Management & Dynamic Engines (`vault-secret`) ⚙️
 Manage static JSON payloads in Vault's KVv2 engine, and seamlessly bootstrap dynamic GCP credential engines.
 
 **🚀 Bootstrap a Zero-Touch GCP Secrets Engine:**
-*Uses your local `gcloud` session to safely build a Master Service Account entirely in memory, inject it into Vault, and elegantly handle Google Cloud IAM replication delays via smart polling. Vault automatically mounts this to `gcp/<project_id>/`.*
+*Uses your local `gcloud` session to safely build a Master Service Account entirely in memory, inject it into Vault, and elegantly handle Google Cloud IAM replication delays via smart polling.*
 ```bash
 # Create the engine with default names (vault-gcp-master & terraform-runner)
 vault-secret backend gcp create ctlabs-0815-123abc-05a-03
@@ -125,16 +132,21 @@ vault-secret roleset read gcp/ctlabs-0815-123abc-05a-03 devops
 vault-secret roleset delete gcp/ctlabs-0815-123abc-05a-03 devops
 ```
 
-**🔑 Generate Dynamic Credentials:**
-*Injects a short-lived OAuth token directly into your environment.*
+**🔒 Just-In-Time (JIT) Execution:**
+*Securely wraps tools (Terraform, gcloud, Docker) by injecting short-lived Vault GCP tokens purely into process memory, leaving no stale credentials on disk.*
 ```bash
-# Fetch and export the 1-hour token (defaults to the 'terraform-runner' roleset)
-eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03)
+# Run a single Terraform command using the 'devops' roleset
+vault-secret exec gcp/ctlabs-0815-123abc-05a-03 devops -- terraform plan
 
-# Fetch a token for a specific custom team roleset
-eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03 devops)
+# Run Google Cloud SDK commands
+vault-secret exec gcp/ctlabs-0815-123abc-05a-03 devops -- gcloud compute instances list
 
-# 🧠 Smart Identity: If you don't specify a roleset, Vault will attempt to auto-detect your LDAP/Userpass username and request a roleset matching your name!
+# 🧠 Open an authenticated subshell (stay authenticated until you type 'exit')
+vault-secret exec gcp/ctlabs-0815-123abc-05a-03 devops -- bash
+
+# 🐳 Run an ephemeral Docker container authenticated to GCP
+vault-secret exec gcp/ctlabs-0815-123abc-05a-03 devops -- \
+  docker run --rm -it -e GOOGLE_OAUTH_ACCESS_TOKEN -e CLOUDSDK_AUTH_ACCESS_TOKEN google/cloud-sdk:latest bash
 ```
 
 **🔍 Introspect Active Tokens:**
@@ -163,7 +175,7 @@ vault-secret read kvv2/apps/my-service
 vault-secret list kvv2/apps/my-service
 
 # Safely search folder names, secret names, and payload keys using Regex
-vault-secret search kvv2/ansible "onetick|dev_pass"
+vault-secret search kvv2/ansible "ctlabs_sssd|dev_pass"
 ```
 
 **🧠 Smart API Reading:**
@@ -183,11 +195,14 @@ vault-secret raw identity/oidc/.well-known/keys > vault-keys.json
 vault-secret raw auth/token/accessors/
 ```
 
-### 3. Automated AppRole Setup (Identity) 🤖
+### 3. Automated AppRole Setup (`vault-approle`) 🤖
 Manage machine identities and permissions for CI/CD or Orchestrators (like Rundeck).
 ```bash
 # Set up a new AppRole with an auto-generated minimal policy for a specific path
 vault-approle create my-service --path "kvv2/apps/my-service"
+
+# Inspect detailed configuration of a specific AppRole (TTLs, Policies, CIDRs)
+vault-approle info my-service
 
 # Set up a "Manager" role (e.g., for Rundeck) to issue SecretIDs for another role
 vault-approle create rundeck-mgr --type manager --target my-service
@@ -243,12 +258,13 @@ def tf(is_interactive, vault_auth):
         mount_point="gcp/ctlabs-0815-123abc-05a-03"
     )
     
-    # 2. Inject it securely into the local environment 
+    # 2. Inject it securely into the local environment for both Terraform and Google Cloud SDK
     if gcp_token:
         os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = gcp_token
-        print("✅ Injected dynamic GCP credentials for Terraform.")
+        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = gcp_token
+        print("✅ Injected dynamic GCP credentials for Terraform and gcloud.")
     else:
-        print("⚠️ Failed to get GCP token from Vault. Terraform may fail to authenticate.")
+        print("⚠️ Failed to get GCP token from Vault. APIs may fail to authenticate.")
 
     # 3. Start Terraform!
     t = Terraform(
@@ -259,9 +275,11 @@ def tf(is_interactive, vault_auth):
     yield t
     t.cleanup()
     
-    # 4. Clean up the environment variable afterward
+    # 4. Clean up the environment variables afterward
     if "GOOGLE_OAUTH_ACCESS_TOKEN" in os.environ:
         del os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"]
+    if "CLOUDSDK_AUTH_ACCESS_TOKEN" in os.environ:
+        del os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"]
 ```
 
 ---
