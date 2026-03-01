@@ -34,6 +34,13 @@ def get_args():
     p_policy.add_argument("name", nargs="?", default="", help="Name of the policy")
     p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules (used with create/update)")
 
+    # 4. GROUP
+    p_group = subparsers.add_parser("group", help="Manage Auth Method Groups (e.g., LDAP groups)")
+    p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_group.add_argument("name", nargs="?", default="", help="Name of the group in LDAP")
+    p_group.add_argument("--method", choices=["ldap", "okta"], default="ldap", help="Auth method (default: ldap)")
+    p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
+
     return parser.parse_args()
 
 def main():
@@ -158,6 +165,40 @@ def main():
         elif action == "delete":
             if vault.delete_policy(name):
                 print(f"✅ Deleted policy '{name}'.")
+
+    # -------------------------------------------------------------------------
+    # 4. GROUP MANAGEMENT (LDAP/OIDC)
+    # -------------------------------------------------------------------------
+    elif cmd == "group":
+        method = getattr(args, 'method', 'ldap')
+        
+        if action == "list":
+            groups = vault.list_groups(auth_type=method)
+            if groups:
+                print(f"🏢 Existing '{method}' group mappings:")
+                for g in groups: print(f"  ├─ {g}")
+            else:
+                print(f"ℹ️ No '{method}' groups found.")
+                
+        else:
+            if not name:
+                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+                sys.exit(1)
+                
+            if action in ["create", "update"]:
+                if not args.policies:
+                    print("⚠️ Warning: Creating a group without --policies means it grants no access.", file=sys.stderr)
+                if vault.create_group(name, policies=args.policies, auth_type=method):
+                    print(f"✅ Group '{name}' ({method}) successfully mapped.")
+                    
+            elif action in ["read", "info"]:
+                details = vault.read_group(name, auth_type=method)
+                if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ Group '{name}' not found in '{method}'.")
+                
+            elif action == "delete":
+                if vault.delete_group(name, auth_type=method):
+                    print(f"✅ Deleted group mapping '{name}' ({method}).")
 
 if __name__ == "__main__":
     main()

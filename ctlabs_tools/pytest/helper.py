@@ -1094,6 +1094,58 @@ class HashiVault:
             print(f"❌ Error listing policies: {e}")
             return []
 
+    # -------------------------------------------------------------------------
+    # AUTH GROUP MANAGEMENT (LDAP/OIDC)
+    # -------------------------------------------------------------------------
+    def create_group(self, name, policies=None, auth_type="ldap"):
+        """Maps an external auth group (like LDAP) to Vault policies."""
+        client = self._get_client()
+        if not client: return False
+        
+        payload = {}
+        if policies:
+            payload['policies'] = policies if isinstance(policies, list) else [p.strip() for p in policies.split(",")]
+            
+        try:
+            client.write(f"auth/{auth_type}/groups/{name}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating {auth_type} group '{name}': {e}")
+            return False
+
+    def read_group(self, name, auth_type="ldap"):
+        """Reads configuration details for an auth group."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"auth/{auth_type}/groups/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading {auth_type} group '{name}': {e}")
+            return None
+
+    def delete_group(self, name, auth_type="ldap"):
+        """Deletes an auth group mapping."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"auth/{auth_type}/groups/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting {auth_type} group '{name}': {e}")
+            return False
+
+    def list_groups(self, auth_type="ldap"):
+        """Lists all mapped groups for a specific auth method."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list(f"auth/{auth_type}/groups")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing {auth_type} groups: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 
 
