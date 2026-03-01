@@ -255,7 +255,7 @@ def main():
     # -------------------------------------------------------------------------
     # 2. GCP DYNAMIC COMMANDS (Custom Path Logic)
     # -------------------------------------------------------------------------
-    if cmd in ["get-token", "leases"]:
+    if cmd in ["get-token", "leases", "exec"]:
         path = args.path
         if path.startswith("gcp/"):
             parts = path.split('/')
@@ -265,53 +265,6 @@ def main():
             else:
                 dynamic_mount = path
                 roleset_name = args.roleset if args.roleset else "terraform-runner"
-            
-            if cmd == "get-token":
-                token = vault.get_gcp_token(roleset_name=roleset_name, mount_point=dynamic_mount)
-                if token:
-                    print(f'export GOOGLE_OAUTH_ACCESS_TOKEN="{token}"')
-                    print(f'export CLOUDSDK_AUTH_ACCESS_TOKEN="{token}"')
-                    print(f"# ✅ Dynamically generated GCP Token at '{dynamic_mount}/'!", file=sys.stderr)
-                    
-                    metadata = vault.get_gcp_token_info(token)
-                    if metadata and "expires_in" in metadata:
-                        email = metadata.get("email", f"Vault Managed Account ({roleset_name})")
-                        expires_in = int(metadata.get("expires_in", 3600))
-                        mins = expires_in // 60
-                        print(f"# 👤 Authenticated as: {email}", file=sys.stderr)
-                        print(f"# ⏳ Valid for exactly {mins} minutes ({expires_in}s).", file=sys.stderr)
-                    elif metadata and "error" in metadata:
-                        print(f"# ⚠️ Could not fetch token details from Google: {metadata['error']}", file=sys.stderr)
-                    else:
-                        print(f"# ⚠️ Unexpected response from Google: {metadata}", file=sys.stderr)                
-                else:
-                    sys.exit(1)
-                sys.exit(0)
-                
-            elif cmd == "leases":
-                lookup_path = f"{dynamic_mount}/token/{roleset_name}"
-                keys = vault.list_leases(prefix=lookup_path)
-                if keys:
-                    print(f"📋 Active leases for '{lookup_path}':")
-                    for k in keys:
-                        print(f"  ├─ {k}")
-                else:
-                    print(f"ℹ️ No active leases found for '{lookup_path}' (or permission denied).")
-                sys.exit(0)
-                
-        else:
-            if cmd == "leases" and (path.startswith("auth/") or path == "auth"):
-                print("ℹ️  Vault Architecture Note:\n   Human and Machine logins generate 'Tokens', not 'Leases'.\n   Try running: vault-secret raw auth/token/accessors/")
-                sys.exit(0)
-                
-            print(f"❌ Error: '{cmd}' currently only supports GCP rolesets via this script.", file=sys.stderr)
-            sys.exit(1)
-
-    # -------------------------------------------------------------------------
-    # 3. GCP DYNAMIC COMMANDS (Custom Path Logic)
-    # -------------------------------------------------------------------------
-    if cmd in ["get-token", "leases", "exec"]:
-        # ... [Keep your existing path/roleset parsing logic here] ...
             
             if cmd == "get-token":
                 # ... [Keep existing get-token logic] ...
@@ -348,9 +301,29 @@ def main():
                 except FileNotFoundError:
                     print(f"\n❌ Error: Command not found: {command[0]}", file=sys.stderr)
                     sys.exit(1)
+                
+            elif cmd == "leases":
+                lookup_path = f"{dynamic_mount}/token/{roleset_name}"
+                keys = vault.list_leases(prefix=lookup_path)
+                if keys:
+                    print(f"📋 Active leases for '{lookup_path}':")
+                    for k in keys:
+                        print(f"  ├─ {k}")
+                else:
+                    print(f"ℹ️ No active leases found for '{lookup_path}' (or permission denied).")
+                sys.exit(0)
+                
+        else:
+            if cmd == "leases" and (path.startswith("auth/") or path == "auth"):
+                print("ℹ️  Vault Architecture Note:\n   Human and Machine logins generate 'Tokens', not 'Leases'.\n   Try running: vault-secret raw auth/token/accessors/")
+                sys.exit(0)
+                
+            print(f"❌ Error: '{cmd}' currently only supports GCP rolesets via this script.", file=sys.stderr)
+            sys.exit(1)
+
 
     # -------------------------------------------------------------------------
-    # 4 INFO COMMAND
+    # 3. INFO COMMAND
     # -------------------------------------------------------------------------
     if cmd == "info":
         provider = args.provider
@@ -385,7 +358,7 @@ def main():
                 sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # 5. STANDARD KV SECRETS COMMANDS
+    # 4. STANDARD KV SECRETS COMMANDS
     # -------------------------------------------------------------------------
     
     # We enforce mount_point/secret_path routing here!
