@@ -47,6 +47,13 @@ def get_args():
     p_entity.add_argument("name", nargs="?", default="", help="Name of the entity")
     p_entity.add_argument("--policies", help="Comma-separated list of policies to assign")
 
+    # 6. ALIAS
+    p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases (Link logins to Entities)")
+    p_alias.add_argument("action", choices=["create", "delete"], help="Action to perform")
+    p_alias.add_argument("entity_name", help="The Vault Entity to link to (e.g., peter)")
+    p_alias.add_argument("alias_name", help="The login username or RoleID (e.g., p.smith)")
+    p_alias.add_argument("--mount", default="userpass", help="The auth mount point (e.g., ldap, userpass, approle)")
+
     return parser.parse_args()
 
 def main():
@@ -237,6 +244,23 @@ def main():
             elif action == "delete":
                 if vault.delete_entity(name):
                     print(f"✅ Deleted entity '{name}'.")
+
+    # -------------------------------------------------------------------------
+    # 6. ALIAS MANAGEMENT
+    # -------------------------------------------------------------------------
+    elif cmd == "alias":
+        action = args.action
+        entity_name = args.entity_name
+        alias_name = args.alias_name
+        mount = args.mount
+        
+        if action == "create":
+            if vault.create_entity_alias(entity_name, alias_name, mount_point=mount):
+                print(f"✅ Alias '{alias_name}' ({mount}) successfully linked to Entity '{entity_name}'.")
+                
+        elif action == "delete":
+            if vault.delete_entity_alias(entity_name, alias_name, mount_point=mount):
+                print(f"✅ Alias '{alias_name}' ({mount}) successfully removed from Entity '{entity_name}'.")
 
 
 if __name__ == "__main__":

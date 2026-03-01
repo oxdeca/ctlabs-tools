@@ -893,6 +893,82 @@ class HashiVault:
             if "404" not in str(e): print(f"❌ Error listing entities: {e}")
             return []
 
+    # -------------------------------------------------------------------------
+    # IDENTITY ALIAS MANAGEMENT
+    # -------------------------------------------------------------------------
+    def get_auth_accessor(self, mount_point):
+        """Resolves a human-readable auth mount point to its internal Accessor UUID."""
+        client = self._get_client()
+        if not client: return None
+        
+        # Vault stores mounts with a trailing slash in sys/auth (e.g., 'ldap/')
+        mount_point = mount_point.strip('/') + '/'
+        try:
+            auth_methods = client.sys.list_auth_methods().get('data', {})
+            if mount_point in auth_methods:
+                return auth_methods[mount_point].get('accessor')
+            return None
+        except Exception as e:
+            print(f"❌ Error fetching auth accessor for '{mount_point}': {e}")
+            return None
+
+    def create_entity_alias(self, entity_name, alias_name, mount_point="userpass"):
+        """Smart Alias: Links a login name to an Entity by resolving UUIDs automatically."""
+        client = self._get_client()
+        if not client: return False
+
+        # 1. Resolve Entity UUID
+        entity = self.read_entity(entity_name)
+        if not entity or 'id' not in entity:
+            print(f"❌ Error: Entity '{entity_name}' not found. Create it first.")
+            return False
+        
+        # 2. Resolve Auth Mount UUID
+        accessor = self.get_auth_accessor(mount_point)
+        if not accessor:
+            print(f"❌ Error: Auth mount '{mount_point}' not found or inaccessible.")
+            return False
+
+        # 3. Map them together!
+        try:
+            client.write(
+                "identity/entity-alias",
+                name=alias_name,
+                canonical_id=entity['id'],
+                mount_accessor=accessor
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error creating alias '{alias_name}' for entity '{entity_name}': {e}")
+            return False
+
+    def delete_entity_alias(self, entity_name, alias_name, mount_point="userpass"):
+        """Smart Alias: Finds and deletes a specific alias from an entity."""
+        client = self._get_client()
+        if not client: return False
+        
+        accessor = self.get_auth_accessor(mount_point)
+        entity = self.read_entity(entity_name)
+        if not entity or 'aliases' not in entity: return False
+        
+        # Find the specific alias UUID inside the entity's data
+        alias_id = None
+        for alias in entity['aliases']:
+            if alias['name'] == alias_name and alias['mount_accessor'] == accessor:
+                alias_id = alias['id']
+                break
+                
+        if not alias_id:
+            print(f"⚠️ Alias '{alias_name}' on '{mount_point}' not found for entity '{entity_name}'.")
+            return False
+            
+        try:
+            client.delete(f"identity/entity-alias/id/{alias_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting alias: {e}")
+            return False
+
 # ----------------------------------------------------------------------------
 
 
