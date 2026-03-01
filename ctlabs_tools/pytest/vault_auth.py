@@ -24,7 +24,7 @@ def get_args():
     p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
     p_user.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_user.add_argument("name", nargs="?", default="", help="Username")
-    p_user.add_argument("--method", choices=["userpass", "ldap"], default="userpass", help="Auth method (default: userpass)")
+    p_user.add_argument("--method", choices=["userpass", "ldap"], help="Auth method (defaults to 'userpass' for create/read, 'all' for list)")
     p_user.add_argument("--password", help="Password (required for creating userpass users)")
     p_user.add_argument("--policies", help="Comma-separated list of policies")
 
@@ -88,30 +88,42 @@ def main():
     # 2. USER MANAGEMENT (Userpass & LDAP)
     # -------------------------------------------------------------------------
     elif cmd == "user":
-        method = args.method
+        # 🧠 SMART UX: If no method provided, check BOTH for list, default to userpass for others
+        method = getattr(args, 'method', None)
+
         if action == "list":
-            users = vault.list_users(auth_type=method)
-            if users:
-                print(f"👥 Existing {method} users:")
-                for u in users: print(f"  ├─ {u}")
-            else:
-                print(f"ℹ️ No {method} users found.")
-                
-        elif action in ["create", "update"]:
-            if method == "userpass" and action == "create" and not args.password:
-                print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
-                sys.exit(1)
-            if vault.create_user(name, password=args.password, policies=args.policies, auth_type=method):
-                print(f"✅ User '{name}' ({method}) successfully created/updated.")
-                
-        elif action in ["read", "info"]:
-            details = vault.read_user(name, auth_type=method)
-            if details: print(json.dumps(details, indent=2))
-            else: print(f"⚠️ User '{name}' not found in {method}.")
+            methods_to_check = [method] if method else ["userpass", "ldap"]
+            found_any = False
             
-        elif action == "delete":
-            if vault.delete_user(name, auth_type=method):
-                print(f"✅ Deleted user '{name}' ({method}).")
+            for m in methods_to_check:
+                users = vault.list_users(auth_type=m)
+                if users:
+                    print(f"👥 Existing '{m}' users:")
+                    for u in users: print(f"  ├─ {u}")
+                    found_any = True
+                    
+            if not found_any:
+                print(f"ℹ️ No users found.")
+                
+        else:
+            # For create/update/read/delete, default to 'userpass' if not specified
+            method = method or "userpass"
+            
+            if action in ["create", "update"]:
+                if method == "userpass" and action == "create" and not args.password:
+                    print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
+                    sys.exit(1)
+                if vault.create_user(name, password=args.password, policies=args.policies, auth_type=method):
+                    print(f"✅ User '{name}' ({method}) successfully created/updated.")
+                    
+            elif action in ["read", "info"]:
+                details = vault.read_user(name, auth_type=method)
+                if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ User '{name}' not found in '{method}'.")
+                
+            elif action == "delete":
+                if vault.delete_user(name, auth_type=method):
+                    print(f"✅ Deleted user '{name}' ({method}).")
 
     # -------------------------------------------------------------------------
     # 3. POLICY MANAGEMENT
