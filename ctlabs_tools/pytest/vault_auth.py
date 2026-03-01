@@ -1,0 +1,151 @@
+# -----------------------------------------------------------------------------
+# File    : ctlabs-tools/ctlabs_tools/pytest/vault_auth.py
+# Purpose : Dedicated CLI for Vault Authentication & Policy Management
+# -----------------------------------------------------------------------------
+
+import argparse
+import sys
+import json
+from .helper import HashiVault
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Vault Authentication & Policy Manager")
+    parser.add_argument("--timeout", type=int, default=30, help="API HTTP timeout")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # 1. APPROLE
+    p_approle = subparsers.add_parser("approle", help="Manage Machine Identities (AppRoles)")
+    p_approle.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_approle.add_argument("name", nargs="?", default="", help="Name of the AppRole")
+    p_approle.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m) (used with create/update)")
+    p_approle.add_argument("--policies", help="Comma-separated list of policies (used with create/update)")
+
+    # 2. USER
+    p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
+    p_user.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_user.add_argument("name", nargs="?", default="", help="Username")
+    p_user.add_argument("--method", choices=["userpass", "ldap"], default="userpass", help="Auth method (default: userpass)")
+    p_user.add_argument("--password", help="Password (required for creating userpass users)")
+    p_user.add_argument("--policies", help="Comma-separated list of policies")
+
+    # 3. POLICY
+    p_policy = subparsers.add_parser("policy", help="Manage Vault ACL Policies")
+    p_policy.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_policy.add_argument("name", nargs="?", default="", help="Name of the policy")
+    p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules (used with create/update)")
+
+    return parser.parse_args()
+
+def main():
+    args = get_args()
+    vault = HashiVault(timeout=args.timeout)
+    
+    # Fast-fail for CLI tools
+    if not vault.ensure_valid_token(interactive=False):
+        sys.exit(1)
+
+    cmd = args.command
+    action = args.action
+    name = getattr(args, 'name', '')
+
+    # Ensure name is provided for everything except 'list'
+    if action != "list" and not name:
+        print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+        sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # 1. APPROLE MANAGEMENT
+    # -------------------------------------------------------------------------
+    if cmd == "approle":
+        if action == "list":
+            roles = vault.list_approles()
+            if roles:
+                print("📋 Existing AppRoles:")
+                for r in roles: print(f"  ├─ {r}")
+            else:
+                print("ℹ️ No AppRoles found.")
+                
+        elif action in ["create", "update"]:
+            policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
+            if vault.create_or_update_approle(name, policies, ttl=args.ttl):
+                print(f"✅ AppRole '{name}' successfully created/updated.")
+                
+        elif action == "read":  # Retrieves RoleID and SecretID
+            creds = vault.get_approle_credentials(name)
+            if creds: print(json.dumps(creds, indent=2))
+            else: print(f"⚠️ Could not generate credentials for AppRole '{name}'.")
+            
+        elif action == "info":  # Introspects the config
+            details = vault.read_approle(name)
+            if details: print(json.dumps(details, indent=2))
+            else: print(f"⚠️ AppRole '{name}' not found.")
+            
+        elif action == "delete":
+            if vault.delete_approle(name):
+                print(f"✅ Deleted AppRole '{name}'.")
+
+    # -------------------------------------------------------------------------
+    # 2. USER MANAGEMENT (Userpass & LDAP)
+    # -------------------------------------------------------------------------
+    elif cmd == "user":
+        method = args.method
+        if action == "list":
+            users = vault.list_users(auth_type=method)
+            if users:
+                print(f"👥 Existing {method} users:")
+                for u in users: print(f"  ├─ {u}")
+            else:
+                print(f"ℹ️ No {method} users found.")
+                
+        elif action in ["create", "update"]:
+            if method == "userpass" and action == "create" and not args.password:
+                print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
+                sys.exit(1)
+            if vault.create_user(name, password=args.password, policies=args.policies, auth_type=method):
+                print(f"✅ User '{name}' ({method}) successfully created/updated.")
+                
+        elif action in ["read", "info"]:
+            details = vault.read_user(name, auth_type=method)
+            if details: print(json.dumps(details, indent=2))
+            else: print(f"⚠️ User '{name}' not found in {method}.")
+            
+        elif action == "delete":
+            if vault.delete_user(name, auth_type=method):
+                print(f"✅ Deleted user '{name}' ({method}).")
+
+    # -------------------------------------------------------------------------
+    # 3. POLICY MANAGEMENT
+    # -------------------------------------------------------------------------
+    elif cmd == "policy":
+        if action == "list":
+            policies = vault.list_policies()
+            if policies:
+                print("📜 Existing ACL Policies:")
+                for p in policies: print(f"  ├─ {p}")
+            else:
+                print("ℹ️ No policies found.")
+                
+        elif action in ["create", "update"]:
+            if not args.file:
+                print("❌ Error: --file <path_to_hcl> is required to create or update a policy.", file=sys.stderr)
+                sys.exit(1)
+            try:
+                with open(args.file, 'r') as f:
+                    rules = f.read()
+                vault._get_client().sys.create_or_update_policy(name=name, policy=rules)
+                print(f"✅ Policy '{name}' successfully created/updated from {args.file}.")
+            except Exception as e:
+                print(f"❌ Error managing policy '{name}': {e}", file=sys.stderr)
+                sys.exit(1)
+                
+        elif action == "read":
+            rules = vault.read_policy(name)
+            if rules: print(rules)  # Print raw HCL string
+            else: print(f"⚠️ Policy '{name}' not found.")
+            
+        elif action == "delete":
+            if vault.delete_policy(name):
+                print(f"✅ Deleted policy '{name}'.")
+
+if __name__ == "__main__":
+    main()

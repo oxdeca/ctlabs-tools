@@ -1016,6 +1016,84 @@ class HashiVault:
             print(f"❌ Error listing {backend_type or 'all'} mounts: {error_msg if error_msg else e.__class__.__name__}", file=sys.stderr)
             return None
 
+    # -------------------------------------------------------------------------
+    # USERPASS / LDAP MANAGEMENT
+    # -------------------------------------------------------------------------
+    def create_user(self, username, password=None, policies=None, auth_type="userpass"):
+        """Creates or updates a human user in Vault."""
+        client = self._get_client()
+        if not client: return False
+        
+        payload = {}
+        if policies:
+            payload['policies'] = policies if isinstance(policies, list) else [p.strip() for p in policies.split(",")]
+        if password and auth_type == "userpass":
+            payload['password'] = password
+            
+        try:
+            client.write(f"auth/{auth_type}/users/{username}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating {auth_type} user '{username}': {e}")
+            return False
+
+    def read_user(self, username, auth_type="userpass"):
+        """Reads configuration details for a human user."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"auth/{auth_type}/users/{username}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading {auth_type} user '{username}': {e}")
+            return None
+
+    def delete_user(self, username, auth_type="userpass"):
+        """Deletes a human user."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"auth/{auth_type}/users/{username}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting {auth_type} user '{username}': {e}")
+            return False
+
+    def list_users(self, auth_type="userpass"):
+        """Lists all users for a specific auth method."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list(f"auth/{auth_type}/users")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing {auth_type} users: {e}")
+            return []
+
+    # -------------------------------------------------------------------------
+    # POLICY MANAGEMENT
+    # -------------------------------------------------------------------------
+    def read_policy(self, name):
+        """Reads an existing ACL policy."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            return client.sys.read_policy(name=name)
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading policy '{name}': {e}")
+            return None
+
+    def list_policies(self):
+        """Lists all ACL policies."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.sys.list_policies()
+            return res.get('data', {}).get('policies', []) if res else []
+        except Exception as e:
+            print(f"❌ Error listing policies: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 
 
