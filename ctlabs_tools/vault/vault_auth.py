@@ -43,9 +43,10 @@ def get_args():
 
     # 5. ENTITY
     p_entity = subparsers.add_parser("entity", help="Manage Vault Identity Entities")
-    p_entity.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_entity.add_argument("name", nargs="?", default="", help="Name of the entity")
+    p_entity.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "merge"], help="Action to perform")
+    p_entity.add_argument("name", nargs="?", default="", help="Name of the entity (Source entity for merge)")
     p_entity.add_argument("--policies", help="Comma-separated list of policies to assign")
+    p_entity.add_argument("--target", help="Destination entity name (Required for merge)")
 
     # 6. ALIAS
     p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases (Link logins to Entities)")
@@ -240,6 +241,13 @@ def main():
                 details = vault.read_entity(name)
                 if details: print(json.dumps(details, indent=2))
                 else: print(f"⚠️ Entity '{name}' not found.")
+
+            elif action == "merge":
+                if not args.target:
+                    print("❌ Error: --target <destination_entity> is required when merging.", file=sys.stderr)
+                    sys.exit(1)
+                if vault.merge_entities(from_entity_name=name, to_entity_name=args.target):
+                    print(f"✅ Successfully merged '{name}' into '{args.target}'. '{name}' has been deleted.")
                 
             elif action == "delete":
                 if vault.delete_entity(name):

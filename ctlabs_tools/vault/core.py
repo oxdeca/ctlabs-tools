@@ -893,6 +893,35 @@ class HashiVault:
             if "404" not in str(e): print(f"❌ Error listing entities: {e}")
             return []
 
+    def merge_entities(self, from_entity_name, to_entity_name):
+        """Merges one entity (and its aliases) into another, deleting the source."""
+        client = self._get_client()
+        if not client: return False
+        
+        # 1. Look up the UUIDs for both entities
+        from_ent = self.read_entity(from_entity_name)
+        to_ent = self.read_entity(to_entity_name)
+        
+        if not from_ent or 'id' not in from_ent:
+            print(f"❌ Error: Source entity '{from_entity_name}' not found.")
+            return False
+        if not to_ent or 'id' not in to_ent:
+            print(f"❌ Error: Target entity '{to_entity_name}' not found.")
+            return False
+            
+        # 2. Fire the merge API call
+        try:
+            client.write(
+                "identity/entity/merge",
+                from_entity_ids=[from_ent['id']],
+                to_entity_id=to_ent['id']
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error merging entities: {e}")
+            return False
+
+
     # -------------------------------------------------------------------------
     # IDENTITY ALIAS MANAGEMENT
     # -------------------------------------------------------------------------
