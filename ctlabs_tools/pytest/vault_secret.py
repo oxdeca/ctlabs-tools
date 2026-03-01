@@ -23,6 +23,7 @@ def get_args():
     p_backend.add_argument("project_id", nargs="?", default="", help="GCP Project ID (required for create/destroy)")
     p_backend.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name (default: vault-gcp-master)")
     p_backend.add_argument("--roleset-name", default="terraform-runner", help="Name of the dynamic roleset (default: terraform-runner)")
+    p_roleset.add_argument("--bindings", help="Path to a custom HCL bindings file")
 
     # 1.5 ROLESET MANAGER
     p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
@@ -237,16 +238,51 @@ def main():
             vault.delete_gcp_roleset(name=roleset_name, mount_point=path)
             
         elif action == "create":
-            # Extract the project ID from the path (e.g., gcp/ctlabs-prj-123 -> ctlabs-prj-123)
             project_id = path.split('/')[-1]
-            roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
             
-            # Dynamically build the HCL bindings
-            bindings_hcl = f"""
-              resource "//cloudresourcemanager.googleapis.com/projects/{project_id}" {{
-                roles = [{", ".join(roles_list)}]
-              }}
-            """
+            # 🧠 SMART UX: Auto-detect YAML and translate to HCL, or load raw HCL
+            if args.bindings:
+                try:
+                    with open(args.bindings, 'r') as f:
+                        if args.bindings.endswith(('.yaml', '.yml')):
+                            import yaml
+                            config = yaml.safe_load(f)
+                            bindings_hcl = ""
+                            
+                            # Map simple YAML keys to complex GCP Resource URIs
+                            resource_map = {
+                                'projects': 'projects',
+                                'folders': 'folders',
+                                'organizations': 'organizations'
+                            }
+                            
+                            for res_type, uri_path in resource_map.items():
+                                for item in config.get(res_type, []):
+                                    roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
+                                    bindings_hcl += f"""
+resource "//cloudresourcemanager.googleapis.com/{uri_path}/{item['name']}" {{
+  roles = [{roles_str}]
+}}
+"""
+                            print(f"📄 Translated YAML bindings from '{args.bindings}' into Vault HCL.")
+                        else:
+                            bindings_hcl = f.read()
+                            print(f"📄 Loaded raw HCL bindings from '{args.bindings}'")
+                            
+                except ImportError:
+                    print("❌ Error: 'pyyaml' is required to parse YAML files. Run 'pip install pyyaml'.", file=sys.stderr)
+                    sys.exit(1)
+                except Exception as e:
+                    print(f"❌ Error reading bindings file: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
+                bindings_hcl = f"""
+resource "//cloudresourcemanager.googleapis.com/projects/{project_id}" {{
+  roles = [{", ".join(roles_list)}]
+}}
+"""
+                
             print(f"🚀 Creating/Updating Roleset '{roleset_name}'...")
             vault.create_gcp_roleset(name=roleset_name, project_id=project_id, bindings_hcl=bindings_hcl, mount_point=path)
             

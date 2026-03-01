@@ -8,10 +8,10 @@ Install directly from GitHub using pip:
 
 ```bash
 # Install latest from main
-pip install git+https://github.com/oxdeca/ctlabs-tools.git
+pip install git+[https://github.com/oxdeca/ctlabs-tools.git](https://github.com/oxdeca/ctlabs-tools.git)
 
 # or from the dev branch
-pip install git+https://github.com/oxdeca/ctlabs-tools.git@dev
+pip install git+[https://github.com/oxdeca/ctlabs-tools.git@dev](https://github.com/oxdeca/ctlabs-tools.git@dev)
 ```
 
 ## 🧩 Importing in your Tests
@@ -84,7 +84,7 @@ The installation automatically registers these CLI commands in your terminal for
 Authenticate to Vault and securely cache a GPG-encrypted session token locally for your dev tools.
 ```bash
 # Log in manually (LDAP/Userpass)
-vault-login user my-username -a https://vault.example.com
+vault-login user my-username -a [https://vault.example.com](https://vault.example.com)
 
 # Log in as a Machine (AppRole)
 vault-login approle my-role-id
@@ -122,14 +122,35 @@ vault-secret backend gcp destroy ctlabs-0815-123abc-05a-03
 # List all active rolesets (teams) in a project
 vault-secret roleset list gcp/ctlabs-0815-123abc-05a-03
 
-# Create a new roleset for the DevOps team with specific GCP roles
+# Create a new roleset for the DevOps team using inline basic roles
 vault-secret roleset create gcp/ctlabs-0815-123abc-05a-03 devops --roles "roles/editor, roles/iam.securityAdmin"
+
+# Create a roleset using advanced YAML bindings (Supports cross-project/Shared VPC setup)
+vault-secret roleset create gcp/ctlabs-0815-123abc-05a-03 vpc-admin --bindings vpc-admin.yaml
 
 # Inspect the configuration of an existing roleset
 vault-secret roleset read gcp/ctlabs-0815-123abc-05a-03 devops
 
 # Delete a roleset and its underlying GCP Service Account
 vault-secret roleset delete gcp/ctlabs-0815-123abc-05a-03 devops
+```
+
+**📄 Example `vpc-admin.yaml` structure:**
+```yaml
+projects:
+  # The local service project
+  - name: ctlabs-prj-2025101601
+    roles:
+      - roles/owner
+      - roles/compute.networkAdmin
+  # The Shared VPC Host Project (Cross-Project access)
+  - name: shared-vpc-host-project-id
+    roles:
+      - roles/compute.networkUser
+# organizations:
+#   - name: "1234567890"
+#     roles:
+#       - roles/compute.xpnAdmin
 ```
 
 **🔒 Just-In-Time (JIT) Execution:**
@@ -175,7 +196,7 @@ vault-secret read kvv2/apps/my-service
 vault-secret list kvv2/apps/my-service
 
 # Safely search folder names, secret names, and payload keys using Regex
-vault-secret search kvv2/ansible "ctlabs_sssd|dev_pass"
+vault-secret search kvv2/ansible "onetick|dev_pass"
 ```
 
 **🧠 Smart API Reading:**
