@@ -6,7 +6,7 @@
 import argparse
 import sys
 import json
-from .helper import HashiVault
+from .core import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Authentication & Policy Manager")

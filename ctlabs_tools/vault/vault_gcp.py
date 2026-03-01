@@ -8,7 +8,7 @@ import json
 import os
 import subprocess
 import time
-from .helper import HashiVault
+from .core import HashiVault
 
 def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, retries=1, retry_delay=5):
     """Silently runs a gcloud command with built-in polling/retry logic."""
