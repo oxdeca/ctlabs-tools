@@ -35,6 +35,42 @@ HashiCorp Vault strictly separates **Who you are** (Identity) from **What you ar
 
 ---
 
+## 📜 Required Vault Policies for GCP Tokens
+
+To successfully generate and manage GCP tokens, Vault requires specific policies depending on whether you are an Administrator (setting up the engine) or a Machine (consuming the tokens).
+
+### 1. The CI/CD "Runner" Policy (Token Consumer)
+Your automated systems (or developers running Terraform) only need the `read` capability on the specific roleset path to generate a dynamic OAuth token.
+
+```hcl
+# Allow the AppRole to generate a dynamic token for the specific project and roleset
+path "gcp/ctlabs-0815-123abc-05a-03/token/terraform-runner" {
+  capabilities = ["read"]
+}
+```
+
+### 2. The Administrator Policy (Engine Manager)
+The human or automation configuring the backend needs permissions to mount engines, configure the GCP master credentials, and create rolesets.
+
+```hcl
+# Allow mounting and unmounting the GCP secrets engine
+path "sys/mounts/gcp/*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
+# Allow checking if an engine is mounted (Used by the 'list' and 'destroy' commands)
+path "sys/mounts" {
+  capabilities = ["read"]
+}
+
+# Allow configuring the engine and creating rolesets
+path "gcp/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+```
+
+---
+
 ## 💻 Vault CLI Utilities
 The installation automatically registers these CLI commands in your terminal for managing your Vault environment.
 
@@ -54,28 +90,41 @@ Manage static JSON payloads in Vault's KVv2 engine, and seamlessly bootstrap dyn
 **🚀 Bootstrap a Zero-Touch GCP Secrets Engine:**
 *Uses your local `gcloud` session to safely build a Master Service Account entirely in memory, inject it into Vault, and elegantly handle Google Cloud IAM replication delays via smart polling. Vault automatically mounts this to `gcp/<project_id>/`.*
 ```bash
-# Create the engine and the terraform-runner roleset for a specific project
+# Create the engine with default names (vault-gcp-master & terraform-runner)
 vault-secret backend gcp create ctlabs-0815-123abc-05a-03
+
+# Create the engine with custom Service Account and Roleset names
+vault-secret backend gcp create ctlabs-0815-123abc-05a-03 --sa-name ci-admin --roleset-name tf-deployer
+
+# List active GCP engines mounted in Vault
+vault-secret backend gcp list
 
 # Tear it down and cleanly delete the Master Service Account from GCP
 vault-secret backend gcp destroy ctlabs-0815-123abc-05a-03
 ```
 
 **🔑 Generate Dynamic Credentials:**
-*Injects a short-lived OAuth token (or other dynamic secrets) directly into your environment.*
+*Injects a short-lived OAuth token directly into your environment.*
 ```bash
-# Fetch and export the 1-hour token for a specific GCP project mount
-eval $(vault-secret get-creds gcp/ctlabs-0815-123abc-05a-03/terraform-runner)
+# Fetch and export the 1-hour token (defaults to the 'terraform-runner' roleset)
+eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03)
+
+# Fetch a token for a specific custom roleset
+eval $(vault-secret get-token gcp/ctlabs-0815-123abc-05a-03 my-custom-runner)
+```
+
+**🔍 Introspect Active Tokens:**
+*Verify your current GCP authentication state, time remaining, and granted scopes.*
+```bash
+# Checks the $GOOGLE_OAUTH_ACCESS_TOKEN environment variable by default
+vault-secret info gcp
 ```
 
 **📋 Track Active Leases:**
 *Check how many active tokens/keys are currently issued for any dynamic engine (requires `sys/leases/lookup/*` policy).*
 ```bash
 # Track GCP leases
-vault-secret leases gcp/ctlabs-0815-123abc-05a-03/terraform-runner
-
-# Track Database leases
-vault-secret leases database/creds/my-app
+vault-secret leases gcp/ctlabs-0815-123abc-05a-03 terraform-runner
 ```
 
 **🗄️ Manage Static KVv2 Secrets:**
@@ -89,7 +138,7 @@ vault-secret read kvv2/apps/my-service
 # List Vault paths (folders), OR list the specific data keys if pointed at a secret
 vault-secret list kvv2/apps/my-service
 
-# Safely search folder names, secret names, and payload keys using Regex (positional!)
+# Safely search folder names, secret names, and payload keys using Regex
 vault-secret search kvv2/ansible "onetick|dev_pass"
 ```
 

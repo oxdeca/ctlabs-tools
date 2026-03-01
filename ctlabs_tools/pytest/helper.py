@@ -49,9 +49,40 @@ class Terraform:
                 if res.returncode < 0:
                     raise KeyboardInterrupt
     
+                # Success!
                 if res.returncode == 0:
                     return res
                 
+                # 🧠 SMART UX: Intercept GCP Auth Errors from Terraform
+                # (Only works if we are capturing output; otherwise the user sees it directly anyway)
+                if current_capture:
+                    error_output = (res.stderr or "") + (res.stdout or "")
+                    auth_errors = [
+                        "invalid authentication credentials", 
+                        "oauth2: cannot fetch token", 
+                        "could not find default credentials",
+                        "invalid_grant",
+                        "googleapi: error 401",
+                        "reauthentication failed",
+                        "refresh token",
+                        "application default credentials",
+                        "unauthenticated"
+                    ]
+                    
+                    if any(err in error_output.lower() for err in auth_errors):
+                        print("\n" + "!"*60)
+                        print("🛑 TERRAFORM GCP AUTHENTICATION FAILED")
+                        print("!"*60)
+                        print("Terraform was denied access to Google Cloud.")
+                        print("Your Vault-generated token has likely expired (Tokens only last 60 minutes).")
+                        print("To fix this, generate a fresh token in your terminal:\n")
+                        print("  vault-secret get-token gcp/<project-id>")
+                        print("  export GOOGLE_OAUTH_ACCESS_TOKEN=\"...\"\n")
+                        
+                        if not self.interactive:
+                            pytest.fail("Terraform aborted due to expired GCP credentials.")
+                        sys.exit(1)
+
                 if not self.interactive:
                     return res 
     
@@ -63,11 +94,19 @@ class Terraform:
                 print(f"\n⚠️ Execution Error: {e}")
                 if not self.interactive: raise
     
+                
             print("\n" + "!"*40 + f"\n--- TERRAFORM FAILURE: {' '.join(args)} ---\n" + "!"*40)
-            choice = input("Action: [r]etry, [q]uit: ").strip().lower()
-            if choice != 'r':
+            if current_capture and hasattr(res, 'stderr') and res.stderr:
+                print(res.stderr.strip())
+
+            choice = input("Action: [r]etry, [q]uit current test, [A]bort entire suite: ").strip().lower()
+            if choice == 'a':
+                pytest.exit("🛑 User triggered master abort. Stopping all remaining tests.")
+            elif choice != 'r':
                 pytest.fail("User aborted.")
+                
             print("🔄 Retrying command...")
+
 
     def init(self):
         return self._run_cmd(["terraform", "init", "-upgrade"], capture=False)
@@ -257,8 +296,13 @@ class Ansible:
                 if not self.interactive: pytest.fail(str(e))
 
             print("\n" + "!"*40 + "\n--- ANSIBLE FAILURE ---\n" + "!"*40)
-            if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
+            choice = input("Action: [r]etry, [q]uit current test, [A]bort entire suite: ").strip().lower()
+            
+            if choice == 'a':
+                pytest.exit("🛑 User triggered master abort. Stopping all remaining tests.")
+            elif choice != 'r':
                 pytest.fail("User aborted after task failure.")
+                
             print("🔄 Retrying command...")
 
 # ----------------------------------------------------------------------------
@@ -294,8 +338,13 @@ class ConfTest:
                 if not self.interactive: raise
 
             print(f"\n" + "!"*40 + f"\n--- POLICY FAILURE (Namespace: {ns}) ---\n" + "!"*40)
-            if input("Action: [r]etry, [q]uit: ").strip().lower() != 'r':
+            choice = input("Action: [r]etry, [q]uit current test, [A]bort entire suite: ").strip().lower()
+            
+            if choice == 'a':
+                pytest.exit("🛑 User triggered master abort. Stopping all remaining tests.")
+            elif choice != 'r':
                 pytest.fail("User aborted policy test.")
+                
             print("🔄 Retrying command...")
 
 # ----------------------------------------------------------------------------
