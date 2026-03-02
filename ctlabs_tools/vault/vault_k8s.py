@@ -115,12 +115,37 @@ def main():
                 
         print(f"🚀 Executing: {' '.join(display_cmd)}\n" + "-"*40, file=sys.stderr)
         
-        # Execute the REAL command (with the real token) silently
-        try:
-            sys.exit(subprocess.run(command_list, env=os.environ).returncode)
-        except FileNotFoundError:
-            print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
-            sys.exit(1)
+        # 🧠 SMART BASH INJECTION: Auto-configure the 'kc' alias if the user requests a bash shell
+        if command_list == ["bash"]:
+            import tempfile
+            rc_content = f"""
+if [ -f ~/.bashrc ]; then source ~/.bashrc; fi
+export PS1="\\[\\e[32m\\][JIT: {args.namespace}]\\[\\e[m\\] \\w \\$ "
+alias kc='kubectl --server="{kube_host}" --token="{token}" --namespace="{args.namespace}" --insecure-skip-tls-verify=true'
+echo "🔒 Vault JIT Kubernetes Session Active!"
+echo "👉 Use the 'kc' command instead of kubectl (e.g., kc get pods)"
+echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
+"""
+            fd, rc_path = tempfile.mkstemp(suffix=".bashrc")
+            with os.fdopen(fd, 'w') as f:
+                f.write(rc_content)
+                
+            command_list = ["bash", "--rcfile", rc_path]
+            
+            try:
+                exit_code = subprocess.run(command_list, env=os.environ).returncode
+                os.remove(rc_path) # Clean up the temp file when they exit
+                sys.exit(exit_code)
+            except Exception as e:
+                print(f"❌ Error starting shell: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Execute normal non-bash commands silently
+            try:
+                sys.exit(subprocess.run(command_list, env=os.environ).returncode)
+            except FileNotFoundError:
+                print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
+                sys.exit(1)
 
     # -------------------------------------------------------------------------
     # 2. ENGINE MANAGEMENT
