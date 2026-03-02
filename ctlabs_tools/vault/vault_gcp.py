@@ -157,19 +157,26 @@ def main():
         print(f"  ├─ Creating Service Account '{sa_name}'...")
         run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Broker", "--project", project], ignore_errors=True)
 
-        roles = [
-            "roles/resourcemanager.projectIamAdmin",
+        # Define base roles needed for Service Account generation
+        base_roles = [
             "roles/iam.serviceAccountAdmin",
             "roles/iam.serviceAccountKeyAdmin"
         ]
 
         if folder_id:
             print(f"  ├─ 📁 Scoping Vault's access to FOLDER: {folder_id}...")
-            for role in roles:
+            # Add Folder-specific admin roles
+            folder_roles = base_roles + [
+                "roles/resourcemanager.projectIamAdmin", # Manage projects inside the folder
+                "roles/resourcemanager.folderIamAdmin"   # Manage the folder's own IAM (Needed for xpnAdmin)
+            ]
+            for role in folder_roles:
                 run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
         else:
             print(f"  ├─ 📄 Scoping Vault's access locally to PROJECT: {project}...")
-            for role in roles:
+            # Add Project-specific admin roles
+            project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
+            for role in project_roles:
                 run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
 
         print("  ├─ 🔑 Generating JSON Key in-memory and updating Vault...")
@@ -194,19 +201,20 @@ def main():
 
         print(f"🧹 Starting Vault GCP Broker cleanup for project: {project}...")
 
-        roles = [
-            "roles/resourcemanager.projectIamAdmin",
+        base_roles = [
             "roles/iam.serviceAccountAdmin",
             "roles/iam.serviceAccountKeyAdmin"
         ]
 
         if folder_id:
             print(f"  ├─ 📁 Removing Vault's access from FOLDER: {folder_id}...")
-            for role in roles:
+            folder_roles = base_roles + ["roles/resourcemanager.projectIamAdmin", "roles/resourcemanager.folderIamAdmin"]
+            for role in folder_roles:
                 run_gcloud(["gcloud", "resource-manager", "folders", "remove-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
         else:
             print(f"  ├─ 📄 Removing Vault's access from PROJECT: {project}...")
-            for role in roles:
+            project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
+            for role in project_roles:
                 run_gcloud(["gcloud", "projects", "remove-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
 
         print(f"  ├─ 🗑️ Deleting Service Account '{sa_name}'...")
