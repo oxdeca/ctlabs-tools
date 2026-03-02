@@ -154,17 +154,23 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
         action = args.action
         cluster = args.cluster
         
+        # 🧠 SMART VALIDATION: Enforce cluster name for ALL role actions
+        if not cluster:
+            print("❌ Error: Cluster identifier required (e.g., vault-k8s role list prod-cluster).", file=sys.stderr)
+            sys.exit(1)
+
         if action == "list":
-            engines = vault.list_engines(backend_type="kubernetes")
-            if engines:
-                print("🌐 Active K8s Secrets Engines:")
-                for e in engines: print(f"  ├─ {e}")
+            keys = vault.list_k8s_secret_roles(mount_point=mount_point)
+            if keys:
+                print(f"👥 Active Roles at '{mount_point}/':")
+                for k in keys: print(f"  ├─ {k}")
             else:
-                print("ℹ️ No K8s Secrets Engines mounted.")
+                print(f"ℹ️ No roles found.")
             sys.exit(0)
 
-        if not cluster:
-            print("❌ Error: Cluster identifier required.", file=sys.stderr)
+        # Enforce role_name for everything EXCEPT list
+        if not role_name:
+            print("❌ Error: Role name is required for this action.", file=sys.stderr)
             sys.exit(1)
 
         mount_point = f"k8s/{cluster}"
