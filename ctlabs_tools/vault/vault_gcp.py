@@ -11,7 +11,7 @@ import time
 from .core import HashiVault
 
 def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, retries=1, retry_delay=5):
-    """Silently runs a gcloud command with built-in polling/retry logic."""
+    """Silently runs a gcloud command with built-in polling/retry logic and smart auth detection."""
     for attempt in range(1, retries + 1):
         try:
             res = subprocess.run(cmd_list, check=True, capture_output=True, text=True)
@@ -22,6 +22,14 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             print(f"\n❌ Environment Error: '{cmd_list[0]}' command not found.", file=sys.stderr)
             sys.exit(1)
         except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.lower()
+            
+            # 🔥 SMART UX: Fail fast on authentication errors
+            if "reauthentication failed" in stderr_text or "gcloud auth login" in stderr_text:
+                print(f"\n🔐 GCP Authentication Error: Your gcloud session has expired or is missing.", file=sys.stderr)
+                print(f"👉 Fix this by running: gcloud auth login", file=sys.stderr)
+                sys.exit(1)
+                
             if attempt < retries:
                 if not quiet:
                     cmd_name = cmd_list[1] if len(cmd_list) > 1 else "command"
