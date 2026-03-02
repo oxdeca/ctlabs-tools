@@ -53,6 +53,9 @@ def get_args():
     p_role.add_argument("--namespaces", default="*", help="Comma-separated allowed namespaces")
     p_role.add_argument("--rules", help="Path to a JSON or YAML file containing K8s RBAC rules to dynamically generate")
 
+    # 4. INFO (Introspection)
+    p_info = subparsers.add_parser("info", help="Introspect the active JIT Kubernetes token in your current shell")
+
     return parser.parse_args()
 
 def main():
@@ -100,6 +103,7 @@ def main():
         else:
             os.environ["K8S_AUTH_TOKEN"] = token
             os.environ["KUBERNETES_MASTER"] = kube_host
+            os.environ["KUBERNETES_NAMESPACE"] = args.namespace
 
         # 🧠 SECURITY: Redact the token from the console output to prevent credential leakage
         display_cmd = []
@@ -264,6 +268,53 @@ type: kubernetes.io/service-account-token
             print(f"🚀 Creating K8s Role '{role_name}'...")
             if vault.create_k8s_secret_role(name=role_name, mount_point=mount_point, allowed_namespaces=args.namespaces, rules_payload=rules_payload):
                 print(f"✅ K8s Secret Role '{role_name}' successfully created/updated.")
+
+    # -------------------------------------------------------------------------
+    # 4. INFO (Introspection)
+    # -------------------------------------------------------------------------
+    elif cmd == "info":
+        token = os.environ.get("K8S_AUTH_TOKEN")
+        master = os.environ.get("KUBERNETES_MASTER", "Unknown")
+        
+        if not token:
+            print("❌ No active JIT session found. Run 'vault-k8s exec ... -- bash' to start one.", file=sys.stderr)
+            sys.exit(1)
+            
+        try:
+            # A JWT is three parts separated by dots: header.payload.signature
+            # We only care about the payload (the middle part)
+            payload_b64 = token.split('.')[1]
+            
+            # Python's base64 requires correct padding to decode properly
+            payload_b64 += '=' * (-len(payload_b64) % 4)
+            payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+            payload = json.loads(payload_json)
+            
+            # Extract the native Kubernetes claims
+            sa_data = payload.get("kubernetes.io", {}).get("serviceaccount", {})
+            sa_name = sa_data.get("name", "Unknown")
+            namespace = payload.get("kubernetes.io", {}).get("namespace", "Unknown")
+            exp_time = payload.get("exp", 0)
+            
+            # Calculate time remaining
+            now = int(time.time())
+            time_remaining = exp_time - now
+            
+            if time_remaining > 0:
+                mins = time_remaining // 60
+                time_str = f"{mins} minutes ({time_remaining}s)"
+            else:
+                time_str = "EXPIRED ⚠️"
+                
+            print("🔍 Introspecting K8s Token...")
+            print(f"👤 Authenticated as : {sa_name}")
+            print(f"📂 Namespace        : {namespace}")
+            print(f"🌐 Cluster API      : {master}")
+            print(f"⏳ Time Remaining   : {time_str}")
+            
+        except Exception as e:
+            print(f"❌ Error reading token format: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
