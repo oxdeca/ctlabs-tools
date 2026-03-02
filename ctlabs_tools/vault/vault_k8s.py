@@ -137,7 +137,11 @@ metadata:
     kubernetes.io/service-account.name: {sa_name}
 type: kubernetes.io/service-account-token
 """
-            subprocess.run(["kubectl", "apply", "-f", "-"], input=secret_yaml, text=True, check=True, stdout=subprocess.DEVNULL)
+            try:
+                subprocess.run(["kubectl", "apply", "-f", "-"], input=secret_yaml, text=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                print(f"\n❌ Kubectl Error: Could not apply Secret. Are you connected to the cluster?\n{e.stderr.strip()}", file=sys.stderr)
+                sys.exit(1)
             
             print(f"  ├─ Fetching Cluster Credentials...")
             time.sleep(2) # Allow K8s controller time to populate token
