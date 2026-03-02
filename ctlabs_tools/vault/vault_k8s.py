@@ -75,17 +75,27 @@ def main():
             print("❌ Error: No command provided to execute.", file=sys.stderr)
             sys.exit(1)
 
+        # 1. Fetch the Token
         print(f"🔒 Fetching secure K8s token for role '{args.role}' in namespace '{args.namespace}'...", file=sys.stderr)
         token = vault.get_k8s_secret_token(role_name=args.role, k8s_namespace=args.namespace, mount_point=mount_point)
         if not token: sys.exit(1)
 
-        # 🧠 SMART INJECTION: Instantly inject token into kubectl commands bypassing disk
+        # 2. 🧠 NEW: Fetch the Cluster Host (Server)
+        kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
+        if not kube_host:
+            print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
+            sys.exit(1)
+
+        # 3. Inject into kubectl
         if command_list[0] == "kubectl":
-            command_list.insert(1, f"--token={token}")
-            command_list.insert(2, f"--namespace={args.namespace}")
+            # Injecting server, token, and namespace (and skipping certificate check for dev/k3s)
+            command_list.insert(1, f"--server={kube_host}")
+            command_list.insert(2, f"--token={token}")
+            command_list.insert(3, f"--namespace={args.namespace}")
+            command_list.insert(4, "--insecure-skip-tls-verify=true") # Common for K3s/Self-signed setups
         else:
-            print("⚠️ Warning: Non-kubectl command. Setting K8S_AUTH_TOKEN in environment.", file=sys.stderr)
             os.environ["K8S_AUTH_TOKEN"] = token
+            os.environ["KUBERNETES_MASTER"] = kube_host
 
         print(f"🚀 Executing: {' '.join(command_list)}\n" + "-"*40, file=sys.stderr)
         try:

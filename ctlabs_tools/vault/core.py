@@ -1146,6 +1146,18 @@ class HashiVault:
             print(f"❌ Error generating K8s token for '{role_name}': {e}")
             return None
 
+    def get_k8s_engine_host(self, mount_point):
+        """Retrieves the Kubernetes API host URL from the engine config."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            # We read the /config endpoint of the secrets engine
+            res = client.read(f"{mount_point}/config")
+            return res.get('data', {}).get('kubernetes_host') if res else None
+        except Exception as e:
+            print(f"❌ Error fetching K8s host from Vault: {e}")
+            return None
+
 # ----------------------------------------------------------------------------
 
 
