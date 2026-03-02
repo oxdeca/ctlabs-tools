@@ -285,9 +285,9 @@ def main():
                     for k in keys:
                         # Fetch the readable name for each UUID
                         a_data = client.read(f"identity/entity-alias/id/{k}")
-                        if a_data and 'data' in a_data['data']:
-                            name = a_data['data']['data'].get('name', 'Unknown')
-                            mnt = a_data['data']['data'].get('mount_path', 'Unknown')
+                        if a_data and 'data' in a_data:
+                            name = a_data['data'].get('name', 'Unknown')
+                            mnt = a_data['data'].get('mount_path', 'Unknown')
                             print(f"  ├─ ID: {k} | Name: {name} | Mount: {mnt}")
                 else:
                     print("ℹ️ No aliases found in Vault.")
