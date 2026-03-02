@@ -50,7 +50,7 @@ def get_args():
     p_role.add_argument("cluster", nargs="?", default="", help="Cluster identifier")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
     p_role.add_argument("--namespaces", default="*", help="Comma-separated allowed namespaces")
-    p_role.add_argument("--rules", help="Path to a JSON file containing K8s RBAC rules to dynamically generate")
+    p_role.add_argument("--rules", help="Path to a JSON or YAML file containing K8s RBAC rules to dynamically generate")
 
     return parser.parse_args()
 
@@ -197,19 +197,38 @@ type: kubernetes.io/service-account-token
             
         elif action in ["create", "update"]:
             if not args.rules:
-                print("❌ Error: --rules <path_to_json> is required. It must contain the K8s RBAC rules to generate.", file=sys.stderr)
+                print("❌ Error: --rules <path_to_json_or_yaml> is required.", file=sys.stderr)
                 sys.exit(1)
                 
             try:
                 with open(args.rules, 'r') as f:
-                    rules_json = f.read()
+                    rules_payload = f.read()
+                    
+                # 🧠 SMART VALIDATION: Check syntax before sending to Vault
+                if args.rules.endswith(('.yaml', '.yml')):
+                    try:
+                        import yaml # Requires 'pyyaml' to be installed
+                        yaml.safe_load(rules_payload)
+                    except ImportError:
+                        pass # Silently skip validation if PyYAML isn't installed
+                    except Exception as e:
+                        print(f"❌ Invalid YAML syntax in {args.rules}:\n{e}", file=sys.stderr)
+                        sys.exit(1)
+                elif args.rules.endswith('.json'):
+                    try:
+                        json.loads(rules_payload)
+                    except Exception as e:
+                        print(f"❌ Invalid JSON syntax in {args.rules}:\n{e}", file=sys.stderr)
+                        sys.exit(1)
+                        
             except Exception as e:
                 print(f"❌ Error reading rules file: {e}", file=sys.stderr)
                 sys.exit(1)
                 
             print(f"🚀 Creating K8s Role '{role_name}'...")
-            if vault.create_k8s_secret_role(name=role_name, mount_point=mount_point, allowed_namespaces=args.namespaces, rules_json=rules_json):
+            if vault.create_k8s_secret_role(name=role_name, mount_point=mount_point, allowed_namespaces=args.namespaces, rules_payload=rules_payload):
                 print(f"✅ K8s Secret Role '{role_name}' successfully created/updated.")
+
 
 if __name__ == "__main__":
     main()

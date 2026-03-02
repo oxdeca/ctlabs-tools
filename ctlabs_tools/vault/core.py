@@ -1084,13 +1084,14 @@ class HashiVault:
             print(f"❌ Error tearing down K8s Secrets engine: {e}")
             return False
 
-    def create_k8s_secret_role(self, name, mount_point, allowed_namespaces, rules_json, ttl="1h"):
+    def create_k8s_secret_role(self, name, mount_point, allowed_namespaces, rules_payload, ttl="1h"):
         """Creates a role defining what K8s privileges can be dynamically generated."""
         client = self._get_client()
         if not client: return False
+        
         payload = {
             "allowed_kubernetes_namespaces": [ns.strip() for ns in allowed_namespaces.split(",")],
-            "generated_role_rules": rules_json,
+            "generated_role_rules": rules_payload, # 🧠 Vault natively accepts JSON or YAML here!
             "token_default_ttl": ttl,
             "token_max_ttl": ttl
         }
