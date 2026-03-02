@@ -230,12 +230,23 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "entity":
         if action == "list":
-            entities = vault.list_entities()
-            if entities:
-                print("👤 Existing Identity Entities:")
-                for e in entities: print(f"  ├─ {e}")
-            else:
-                print("ℹ️ No entities found.")
+            client = vault._get_client()
+            try:
+                res = client.list("identity/entity/name")
+                if res and 'data' in res and 'keys' in res['data']:
+                    keys = res['data']['keys']
+                    print(f"👤 Existing Identity Entities ({len(keys)} found):")
+                    for k in keys:
+                        e_data = client.read(f"identity/entity/name/{k}")
+                        if e_data and 'data' in e_data:
+                            e_id = e_data['data'].get('id', 'Unknown')
+                            aliases = e_data['data'].get('aliases', [])
+                            print(f"  ├─ Name: {k} | ID: {e_id} | Aliases: {len(aliases)}")
+                else:
+                    print("ℹ️ No entities found.")
+            except Exception as e:
+                print(f"❌ Error fetching entity list: {e}", file=sys.stderr)
+            sys.exit(0)
                 
         else:
             if not name:
@@ -277,18 +288,25 @@ def main():
         # ---------------------------------------------------------
         if action == "list":
             try:
-                # Vault stores aliases globally by their UUID
                 res = client.list("identity/entity-alias/id")
                 if res and 'data' in res and 'keys' in res['data']:
                     keys = res['data']['keys']
                     print(f"🔗 Global Aliases ({len(keys)} found):")
                     for k in keys:
-                        # Fetch the readable name for each UUID
                         a_data = client.read(f"identity/entity-alias/id/{k}")
                         if a_data and 'data' in a_data:
                             name = a_data['data'].get('name', 'Unknown')
                             mnt = a_data['data'].get('mount_path', 'Unknown')
-                            print(f"  ├─ ID: {k} | Name: {name} | Mount: {mnt}")
+                            canonical_id = a_data['data'].get('canonical_id')
+                            
+                            # 🧠 REVERSE LOOKUP: Fetch the parent entity name
+                            parent_entity = "Unknown"
+                            if canonical_id:
+                                e_data = client.read(f"identity/entity/id/{canonical_id}")
+                                if e_data and 'data' in e_data:
+                                    parent_entity = e_data['data'].get('name', canonical_id)
+
+                            print(f"  ├─ ID: {k} | Name: {name} | Mount: {mnt} | Entity: {parent_entity}")
                 else:
                     print("ℹ️ No aliases found in Vault.")
             except Exception as e:
