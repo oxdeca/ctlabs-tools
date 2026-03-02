@@ -37,7 +37,7 @@ def get_args():
     p_exec.add_argument("role", help="The Vault K8s Secret Role to assume")
     p_exec.add_argument("namespace", help="The K8s namespace to inject the token into")
     p_exec.add_argument("--server", help="Override the K8s API server URL (e.g., for NAT/Port-forwarding)") # 🧠 NEW FLAG
-    p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
+    p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     # 2. ENGINE (Bootstrap)
     p_engine = subparsers.add_parser("engine", help="Manage K8s Secrets Engines")
