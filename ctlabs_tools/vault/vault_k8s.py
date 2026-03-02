@@ -154,23 +154,17 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
         action = args.action
         cluster = args.cluster
         
-        # 🧠 SMART VALIDATION: Enforce cluster name for ALL role actions
-        if not cluster:
-            print("❌ Error: Cluster identifier required (e.g., vault-k8s role list prod-cluster).", file=sys.stderr)
-            sys.exit(1)
-
         if action == "list":
-            keys = vault.list_k8s_secret_roles(mount_point=mount_point)
-            if keys:
-                print(f"👥 Active Roles at '{mount_point}/':")
-                for k in keys: print(f"  ├─ {k}")
+            engines = vault.list_engines(backend_type="kubernetes")
+            if engines:
+                print("🌐 Active K8s Secrets Engines:")
+                for e in engines: print(f"  ├─ {e}")
             else:
-                print(f"ℹ️ No roles found.")
+                print("ℹ️ No K8s Secrets Engines mounted.")
             sys.exit(0)
 
-        # Enforce role_name for everything EXCEPT list
-        if not role_name:
-            print("❌ Error: Role name is required for this action.", file=sys.stderr)
+        if not cluster:
+            print("❌ Error: Cluster identifier required.", file=sys.stderr)
             sys.exit(1)
 
         mount_point = f"k8s/{cluster}"
@@ -215,7 +209,6 @@ type: kubernetes.io/service-account-token
                 
             jwt_token = base64.b64decode(b64_token).decode('utf-8')
 
-            # 🧠 FIX: Decode the CA certificate from Base64 to PEM
             try:
                 ca_pem = base64.b64decode(b64_ca).decode('utf-8')
             except Exception as e:
@@ -223,7 +216,6 @@ type: kubernetes.io/service-account-token
                 sys.exit(1)
             
             print(f"  ├─ Configuring Vault Engine...")
-            # Use the decoded 'ca_pem' instead of 'b64_ca'
             if vault.setup_k8s_secrets_engine(mount_point=mount_point, host=kube_host, ca_cert=ca_pem, jwt=jwt_token):
                 print(f"🎉 Kubernetes Secrets Engine ready at '{mount_point}/'!")
             
@@ -243,7 +235,13 @@ type: kubernetes.io/service-account-token
         action = args.action
         cluster = args.cluster
         role_name = args.role_name
-        mount_point = f"k8s/{cluster}" if cluster else "k8s"
+        
+        # 🧠 SMART VALIDATION: Enforce cluster name for ALL role actions
+        if not cluster:
+            print("❌ Error: Cluster identifier required (e.g., vault-k8s role list prod-cluster).", file=sys.stderr)
+            sys.exit(1)
+
+        mount_point = f"k8s/{cluster}"
 
         if action == "list":
             keys = vault.list_k8s_secret_roles(mount_point=mount_point)
@@ -254,8 +252,9 @@ type: kubernetes.io/service-account-token
                 print(f"ℹ️ No roles found.")
             sys.exit(0)
 
-        if not cluster or not role_name:
-            print("❌ Error: Cluster identifier and role_name are required.", file=sys.stderr)
+        # Enforce role_name for everything EXCEPT list
+        if not role_name:
+            print("❌ Error: Role name is required for this action.", file=sys.stderr)
             sys.exit(1)
 
         if action == "read":
@@ -275,13 +274,12 @@ type: kubernetes.io/service-account-token
                 with open(args.rules, 'r') as f:
                     rules_payload = f.read()
                     
-                # 🧠 SMART VALIDATION: Check syntax before sending to Vault
                 if args.rules.endswith(('.yaml', '.yml')):
                     try:
-                        import yaml # Requires 'pyyaml' to be installed
+                        import yaml
                         yaml.safe_load(rules_payload)
                     except ImportError:
-                        pass # Silently skip validation if PyYAML isn't installed
+                        pass
                     except Exception as e:
                         print(f"❌ Invalid YAML syntax in {args.rules}:\n{e}", file=sys.stderr)
                         sys.exit(1)
