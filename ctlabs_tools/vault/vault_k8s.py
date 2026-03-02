@@ -36,6 +36,7 @@ def get_args():
     p_exec.add_argument("cluster", help="The K8s cluster identifier (e.g., prod-cluster)")
     p_exec.add_argument("role", help="The Vault K8s Secret Role to assume")
     p_exec.add_argument("namespace", help="The K8s namespace to inject the token into")
+    p_exec.add_argument("--server", help="Override the K8s API server URL (e.g., for NAT/Port-forwarding)") # 🧠 NEW FLAG
     p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
 
     # 2. ENGINE (Bootstrap)
@@ -80,24 +81,37 @@ def main():
         token = vault.get_k8s_secret_token(role_name=args.role, k8s_namespace=args.namespace, mount_point=mount_point)
         if not token: sys.exit(1)
 
-        # 2. 🧠 NEW: Fetch the Cluster Host (Server)
-        kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
-        if not kube_host:
-            print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
-            sys.exit(1)
+        # 2. 🧠 SMART OVERRIDE: Use user-provided server, or fallback to Vault's config
+        if args.server:
+            kube_host = args.server
+            print(f"🌐 Using overridden API server: {kube_host}", file=sys.stderr)
+        else:
+            kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
+            if not kube_host:
+                print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
+                sys.exit(1)
 
         # 3. Inject into kubectl
         if command_list[0] == "kubectl":
-            # Injecting server, token, and namespace (and skipping certificate check for dev/k3s)
             command_list.insert(1, f"--server={kube_host}")
             command_list.insert(2, f"--token={token}")
             command_list.insert(3, f"--namespace={args.namespace}")
-            command_list.insert(4, "--insecure-skip-tls-verify=true") # Common for K3s/Self-signed setups
+            command_list.insert(4, "--insecure-skip-tls-verify=true")
         else:
             os.environ["K8S_AUTH_TOKEN"] = token
             os.environ["KUBERNETES_MASTER"] = kube_host
 
-        print(f"🚀 Executing: {' '.join(command_list)}\n" + "-"*40, file=sys.stderr)
+        # 🧠 SECURITY: Redact the token from the console output to prevent credential leakage
+        display_cmd = []
+        for arg in command_list:
+            if arg.startswith("--token="):
+                display_cmd.append("--token=***REDACTED***")
+            else:
+                display_cmd.append(arg)
+                
+        print(f"🚀 Executing: {' '.join(display_cmd)}\n" + "-"*40, file=sys.stderr)
+        
+        # Execute the REAL command (with the real token) silently
         try:
             sys.exit(subprocess.run(command_list, env=os.environ).returncode)
         except FileNotFoundError:
