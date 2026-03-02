@@ -155,11 +155,19 @@ type: kubernetes.io/service-account-token
                 sys.exit(1)
                 
             jwt_token = base64.b64decode(b64_token).decode('utf-8')
+
+            # 🧠 FIX: Decode the CA certificate from Base64 to PEM
+            try:
+                ca_pem = base64.b64decode(b64_ca).decode('utf-8')
+            except Exception as e:
+                print(f"❌ Error decoding CA certificate: {e}", file=sys.stderr)
+                sys.exit(1)
             
             print(f"  ├─ Configuring Vault Engine...")
-            if vault.setup_k8s_secrets_engine(mount_point=mount_point, host=kube_host, ca_cert=b64_ca, jwt=jwt_token):
+            # Use the decoded 'ca_pem' instead of 'b64_ca'
+            if vault.setup_k8s_secrets_engine(mount_point=mount_point, host=kube_host, ca_cert=ca_pem, jwt=jwt_token):
                 print(f"🎉 Kubernetes Secrets Engine ready at '{mount_point}/'!")
-
+            
         elif action == "delete":
             print(f"🧹 Tearing down engine at '{mount_point}/'...")
             vault.teardown_k8s_secrets_engine(mount_point=mount_point)
