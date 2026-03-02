@@ -49,11 +49,11 @@ def get_args():
     p_entity.add_argument("--target", help="Destination entity name (Required for merge)")
 
     # 6. ALIAS
-    p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases (Link logins to Entities)")
-    p_alias.add_argument("action", choices=["create", "delete"], help="Action to perform")
-    p_alias.add_argument("entity_name", help="The Vault Entity to link to (e.g., peter)")
-    p_alias.add_argument("alias_name", help="The login username or RoleID (e.g., p.smith)")
-    p_alias.add_argument("--mount", default="userpass", help="The auth mount point (e.g., ldap, userpass, approle)")
+    p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases")
+    p_alias.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_alias.add_argument("entity_name", help="Name of the identity entity")
+    p_alias.add_argument("alias_name", nargs="?", default="", help="Name of the alias (required for create/read/delete)")
+    p_alias.add_argument("--mount", help="Mount accessor or path (e.g., userpass)")
 
     # 7. KUBERNETES
     p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles")
@@ -269,15 +269,85 @@ def main():
         action = args.action
         entity_name = args.entity_name
         alias_name = args.alias_name
-        mount = args.mount
-        
-        if action == "create":
-            if vault.create_entity_alias(entity_name, alias_name, mount_point=mount):
-                print(f"✅ Alias '{alias_name}' ({mount}) successfully linked to Entity '{entity_name}'.")
-                
+        client = vault._get_client()
+
+        # ---------------------------------------------------------
+        # LIST: Show all aliases attached to this entity
+        # ---------------------------------------------------------
+        if action == "list":
+            try:
+                res = client.read(f"identity/entity/name/{entity_name}")
+                if res and 'data' in res and 'aliases' in res['data'] and res['data']['aliases']:
+                    aliases = res['data']['aliases']
+                    print(f"🔗 Aliases for Entity '{entity_name}':")
+                    for a in aliases:
+                        mount_path = a.get('mount_path', 'Unknown')
+                        name = a.get('name', 'Unknown')
+                        print(f"  ├─ {name} (Mount: {mount_path})")
+                else:
+                    print(f"ℹ️ No aliases found for entity '{entity_name}'.")
+            except Exception as e:
+                print(f"❌ Error fetching aliases for '{entity_name}': {e}", file=sys.stderr)
+            sys.exit(0)
+
+        # 🧠 ENFORCE ALIAS NAME for all other actions
+        if not alias_name:
+            print(f"❌ Error: alias_name is required for '{action}' action.", file=sys.stderr)
+            sys.exit(1)
+
+        # ---------------------------------------------------------
+        # READ: Dump the raw JSON for a specific alias
+        # ---------------------------------------------------------
+        if action == "read":
+            try:
+                res = client.read(f"identity/entity/name/{entity_name}")
+                alias_id = None
+                if res and 'data' in res and 'aliases' in res['data']:
+                    for a in res['data']['aliases']:
+                        if a['name'] == alias_name:
+                            alias_id = a['id']
+                            break
+                if alias_id:
+                    alias_data = client.read(f"identity/entity-alias/id/{alias_id}")
+                    if alias_data: print(json.dumps(alias_data['data'], indent=2))
+                else:
+                    print(f"❌ Alias '{alias_name}' not found on entity '{entity_name}'.", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ Error reading alias: {e}", file=sys.stderr)
+
+        # ---------------------------------------------------------
+        # CREATE / UPDATE: Vault treats POST as an upsert
+        # ---------------------------------------------------------
+        elif action in ["create", "update"]:
+            if not args.mount:
+                print("❌ Error: --mount is required to create/update an alias.", file=sys.stderr)
+                sys.exit(1)
+            print(f"🚀 {action.capitalize()}ing alias '{alias_name}' for '{entity_name}'...")
+            # (Assuming your vault.create_entity_alias logic handles the accessor lookup and POST)
+            if vault.create_entity_alias(entity_name=entity_name, alias_name=alias_name, mount_accessor_or_path=args.mount):
+                print(f"✅ Alias successfully {action}d.")
+
+        # ---------------------------------------------------------
+        # DELETE: Lookup the ID and destroy it
+        # ---------------------------------------------------------
         elif action == "delete":
-            if vault.delete_entity_alias(entity_name, alias_name, mount_point=mount):
-                print(f"✅ Alias '{alias_name}' ({mount}) successfully removed from Entity '{entity_name}'.")
+            try:
+                # 1. Find the alias ID
+                res = client.read(f"identity/entity/name/{entity_name}")
+                alias_id = None
+                if res and 'data' in res and 'aliases' in res['data']:
+                    for a in res['data']['aliases']:
+                        if a['name'] == alias_name:
+                            alias_id = a['id']
+                            break
+                # 2. Delete by ID
+                if alias_id:
+                    client.delete(f"identity/entity-alias/id/{alias_id}")
+                    print(f"✅ Deleted alias '{alias_name}' from entity '{entity_name}'.")
+                else:
+                    print(f"⚠️ Alias '{alias_name}' does not exist on '{entity_name}'.", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ Error deleting alias: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
     # 7. KUBERNETES MANAGEMENT
