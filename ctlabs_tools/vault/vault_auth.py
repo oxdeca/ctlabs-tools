@@ -51,9 +51,9 @@ def get_args():
     # 6. ALIAS
     p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases")
     p_alias.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
-    p_alias.add_argument("entity_name", help="Name of the identity entity")
-    p_alias.add_argument("alias_name", nargs="?", default="", help="Name of the alias (required for create/read/delete)")
-    p_alias.add_argument("--mount", help="Mount accessor or path (e.g., userpass)")
+    p_alias.add_argument("alias_identifier", nargs="?", default="", help="Alias Name (for create) or Alias ID (for read/update/delete)")
+    p_alias.add_argument("--entity", help="Entity name (required for create/update)")
+    p_alias.add_argument("--mount", help="Auth mount path (e.g., userpass) (required for create/update)")
 
     # 7. KUBERNETES
     p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles")
@@ -267,51 +267,50 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "alias":
         action = args.action
-        entity_name = args.entity_name
-        alias_name = args.alias_name
+        alias_arg = args.alias_identifier
+        entity_name = args.entity
+        mount = args.mount
         client = vault._get_client()
 
         # ---------------------------------------------------------
-        # LIST: Show all aliases attached to this entity
+        # LIST: Show all aliases globally to get their IDs
         # ---------------------------------------------------------
         if action == "list":
             try:
-                res = client.read(f"identity/entity/name/{entity_name}")
-                if res and 'data' in res and 'aliases' in res['data'] and res['data']['aliases']:
-                    aliases = res['data']['aliases']
-                    print(f"🔗 Aliases for Entity '{entity_name}':")
-                    for a in aliases:
-                        mount_path = a.get('mount_path', 'Unknown')
-                        name = a.get('name', 'Unknown')
-                        print(f"  ├─ {name} (Mount: {mount_path})")
+                # Vault stores aliases globally by their UUID
+                res = client.list("identity/entity-alias/id")
+                if res and 'data' in res and 'keys' in res['data']:
+                    keys = res['data']['keys']
+                    print(f"🔗 Global Aliases ({len(keys)} found):")
+                    for k in keys:
+                        # Fetch the readable name for each UUID
+                        a_data = client.read(f"identity/entity-alias/id/{k}")
+                        if a_data and 'data' in a_data['data']:
+                            name = a_data['data']['data'].get('name', 'Unknown')
+                            mnt = a_data['data']['data'].get('mount_path', 'Unknown')
+                            print(f"  ├─ ID: {k} | Name: {name} | Mount: {mnt}")
                 else:
-                    print(f"ℹ️ No aliases found for entity '{entity_name}'.")
+                    print("ℹ️ No aliases found in Vault.")
             except Exception as e:
-                print(f"❌ Error fetching aliases for '{entity_name}': {e}", file=sys.stderr)
+                print(f"❌ Error fetching alias list: {e}", file=sys.stderr)
             sys.exit(0)
 
-        # 🧠 ENFORCE ALIAS NAME for all other actions
-        if not alias_name:
-            print(f"❌ Error: alias_name is required for '{action}' action.", file=sys.stderr)
+        # 🧠 ENFORCE ALIAS ARGUMENT for all other actions
+        if not alias_arg:
+            print(f"❌ Error: Alias Name or ID is required for '{action}'.", file=sys.stderr)
             sys.exit(1)
 
         # ---------------------------------------------------------
-        # READ: Dump the raw JSON for a specific alias
+        # READ: Dump the raw JSON using the Alias ID
         # ---------------------------------------------------------
         if action == "read":
             try:
-                res = client.read(f"identity/entity/name/{entity_name}")
-                alias_id = None
-                if res and 'data' in res and 'aliases' in res['data']:
-                    for a in res['data']['aliases']:
-                        if a['name'] == alias_name:
-                            alias_id = a['id']
-                            break
-                if alias_id:
-                    alias_data = client.read(f"identity/entity-alias/id/{alias_id}")
-                    if alias_data: print(json.dumps(alias_data['data'], indent=2))
-                else:
-                    print(f"❌ Alias '{alias_name}' not found on entity '{entity_name}'.", file=sys.stderr)
+                # You can now pass the ID you got from 'list' directly here
+                res = client.read(f"identity/entity-alias/id/{alias_arg}")
+                if res and 'data' in res: 
+                    print(json.dumps(res['data'], indent=2))
+                else: 
+                    print(f"❌ Alias ID '{alias_arg}' not found.", file=sys.stderr)
             except Exception as e:
                 print(f"❌ Error reading alias: {e}", file=sys.stderr)
 
@@ -319,33 +318,20 @@ def main():
         # CREATE / UPDATE: Vault treats POST as an upsert
         # ---------------------------------------------------------
         elif action in ["create", "update"]:
-            if not args.mount:
-                print("❌ Error: --mount is required to create/update an alias.", file=sys.stderr)
+            if not entity_name or not mount:
+                print("❌ Error: --entity and --mount are required to create/update an alias.", file=sys.stderr)
                 sys.exit(1)
-            print(f"🚀 {action.capitalize()}ing alias '{alias_name}' for '{entity_name}'...")
-            # (Assuming your vault.create_entity_alias logic handles the accessor lookup and POST)
-            if vault.create_entity_alias(entity_name=entity_name, alias_name=alias_name, mount_accessor_or_path=args.mount):
+            print(f"🚀 {action.capitalize()}ing alias '{alias_arg}' for entity '{entity_name}'...")
+            if vault.create_entity_alias(entity_name=entity_name, alias_name=alias_arg, mount_accessor_or_path=mount):
                 print(f"✅ Alias successfully {action}d.")
 
         # ---------------------------------------------------------
-        # DELETE: Lookup the ID and destroy it
+        # DELETE: Destroy it by ID
         # ---------------------------------------------------------
         elif action == "delete":
             try:
-                # 1. Find the alias ID
-                res = client.read(f"identity/entity/name/{entity_name}")
-                alias_id = None
-                if res and 'data' in res and 'aliases' in res['data']:
-                    for a in res['data']['aliases']:
-                        if a['name'] == alias_name:
-                            alias_id = a['id']
-                            break
-                # 2. Delete by ID
-                if alias_id:
-                    client.delete(f"identity/entity-alias/id/{alias_id}")
-                    print(f"✅ Deleted alias '{alias_name}' from entity '{entity_name}'.")
-                else:
-                    print(f"⚠️ Alias '{alias_name}' does not exist on '{entity_name}'.", file=sys.stderr)
+                client.delete(f"identity/entity-alias/id/{alias_arg}")
+                print(f"✅ Deleted alias ID '{alias_arg}'.")
             except Exception as e:
                 print(f"❌ Error deleting alias: {e}", file=sys.stderr)
 
