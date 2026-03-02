@@ -1,12 +1,13 @@
 # 🔐 CTLabs Vault & Identity Suite
 
-A dedicated suite of CLI utilities and Python APIs for managing HashiCorp Vault, Zero Standing Privileges (JIT Access) in Google Cloud, and Enterprise Identity.
+A dedicated suite of CLI utilities and Python APIs for managing HashiCorp Vault, Zero Standing Privileges (JIT Access) in Google Cloud and Kubernetes, and Enterprise Identity.
 
 ## 📦 Architecture & Philosophy
-This module strictly separates the three pillars of Cloud Security:
+This module strictly separates the pillars of Cloud Security:
 1. **Authentication & Policy (`vault-auth`)**: Who are you, and what are you allowed to do?
-2. **Cloud Identity (`vault-gcp`)**: Just-In-Time, ephemeral access to cloud infrastructure.
-3. **Static Data (`vault-secret`)**: Managing key-value payloads and reading raw Vault APIs.
+2. **Cloud Identity (`vault-gcp`)**: Just-In-Time, ephemeral access to Google Cloud infrastructure.
+3. **Cluster Identity (`vault-k8s`)**: Just-In-Time, ephemeral access to Kubernetes clusters.
+4. **Static Data (`vault-secret`)**: Managing key-value payloads and reading raw Vault APIs.
 
 ---
 
@@ -16,7 +17,7 @@ This module strictly separates the three pillars of Cloud Security:
 Authenticate to Vault and securely cache a GPG-encrypted session token locally.
 ```bash
 # Log in manually (LDAP/Userpass)
-vault-login user my-username -a https://vault.example.com
+vault-login user my-username -a [https://vault.example.com](https://vault.example.com)
 
 # Log in as a Machine (AppRole)
 vault-login approle my-role-id
@@ -29,64 +30,66 @@ vault-login clear
 ```
 
 ### 2. Identity & Access Management (`vault-auth`)
-Manage users, machine identities, LDAP groups, and ACL policies.
+Manage users, machine identities, LDAP groups, ACL policies, and Kubernetes Auth bindings.
 ```bash
-# Users (LDAP / Userpass)
-vault-auth user list                      # Lists all users (smart aggregation)
-vault-auth user create alice --method ldap
-
-# Groups (Map LDAP groups to Vault Policies)
+# Users & Groups (LDAP / Userpass)
+vault-auth user list                      
 vault-auth group create devops --policies "vpc-admin, default"
-vault-auth group list
 
-# Machine Identities (AppRole)
+# Machine Identities (AppRole & Kubernetes Auth)
 vault-auth approle create ci-runner --policies "terraform-deployer"
-vault-auth approle read ci-runner         # Get RoleID and SecretID
+vault-auth k8s create payment-api-role --sa-names "payment-api-sa" --sa-namespaces "prod" --policies "db-writer"
+
+# Global Entities & Aliases (Identity Engine)
+vault-auth entity create peter --policies "developer-baseline"
+vault-auth alias create peter p.smith --mount userpass
+vault-auth alias create peter peter.smith --mount ldap
 
 # Policies (ACLs)
 vault-auth policy create vpc-admin --file policies/vpc-admin.hcl
-vault-auth policy list
 ```
 
 ### 3. Google Cloud JIT Access (`vault-gcp`)
 Bootstrap dynamic secrets engines and execute tools with Zero Standing Privileges.
-
-**🚀 Bootstrap & Rolesets:**
 ```bash
 # Initialize a new GCP Secrets Engine (Zero-Touch IAM setup)
 vault-gcp engine create ctlabs-prj-2025101601
 
-# Create a simple roleset
+# Create a roleset
 vault-gcp roleset create ctlabs-prj-2025101601 devops --roles "roles/editor"
 
-# Create an advanced roleset using YAML (Auto-patches cross-project IAM for Shared VPCs!)
-vault-gcp roleset create ctlabs-prj-2025101601 vpc-admin --bindings vpc-admin.yaml
-```
-
-**📄 Example `vpc-admin.yaml`:**
-```yaml
-projects:
-  - name: ctlabs-prj-2025101601
-    roles: [ "roles/owner" ]
-  - name: shared-vpc-host-project-id
-    roles: [ "roles/compute.networkUser" ]
-```
-
-**🔒 Just-In-Time Execution (Zero Credentials on Disk):**
-*Securely wraps tools by injecting short-lived GCP tokens purely into process memory.*
-```bash
-# Run a single Terraform command
+# JIT Execution: Securely wraps tools by injecting short-lived GCP tokens purely into process memory
 vault-gcp exec ctlabs-prj-2025101601 devops -- terraform plan
-
-# Open an authenticated subshell
 vault-gcp exec ctlabs-prj-2025101601 devops -- bash
-
-# Run an ephemeral, authenticated Docker container
-vault-gcp exec ctlabs-prj-2025101601 devops -- \
-  docker run --rm -it -e GOOGLE_OAUTH_ACCESS_TOKEN -e CLOUDSDK_AUTH_ACCESS_TOKEN google/cloud-sdk:latest bash
 ```
 
-### 4. Static Secrets & Data (`vault-secret`)
+### 4. Kubernetes JIT Access (`vault-k8s`)
+
+
+Dynamically generate ephemeral Kubernetes Service Accounts for human break-glass access or CI/CD deployments. No static `kubeconfig` required.
+
+**🚀 Bootstrap & Roles:**
+```bash
+# Zero-Touch Bootstrap: Uses your active kubectl to mount the engine and bind Vault to the cluster
+vault-k8s engine create prod-cluster
+
+# Tell Vault what Kubernetes RBAC rules to generate dynamically
+vault-k8s role create prod-cluster developer --rules developer-rules.json --namespaces "frontend,backend"
+```
+
+**📄 Example `developer-rules.json`:**
+```json
+{"rules": [{"apiGroups":[""], "resources":["pods", "pods/log"], "verbs":["get", "list"]}]}
+```
+
+**🔒 Just-In-Time Execution:**
+*Securely wraps `kubectl` by injecting a dynamic, short-lived token without touching `~/.kube/config`.*
+```bash
+# Request a JIT token and instantly fetch logs (Token is deleted automatically by Vault!)
+vault-k8s exec prod-cluster developer backend -- kubectl get pods
+```
+
+### 5. Static Secrets & Data (`vault-secret`)
 Manage standard KVv2 data and inspect raw Vault endpoints.
 ```bash
 # Manage KV secrets
@@ -109,6 +112,10 @@ from ctlabs_tools.vault.core import HashiVault
 
 vault = HashiVault()
 if vault.ensure_valid_token():
-    token = vault.get_gcp_token("devops", "gcp/my-project")
-    print("Obtained JIT token!")
+    
+    # Get a dynamic GCP token
+    gcp_token = vault.get_gcp_token("devops", "gcp/my-project")
+    
+    # Get a dynamic Kubernetes token
+    k8s_token = vault.get_k8s_secret_token("developer", "backend", "k8s/prod-cluster")
 ```
