@@ -2,6 +2,8 @@
 
 A dedicated suite of CLI utilities and Python APIs for managing HashiCorp Vault, Zero Standing Privileges (JIT Access) in Google Cloud and Kubernetes, and Enterprise Identity.
 
+
+
 ## 📦 Architecture & Philosophy
 This module strictly separates the pillars of Cloud Security:
 1. **Authentication & Policy (`vault-auth`)**: Who are you, and what are you allowed to do?
@@ -50,43 +52,58 @@ vault-auth policy create vpc-admin --file policies/vpc-admin.hcl
 
 ### 3. Google Cloud JIT Access (`vault-gcp`)
 
-
 Bootstrap dynamic secrets engines and execute tools with Zero Standing Privileges.
 
-**🚀 Bootstrap & Rolesets:**
-*Create dynamic rolesets that generate temporary GCP tokens bound to specific GCP IAM Roles. Supports inline roles or advanced YAML bindings.*
+
+
+**🚀 Identity Broker Bootstrap (Zero-Touch & Least Privilege):**
+*Configures Vault as a Global or Folder-level Identity Broker. Automatically creates the Service Account, applies IAM inheritance bindings, and passes the JSON key directly to Vault in-memory (zero disk footprint).*
 ```bash
-# 1. Mount the GCP engine for a specific project
-vault-gcp engine create ctlabs-prj-2025101601
+# Scope Vault's JIT powers to a specific GCP Folder (Best Practice)
+vault-gcp bootstrap --project ctlabs-prj-2025101601 --folder-id 629297822944
 
-# 2. Simple Role Assignment (Inline)
-vault-gcp roleset create ctlabs-prj-2025101601 devops --roles "roles/editor,roles/compute.admin"
-
-# 3. Advanced IAM Bindings (Using YAML/JSON)
-vault-gcp roleset create ctlabs-prj-2025101601 data-eng --bindings gcp-bindings.yml
+# Scope Vault's JIT powers to a single Project
+vault-gcp bootstrap --project ctlabs-prj-2025101601
 ```
 
-**📄 Example `gcp-bindings.yml`:**
+**🛡️ Rolesets & Cross-Project Auto-Patching:**
+*Create dynamic rolesets that generate temporary GCP tokens bound to specific GCP IAM Roles. The tool automatically detects cross-project YAML bindings and auto-patches the target project's IAM to allow Vault access.*
+```bash
+# 1. Simple Role Assignment (Inline)
+vault-gcp roleset create ctlabs-prj-2025101601 devops --roles "roles/editor,roles/compute.admin"
+
+# 2. Advanced IAM Bindings (Using YAML with Auto-Patching)
+vault-gcp roleset create ctlabs-prj-2025101601 vpc-admin --bindings vpc-admin.yml
+```
+
+**📄 Example `vpc-admin.yml`:**
 ```yaml
-bindings:
-  - resource: "//[cloudresourcemanager.googleapis.com/projects/ctlabs-prj-2025101601](https://cloudresourcemanager.googleapis.com/projects/ctlabs-prj-2025101601)"
+projects:
+  - name: ctlabs-0815-123abc-05a-03 # The script auto-patches this external project!
     roles:
-      - "roles/viewer"
-  - resource: "//[storage.googleapis.com/projects/_/buckets/my-secure-bucket](https://storage.googleapis.com/projects/_/buckets/my-secure-bucket)"
-    roles:
-      - "roles/storage.objectAdmin"
+      - roles/compute.networkAdmin
+      - roles/compute.securityAdmin
 ```
 
 **🔒 Just-In-Time Execution & Introspection:**
+*Securely wraps tools by injecting a dynamic, short-lived OAuth token directly into the environment.*
 ```bash
 vault-gcp info
-vault-gcp exec ctlabs-prj-2025101601 devops -- terraform plan
+vault-gcp exec ctlabs-prj-2025101601 vpc-admin -- terraform plan
+vault-gcp exec ctlabs-prj-2025101601 vpc-admin -- bash # Drops you into an authenticated JIT subshell
+```
+
+**🧹 Teardown & Security Cleanup:**
+*Revoke Vault's GCP access, strip IAM bindings, and delete the broker Service Account.*
+```bash
+vault-gcp cleanup --project ctlabs-prj-2025101601 --folder-id 629297822944
 ```
 
 ### 4. Kubernetes JIT Access (`vault-k8s`)
 
-
 Dynamically generate ephemeral Kubernetes Service Accounts for human break-glass access or CI/CD deployments. No static `kubeconfig` required.
+
+
 
 **🚀 Bootstrap & Roles:**
 ```bash
