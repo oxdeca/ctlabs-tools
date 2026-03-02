@@ -48,7 +48,7 @@ def get_args():
     p_exec.add_argument("roleset", nargs="?", default="terraform-runner", help="Roleset name (default: terraform-runner)")
     p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
 
-    # 3. ENGINE
+    # 3. ENGINE (Legacy Project-level setup)
     p_engine = subparsers.add_parser("engine", help="Manage GCP Secrets Engines")
     p_engine.add_argument("action", choices=["create", "update", "delete", "list"], help="Action to perform")
     p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID")
@@ -62,6 +62,16 @@ def get_args():
     p_roleset.add_argument("--roles", default="roles/editor", help="Comma-separated roles (for simple create)")
     p_roleset.add_argument("--bindings", help="Path to YAML/HCL bindings file (for advanced/cross-project)")
     p_roleset.add_argument("--master-sa", default="", help="Custom Vault Master SA email (used for cross-project auto-patching)")
+
+    # 5. BOOTSTRAP (New Folder-Level Setup)
+    p_bootstrap = subparsers.add_parser("bootstrap", help="Configure Vault GCP engine with Folder-level permissions (Least Privilege)")
+    p_bootstrap.add_argument("--project", required=True, help="The GCP Project ID where the Vault Broker SA will live")
+    p_bootstrap.add_argument("--folder-id", help="Optional: Scopes Vault's permissions to this GCP Folder ID")
+
+    # 6. CLEANUP (New Teardown)
+    p_cleanup = subparsers.add_parser("cleanup", help="Revoke Vault's GCP access and delete the broker SA")
+    p_cleanup.add_argument("--project", required=True, help="The GCP Project ID where the Vault Broker SA lives")
+    p_cleanup.add_argument("--folder-id", help="Optional: The GCP Folder ID where Vault's permissions were scoped")
 
     return parser.parse_args()
 
@@ -122,7 +132,85 @@ def main():
             sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # ENGINE
+    # BOOTSTRAP (Folder/Project Scoped Identity Broker)
+    # -------------------------------------------------------------------------
+    elif cmd == "bootstrap":
+        project = args.project
+        folder_id = args.folder_id
+        sa_name = "vault-gcp-broker"
+        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+        mount_point = f"gcp/{project}"
+
+        print(f"🚀 Initializing Vault GCP Broker in project: {project}...")
+        
+        print(f"  ├─ Enabling necessary GCP Services...")
+        run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=2)
+
+        print(f"  ├─ Creating Service Account '{sa_name}'...")
+        run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Broker", "--project", project], ignore_errors=True)
+
+        roles = [
+            "roles/resourcemanager.projectIamAdmin",
+            "roles/iam.serviceAccountAdmin",
+            "roles/iam.serviceAccountKeyAdmin"
+        ]
+
+        if folder_id:
+            print(f"  ├─ 📁 Scoping Vault's access to FOLDER: {folder_id}...")
+            for role in roles:
+                run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+        else:
+            print(f"  ├─ 📄 Scoping Vault's access locally to PROJECT: {project}...")
+            for role in roles:
+                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+
+        print("  ├─ 🔑 Generating JSON Key in-memory and updating Vault...")
+        # Using capture_json=True to grab the key without ever writing it to disk!
+        creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project], capture_json=True)
+
+        if vault.setup_gcp_engine(creds_json=creds_json, mount_point=mount_point):
+            print(f"🎉 Vault GCP Broker is configured and ready at '{mount_point}/'!")
+        else:
+            print(f"❌ Failed to configure Vault engine.", file=sys.stderr)
+            sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # CLEANUP (Teardown Scoped Identity Broker)
+    # -------------------------------------------------------------------------
+    elif cmd == "cleanup":
+        project = args.project
+        folder_id = args.folder_id
+        sa_name = "vault-gcp-broker"
+        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+        mount_point = f"gcp/{project}"
+
+        print(f"🧹 Starting Vault GCP Broker cleanup for project: {project}...")
+
+        roles = [
+            "roles/resourcemanager.projectIamAdmin",
+            "roles/iam.serviceAccountAdmin",
+            "roles/iam.serviceAccountKeyAdmin"
+        ]
+
+        if folder_id:
+            print(f"  ├─ 📁 Removing Vault's access from FOLDER: {folder_id}...")
+            for role in roles:
+                run_gcloud(["gcloud", "resource-manager", "folders", "remove-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
+        else:
+            print(f"  ├─ 📄 Removing Vault's access from PROJECT: {project}...")
+            for role in roles:
+                run_gcloud(["gcloud", "projects", "remove-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
+
+        print(f"  ├─ 🗑️ Deleting Service Account '{sa_name}'...")
+        run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
+
+        print(f"  ├─ 🧹 Tearing down Vault engine at '{mount_point}/'...")
+        vault.teardown_gcp_engine(mount_point=mount_point)
+
+        print("✅ Cleanup complete. Vault's GCP access has been fully revoked.")
+
+    # -------------------------------------------------------------------------
+    # ENGINE (Legacy)
     # -------------------------------------------------------------------------
     elif cmd == "engine":
         action = args.action
@@ -204,7 +292,7 @@ def main():
                             config = yaml.safe_load(f)
                             
                             # Determine Master SA for patching
-                            master_sa = args.master_sa or f"vault-gcp-master@{project}.iam.gserviceaccount.com"
+                            master_sa = args.master_sa or f"vault-gcp-broker@{project}.iam.gserviceaccount.com"
                             
                             for res_type, uri_path in {'projects': 'projects', 'folders': 'folders', 'organizations': 'organizations'}.items():
                                 for item in config.get(res_type, []):
