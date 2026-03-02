@@ -55,14 +55,20 @@ def get_args():
     p_alias.add_argument("--entity", help="Entity name (required for create/update)")
     p_alias.add_argument("--mount", help="Auth mount path (e.g., userpass) (required for create/update)")
 
-    # 7. KUBERNETES
-    p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles")
-    p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role")
-    p_k8s.add_argument("--sa-names", help="Comma-separated list of allowed K8s Service Accounts (required for create)")
-    p_k8s.add_argument("--sa-namespaces", help="Comma-separated list of allowed K8s Namespaces (required for create)")
-    p_k8s.add_argument("--policies", help="Comma-separated list of Vault policies to grant")
-    p_k8s.add_argument("--ttl", default="1h", help="Token TTL (default: 1h)")
+    # 7. KUBERNETES AUTH
+    p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles & Configuration")
+    p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
+    p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role (Required for all except list/configure)")
+    
+    # Flags for Role Management
+    p_k8s.add_argument("--sa-names", help="Allowed K8s Service Accounts")
+    p_k8s.add_argument("--sa-namespaces", help="Allowed K8s Namespaces")
+    p_k8s.add_argument("--policies", help="Vault policies to grant")
+    p_k8s.add_argument("--ttl", default="1h", help="Token TTL")
+    
+    # Flags for Backend Configuration (The "Phone Line")
+    p_k8s.add_argument("--host", help="K8s API Host (for 'configure' action)")
+    p_k8s.add_argument("--ca-cert", help="Path to K8s CA Cert file (for 'configure' action)")
     
     return parser.parse_args()
 
@@ -357,6 +363,23 @@ def main():
     # 7. KUBERNETES MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "k8s":
+        if action == "configure":
+            if not args.host or not args.ca_cert:
+                print("❌ Error: --host and --ca-cert are required for configuration.", file=sys.stderr)
+                sys.exit(1)
+            
+            try:
+                with open(args.ca_cert, 'r') as f:
+                    ca_content = f.read()
+                
+                client = vault._get_client()
+                # Link the Vault Auth Backend to the K8s Cluster
+                client.write("auth/kubernetes/config", kubernetes_host=args.host, kubernetes_ca_cert=ca_content)
+                print(f"✅ Kubernetes Auth Backend successfully linked to {args.host}")
+            except Exception as e:
+                print(f"❌ Error configuring K8s Auth: {e}", file=sys.stderr)
+            sys.exit(0)
+            
         if action == "list":
             roles = vault.list_kubernetes_roles()
             if roles:
