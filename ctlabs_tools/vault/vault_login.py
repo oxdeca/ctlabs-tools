@@ -257,7 +257,6 @@ def run_cli():
             token = auth_result["token"]
             
             # 🌟 FIX: Use a temporary hvac client to look up the token details!
-            import hvac
             temp_client = hvac.Client(url=vault_addr, token=token, verify=False)
             try:
                 lookup_res = temp_client.auth.token.lookup_self()
