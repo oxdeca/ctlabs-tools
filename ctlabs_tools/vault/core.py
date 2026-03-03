@@ -1220,7 +1220,8 @@ class HashiVault:
             ],
             "user_claim": "email",
             "bound_claims": bound_claims,
-            "token_ttl": ttl
+            "token_ttl": ttl,
+            "oidc_scopes": ["openid", "email", "profile"] # 🌟 FIX: Force Google to return the email!
         }
         
         if policies:
