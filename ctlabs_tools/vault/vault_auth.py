@@ -68,17 +68,20 @@ def get_args():
 
     # 8. OIDC AUTH (NEW)
     p_oidc = subparsers.add_parser("oidc", help="Manage OIDC Auth & Roles (SSO)")
-    p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
-    p_oidc.add_argument("name", nargs="?", default="", help="Name of the OIDC role (Required for all except list/configure)")
+    p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure", "register"], help="Action to perform")
+    p_oidc.add_argument("name", nargs="?", default="", help="Role name (OR 'Provider' like gcp/aws/okta for 'register')")
     # Config flags
     p_oidc.add_argument("--client-id", help="OIDC Client ID (for 'configure' action)")
-    p_oidc.add_argument("--client-secret", help="OIDC Client Secret (for 'configure' action)")
-    p_oidc.add_argument("--default-role", default="default", help="Default OIDC role (for 'configure' action)")
+    p_oidc.add_argument("--client-secret", help="OIDC Client Secret (for 'configure')")
+    p_oidc.add_argument("--default-role", default="default", help="Default OIDC role (for 'configure')")
     # Role flags
     p_oidc.add_argument("--emails", help="Comma-separated list of allowed emails")
     p_oidc.add_argument("--groups", help="Comma-separated list of allowed Google Groups")
     p_oidc.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_oidc.add_argument("--ttl", default="1h", help="Token TTL")
+    # New flags for the interactive 'register' command
+    p_oidc.add_argument("--gcp-project", help="GCP Project ID to use or create for the OAuth Client (for 'register')")
+    p_oidc.add_argument("--admin-email", help="Your Google email to grant IAM roles to (for 'register')")
 
     return parser.parse_args()
 
@@ -434,7 +437,112 @@ def main():
         elif action == "delete":
             if vault.delete_oidc_role(name):
                 print(f"✅ Deleted OIDC role '{name}'.")
+    
+        # Register: Interactive Guided Setup for OIDC Providers
+        elif action == "register":
+            import subprocess
+            provider = name.lower()
 
+            # -------------------------------------------------------------
+            # PROVIDER: GOOGLE CLOUD (GCP)
+            # -------------------------------------------------------------
+            if provider == "gcp":
+                if not args.gcp_project or not args.admin_email:
+                    print("❌ Error: --gcp-project and --admin-email are required for 'register gcp'.", file=sys.stderr)
+                    sys.exit(1)
+                    
+                project_id = args.gcp_project
+                admin_email = args.admin_email
+
+                print(f"🚀 Step 1: Checking GCP Project '{project_id}'...")
+                res = subprocess.run(["gcloud", "projects", "describe", project_id], capture_output=True, text=True)
+                
+                if res.returncode != 0:
+                    print(f"   ℹ️ Project not found. Creating '{project_id}'...")
+                    subprocess.run(["gcloud", "projects", "create", project_id], check=True)
+                else:
+                    print("   ✅ Project exists.")
+
+                print(f"🚀 Step 2: Assigning OAuth IAM roles to {admin_email}...")
+                subprocess.run(["gcloud", "projects", "add-iam-policy-binding", project_id, 
+                                "--member", f"user:{admin_email}", "--role", "roles/oauthconfig.editor"], capture_output=True)
+                subprocess.run(["gcloud", "projects", "add-iam-policy-binding", project_id, 
+                                "--member", f"user:{admin_email}", "--role", "roles/clientauthconfig.editor"], capture_output=True)
+                print("   ✅ IAM Roles assigned.")
+
+                print("\n" + "="*60)
+                print("🛑 ACTION REQUIRED: MANUAL GCP CONSOLE SETUP 🛑")
+                print("="*60)
+                print(f"1️⃣  Configure the Consent Screen:")
+                print(f"   🔗 URL: https://console.cloud.google.com/apis/credentials/consent?project={project_id}")
+                print(f"2️⃣  Create the OAuth Client ID (Web Application):")
+                print(f"   🔗 URL: https://console.cloud.google.com/apis/credentials?project={project_id}")
+                print(f"   👉 Add Redirect URIs:")
+                print(f"      - http://localhost:8250/oidc/callback")
+                print(f"      - https://vault.yourdomain.com:8200/ui/vault/auth/oidc/oidc/callback")
+                print("="*60)
+                
+                client_id = input("🔑 Paste your new Client ID: ").strip()
+                client_secret = input("🕵️  Paste your new Client Secret: ").strip()
+                discovery_url = "https://accounts.google.com"
+
+            # -------------------------------------------------------------
+            # PROVIDER: MICROSOFT ENTRA ID (AZURE AD)
+            # -------------------------------------------------------------
+            elif provider in ["azure", "entraid"]:
+                print("\n" + "="*60)
+                print("🛑 ACTION REQUIRED: MANUAL ENTRA ID SETUP 🛑")
+                print("="*60)
+                print("1️⃣  Go to Azure Portal -> Microsoft Entra ID -> App Registrations.")
+                print("2️⃣  Create a new registration ('Vault SSO').")
+                print("3️⃣  Add Web Redirect URIs (localhost:8250 & Vault UI).")
+                print("4️⃣  Go to 'Certificates & secrets' and create a Client Secret.")
+                print("="*60)
+                
+                client_id = input("🔑 Paste your Entra ID Application (client) ID: ").strip()
+                client_secret = input("🕵️  Paste your Entra ID Client Secret: ").strip()
+                tenant_id = input("🏢 Paste your Directory (tenant) ID: ").strip()
+                discovery_url = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+
+            # -------------------------------------------------------------
+            # PROVIDER: OKTA
+            # -------------------------------------------------------------
+            elif provider == "okta":
+                print("\n" + "="*60)
+                print("🛑 ACTION REQUIRED: MANUAL OKTA SETUP 🛑")
+                print("="*60)
+                print("1️⃣  Go to Okta Admin Console -> Applications -> Create App Integration.")
+                print("2️⃣  Choose OIDC - OpenID Connect -> Web Application.")
+                print("3️⃣  Add Redirect URIs (localhost:8250 & Vault UI).")
+                print("="*60)
+                
+                okta_domain = input("🌐 Paste your Okta Domain (e.g., dev-123.okta.com): ").strip()
+                client_id = input("🔑 Paste your Client ID: ").strip()
+                client_secret = input("🕵️  Paste your Client Secret: ").strip()
+                # Normalize domain format
+                okta_domain = okta_domain.replace("https://", "").strip("/")
+                discovery_url = f"https://{okta_domain}"
+
+            # -------------------------------------------------------------
+            # UNKNOWN PROVIDER FALLBACK
+            # -------------------------------------------------------------
+            else:
+                print(f"❌ Error: Unsupported OIDC provider '{provider}'.", file=sys.stderr)
+                print("   Supported providers: gcp, azure, okta", file=sys.stderr)
+                sys.exit(1)
+
+            # -------------------------------------------------------------
+            # UNIVERSAL VAULT CONFIGURATION
+            # -------------------------------------------------------------
+            if not client_id or not client_secret:
+                print("❌ Aborting: Client ID and Secret are required.", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"\n🚀 Step 3: Configuring Vault OIDC Engine for {provider.upper()}...")
+            if vault.configure_oidc(client_id, client_secret, args.default_role, discovery_url=discovery_url):
+                print(f"🎉 SUCCESS! Vault SSO is fully registered with {provider.upper()}.")
+            else:
+                sys.exit(1)
 
 if __name__ == "__main__":
     main()
