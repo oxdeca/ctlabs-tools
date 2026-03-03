@@ -67,13 +67,14 @@ def get_args():
     p_engine.add_argument("--max-ttl", help="Update max lease TTL (e.g., '24h')")
 
     # 4. ROLESET
-    p_roleset = subparsers.add_parser("role", help="Manage GCP rolesets (team service accounts)")
-    p_roleset.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
-    p_roleset.add_argument("project", nargs="?", default="", help="GCP Project ID")
-    p_roleset.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset")
-    p_roleset.add_argument("--roles", default="roles/editor", help="Comma-separated roles (for simple create)")
-    p_roleset.add_argument("--bindings", help="Path to YAML/HCL bindings file (for advanced/cross-project)")
-    p_roleset.add_argument("--master-sa", default="", help="Custom Vault Master SA email (used for cross-project auto-patching)")
+    p_role = subparsers.add_parser("role", help="Manage GCP rolesets (team service accounts)")
+    p_role.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_role.add_argument("project", nargs="?", default="", help="GCP Project ID")
+    p_role.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset")
+    p_role.add_argument("--roles", default="roles/editor", help="Comma-separated roles (for simple create)")
+    p_role.add_argument("--bindings", help="Path to YAML/HCL bindings file (for advanced/cross-project)")
+    p_role.add_argument("--master-sa", default="", help="Custom Vault Master SA email (used for cross-project auto-patching)")
+    p_role.add_argument("--folder", help="Target a Folder ID instead of the Project (e.g., 123456789)")
 
     # 5. BOOTSTRAP (New Folder-Level Setup)
     p_bootstrap = subparsers.add_parser("bootstrap", help="Configure Vault GCP engine with Folder-level permissions (Least Privilege)")
@@ -370,7 +371,16 @@ def main():
                     sys.exit(1)
             else:
                 roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
-                bindings_hcl = f'\nresource "//cloudresourcemanager.googleapis.com/projects/{project}" {{\n  roles = [{", ".join(roles_list)}]\n}}\n'
+                
+                # 🧠 SMART BINDING: Target Folder if provided, else target the Project
+                if args.folder:
+                    resource_uri = f"//cloudresourcemanager.googleapis.com/folders/{args.folder}"
+                    print(f"📁 Binding permissions at the FOLDER level (Folder ID: {args.folder})")
+                else:
+                    resource_uri = f"//cloudresourcemanager.googleapis.com/projects/{project}"
+                    print(f"🏗️ Binding permissions at the PROJECT level ({project})")
+                    
+                bindings_hcl = f'\nresource "{resource_uri}" {{\n  roles = [{", ".join(roles_list)}]\n}}\n'
                 
             print(f"🚀 Creating Roleset '{roleset_name}'...")
             vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
