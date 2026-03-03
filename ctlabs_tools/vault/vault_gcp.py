@@ -59,7 +59,7 @@ def get_args():
     # 3. ENGINE (Legacy Project-level setup)
     p_engine = subparsers.add_parser("engine", help="Manage GCP Secrets Engines")
     # 🌟 Added read, info, update
-    p_engine.add_argument("action", choices=["setup", "teardown", "list", "read", "info", "update"])
+    p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"])
     p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID")
     
     # 🌟 Added update flags
@@ -289,7 +289,7 @@ def main():
     # -------------------------------------------------------------------------
     # ROLESET
     # -------------------------------------------------------------------------
-    elif cmd == "roleset":
+    elif cmd == "role":
         action = args.action
         project = args.project
         roleset_name = args.roleset_name
