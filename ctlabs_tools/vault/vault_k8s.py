@@ -26,6 +26,32 @@ def run_kubectl(cmd_list, capture=False, ignore_errors=False, quiet=False):
             print(f"\n❌ Kubectl Command Failed: {' '.join(cmd_list)}\nError output: {e.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
 
+def get_cached_server(cluster_name):
+    """Retrieves a locally cached K8s API server URL."""
+    cache_file = os.path.expanduser("~/.ctlabs_vault/k8s_servers.json")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f).get(cluster_name)
+        except Exception: pass
+    return None
+
+def save_cached_server(cluster_name, server_url):
+    """Saves the K8s API server URL to local cache so the user doesn't have to type it again."""
+    cache_file = os.path.expanduser("~/.ctlabs_vault/k8s_servers.json")
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    try:
+        data = {}
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+        data[cluster_name] = server_url
+        with open(cache_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not cache server URL: {e}", file=sys.stderr)
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Kubernetes Secrets Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout")
@@ -89,15 +115,38 @@ def main():
         token = vault.get_k8s_secret_token(role_name=args.role, k8s_namespace=args.namespace, mount_point=mount_point)
         if not token: sys.exit(1)
 
-        # 2. 🧠 SMART OVERRIDE: Use user-provided server, or fallback to Vault's config
+        # 2. 🧠 SMART OVERRIDE: Check CLI -> Check Env -> Check Cache -> Check Vault
+        kube_host = None
+        env_var_name = f"VAULT_K8S_SERVER_{args.cluster.upper().replace('-', '_')}"
+        
         if args.server:
+            # 1. CLI Flag provided (Format it and save it for next time!)
             kube_host = args.server
-            print(f"🌐 Using overridden API server: {kube_host}", file=sys.stderr)
+            if not kube_host.startswith("http"):
+                kube_host = f"https://{kube_host}"
+                
+            print(f"💾 Caching server override for future use: {kube_host}", file=sys.stderr)
+            save_cached_server(args.cluster, kube_host)
+            
         else:
-            kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
+            # 2. Try Environment Variable (e.g., VAULT_K8S_SERVER_PROD_CLUSTER)
+            kube_host = os.environ.get(env_var_name)
+            if kube_host:
+                print(f"🌐 Using server from environment variable ({env_var_name}): {kube_host}", file=sys.stderr)
+                
+            # 3. Try Local Cache
             if not kube_host:
-                print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
-                sys.exit(1)
+                kube_host = get_cached_server(args.cluster)
+                if kube_host:
+                    print(f"🌐 Using cached server override: {kube_host}", file=sys.stderr)
+
+            # 4. Fallback to Vault's internal config
+            if not kube_host:
+                kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
+                
+        if not kube_host:
+            print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
+            sys.exit(1)
 
         # 3. Inject into kubectl
         if command_list[0] == "kubectl":
