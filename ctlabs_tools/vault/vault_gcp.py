@@ -93,6 +93,20 @@ def get_args():
     p_gke.add_argument("cluster", help="GKE Cluster Name")
     p_gke.add_argument("--roleset", default="gke-admin", help="The Vault GCP Roleset (suggested: gke-admin for bootstrapping)")
 
+    # 🌟 NEW: Leases Management for GCP
+    p_leases = subparsers.add_parser("leases", help="Manage dynamic GCP OAuth tokens and Service Account keys")
+    leases_subs = p_leases.add_subparsers(dest="action", required=True)
+
+    # list
+    p_leases_list = leases_subs.add_parser("list", help="List all active GCP leases")
+    p_leases_list.add_argument("--mount", default="gcp", help="The GCP engine mount point (default: gcp)")
+
+    # revoke
+    p_leases_revoke = leases_subs.add_parser("revoke", help="Revoke GCP leases")
+    p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
+    p_leases_revoke.add_argument("--mount", default="gcp", help="The GCP engine mount point (default: gcp)")
+    p_leases_revoke.add_argument("--force", action="store_true", help="Force wipe all leases under this mount")
+
     return parser.parse_args()
 
 def main():
@@ -150,6 +164,41 @@ def main():
         except FileNotFoundError:
             print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
             sys.exit(1)
+
+    # ---------------------------------------------------------------------
+    # LEASES (GCP)
+    # ---------------------------------------------------------------------
+    elif cmd == "leases":
+        mount_point = args.mount.strip('/')
+        
+        if action == "list":
+            print(f"🔍 Searching for active leases in '{mount_point}/'...")
+            found_any = False
+            
+            # GCP leases live under either 'token/' or 'key/' depending on the roleset type
+            for token_type in ["token/", "key/"]:
+                rolesets = vault.list_leases(f"{mount_point}/{token_type}")
+                if rolesets:
+                    for roleset in rolesets:
+                        lease_ids = vault.list_leases(f"{mount_point}/{token_type}{roleset}")
+                        for lid in lease_ids:
+                            print(f"  ├─ {mount_point}/{token_type}{roleset}{lid}")
+                            found_any = True
+                            
+            if not found_any:
+                print("✅ No active GCP leases found.")
+                
+        elif action == "revoke":
+            if getattr(args, "id", None):
+                print(f"🗑️ Revoking specific lease '{args.id}'...")
+                if vault.revoke_lease(args.id):
+                    print("✅ GCP lease successfully revoked.")
+            elif getattr(args, "force", False):
+                print(f"🔥 Force revoking ALL leases under '{mount_point}/'...")
+                if vault.force_revoke_prefix(mount_point):
+                    print("✅ All GCP leases forcefully wiped.")
+            else:
+                print("⚠️ You must provide either '--id <lease_id>' or use '--force' to wipe the engine.")
 
     # -------------------------------------------------------------------------
     # BOOTSTRAP (Folder/Project Scoped Identity Broker)
