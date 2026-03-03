@@ -91,7 +91,7 @@ def get_args():
     p_gke.add_argument("project", help="The GCP Project ID")
     p_gke.add_argument("location", help="GCP Location (e.g., us-central1)")
     p_gke.add_argument("cluster", help="GKE Cluster Name")
-    p_gke.add_argument("--roleset", default="vault-admin", help="The Vault GCP Roleset to use for the API call")
+    p_gke.add_argument("--roleset", default="gke-admin", help="The Vault GCP Roleset (suggested: gke-admin for bootstrapping)")
 
     return parser.parse_args()
 
