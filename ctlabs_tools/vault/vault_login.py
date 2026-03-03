@@ -50,7 +50,8 @@ def get_args():
 
     # 5. OIDC
     p_oidc = subparsers.add_parser("oidc", help="Login via Google Workspace SSO")
-    p_oidc.add_argument("role", nargs="?", default="default", help="The OIDC role to assume (e.g., admin, developer)")
+    p_oidc.add_argument("role", nargs="?", default="default", help="The OIDC role to assume")
+    p_oidc.add_argument("--no-browser", action="store_true", help="Print the auth URL instead of opening a browser (useful for SSH)")
 
     return parser.parse_args()
 
@@ -246,10 +247,11 @@ def main():
         
     check_vault_health(vault_addr)
     
-    # 🌟 NEW: Catch OIDC first and bypass the legacy flows
+    # 🌟 Catch OIDC first and bypass the legacy flows
     if args.command == "oidc":
         print(f"🚀 Initiating OIDC login for role: {args.role}")
-        auth_result = vault.oidc_login(role=args.role)
+        # Pass the flag down!
+        auth_result = vault.oidc_login(role=args.role, no_browser=args.no_browser) 
         
         if auth_result and auth_result.get("token"):
             token = auth_result["token"]

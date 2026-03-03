@@ -1266,8 +1266,8 @@ class HashiVault:
             if "404" not in str(e): print(f"❌ Error listing OIDC roles: {e}")
             return []
 
-    def oidc_login(self, role="default", port=8250):
-        """Executes the interactive OIDC browser login flow."""
+    def oidc_login(self, role="default", port=8250, no_browser=False):
+        """Executes the OIDC browser login flow, supporting both local and headless environments."""
         import os
         import urllib.parse
         import webbrowser
@@ -1279,11 +1279,10 @@ class HashiVault:
             print("❌ Error: VAULT_ADDR environment variable is not set.")
             return None
 
-        # Create an unauthenticated client just to initiate the login
         client = hvac.Client(url=vault_url, verify=False)
         redirect_uri = f"http://localhost:{port}/oidc/callback"
 
-        # 1. Ask Vault to generate the Google Auth URL
+        # 1. Ask Vault to generate the Auth URL
         try:
             res = client.write("auth/oidc/oidc/auth_url", role=role, redirect_uri=redirect_uri)
             auth_url = res['data']['auth_url']
@@ -1291,53 +1290,91 @@ class HashiVault:
             print(f"❌ Error initiating OIDC login (does role '{role}' exist?): {e}")
             return None
 
-        # 2. Create a temporary local server to catch the callback
-        callback_data = {}
+        state = None
+        code = None
 
-        class OIDCHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                parsed = urllib.parse.urlparse(self.path)
-                if parsed.path == "/oidc/callback":
-                    query = urllib.parse.parse_qs(parsed.query)
-                    callback_data['state'] = query.get('state', [''])[0]
-                    callback_data['code'] = query.get('code', [''])[0]
-                    
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/html")
-                    self.end_headers()
-                    success_html = """
-                    <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                        <h1 style="color: #4CAF50;">Authentication Successful!</h1>
-                        <p>Vault has received your credentials. You can safely close this tab and return to your terminal.</p>
-                    </body></html>
-                    """
-                    self.wfile.write(success_html.encode('utf-8'))
-                else:
-                    self.send_response(404)
-                    self.end_headers()
+        # ---------------------------------------------------------------------
+        # ROUTE A: Headless Copy/Paste Flow (--no-browser)
+        # ---------------------------------------------------------------------
+        if no_browser:
+            print("\n" + "="*60)
+            print("🌐 HEADLESS OIDC LOGIN")
+            print("="*60)
+            print("1️⃣  Open this URL in your local web browser:\n")
+            print(f"{auth_url}\n")
+            print("2️⃣  Log in with your account.")
+            print("3️⃣  Your browser will redirect to a 'localhost' page and show an error.")
+            print("4️⃣  Copy the ENTIRE URL from your browser's address bar and paste it below.")
+            print("="*60 + "\n")
 
-            def log_message(self, format, *args):
-                pass # Suppress standard HTTP server access logs so the CLI stays clean
+            callback_url = input("📋 Paste the full localhost URL here: ").strip()
+            
+            try:
+                parsed = urllib.parse.urlparse(callback_url)
+                query = urllib.parse.parse_qs(parsed.query)
+                state = query.get('state', [''])[0]
+                code = query.get('code', [''])[0]
+            except Exception:
+                print("❌ Error parsing the URL. Did you paste the entire thing?")
+                return None
 
-        # 3. Spin up the listener and open the browser
-        print(f"🌐 Opening your browser to authenticate via SSO...")
-        server = HTTPServer(('localhost', port), OIDCHandler)
-        webbrowser.open(auth_url)
+        # ---------------------------------------------------------------------
+        # ROUTE B: Local Listener Flow (Default)
+        # ---------------------------------------------------------------------
+        else:
+            callback_data = {}
 
-        # 4. Block and wait for exactly ONE request from Google, then shut down
-        server.handle_request()
-        server.server_close()
+            class OIDCHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    parsed = urllib.parse.urlparse(self.path)
+                    if parsed.path == "/oidc/callback":
+                        query = urllib.parse.parse_qs(parsed.query)
+                        callback_data['state'] = query.get('state', [''])[0]
+                        callback_data['code'] = query.get('code', [''])[0]
+                        
+                        self.send_response(200)
+                        self.send_header("Content-type", "text/html")
+                        self.end_headers()
+                        success_html = """
+                        <html><body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                            <h1 style="color: #4CAF50;">Authentication Successful!</h1>
+                            <p>Vault has received your credentials. You can safely close this tab and return to your terminal.</p>
+                        </body></html>
+                        """
+                        self.wfile.write(success_html.encode('utf-8'))
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
 
-        if 'state' not in callback_data or 'code' not in callback_data:
-            print("❌ Error: Did not receive valid OIDC callback data.")
+                def log_message(self, format, *args):
+                    pass # Keep the CLI clean
+
+            print(f"🌐 Opening your browser to authenticate via SSO...")
+            print(f"🔗 If a browser doesn't open automatically, restart with --no-browser or click:\n{auth_url}\n")
+            
+            # Spin up the listener and open the browser
+            server = HTTPServer(('localhost', port), OIDCHandler)
+            try:
+                webbrowser.open(auth_url)
+            except Exception:
+                pass
+
+            # Block and wait for the redirect
+            server.handle_request()
+            server.server_close()
+
+            state = callback_data.get('state')
+            code = callback_data.get('code')
+
+        # ---------------------------------------------------------------------
+        # Final Step: Exchange the code for a Vault Token
+        # ---------------------------------------------------------------------
+        if not state or not code:
+            print("❌ Error: Missing 'state' or 'code' parameters.")
             return None
 
-        # 5. Exchange the auth code for a Vault token
         try:
-            res = client.read("auth/oidc/oidc/callback", state=callback_data['state'], code=callback_data['code'])
-            print("✅ Successfully authenticated via OIDC!")
-            
-            # Extract the token and standard metadata
+            res = client.read("auth/oidc/oidc/callback", state=state, code=code)
             auth_data = res.get('auth', {})
             return {
                 "token": auth_data.get('client_token'),
