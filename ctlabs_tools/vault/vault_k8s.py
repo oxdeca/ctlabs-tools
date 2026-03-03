@@ -92,8 +92,8 @@ def get_args():
     leases_subs = p_leases.add_subparsers(dest="action", required=True)
 
     # list
-    p_leases_list = leases_subs.add_parser("list", help="List all active leases for a cluster")
-    p_leases_list.add_argument("cluster", help="The cluster name")
+    p_leases_list = leases_subs.add_parser("list", help="List active leases (provide a cluster name, or leave blank for all)")
+    p_leases_list.add_argument("cluster", nargs="?", help="The cluster name (optional)")
 
     # revoke
     p_leases_revoke = leases_subs.add_parser("revoke", help="Revoke leases")
@@ -238,23 +238,32 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
     # LEASES
     # ---------------------------------------------------------------------
     elif cmd == "leases":
-        mount_point = f"k8s/{args.cluster}"
-        
         if action == "list":
-            print(f"🔍 Searching for active leases in '{mount_point}'...")
-            
-            # Step 1: Find all roles that have generated tokens
-            roles = vault.list_leases(f"{mount_point}/creds/")
-            if not roles:
-                print("✅ No active leases found.")
+            # 🧠 SMART UX: Decide if we are looking at one engine or all of them
+            if args.cluster:
+                mounts = [f"k8s/{args.cluster}"]
+                print(f"🔍 Searching for active leases in '{mounts[0]}/'...")
             else:
-                print(f"📋 Active Leases:")
-                # Step 2: Fetch the actual lease IDs under each role
-                for role in roles:
-                    lease_ids = vault.list_leases(f"{mount_point}/creds/{role}")
-                    for lid in lease_ids:
-                        full_lease_id = f"{mount_point}/creds/{role}{lid}"
-                        print(f"  ├─ {full_lease_id}")
+                print("🔍 Searching for active leases across ALL K8s engines...")
+                raw_engines = vault.list_engines(backend_type="kubernetes")
+                mounts = [m.rstrip('/') for m in (raw_engines or [])]
+                if not mounts:
+                print("✅ No Kubernetes engines found.")
+            else:
+                found_any = False
+                for mount in mounts:
+                    roles = vault.list_leases(f"{mount}/creds/")
+                    if roles:
+                        print(f"\n📁 Engine: {mount}/")
+                        for role in roles:
+                            lease_ids = vault.list_leases(f"{mount}/creds/{role}")
+                            for lid in lease_ids:
+                                full_lease_id = f"{mount}/creds/{role}{lid}"
+                                print(f"  ├─ {full_lease_id}")
+                                found_any = True
+                                
+                if not found_any:
+                    print("✅ No active K8s leases found.")
                         
         elif action == "revoke":
             if args.id:
