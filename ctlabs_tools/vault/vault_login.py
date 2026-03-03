@@ -167,7 +167,7 @@ def cache_local_token(vault_addr, token, lease_duration):
         print(f"❌ GPG Error: {stderr.decode()}")
 
 
-def main():
+def run_cli():
     args = get_args()
     vault = HashiVault()
 
@@ -306,9 +306,13 @@ def main():
     cache_local_token(vault_addr, token, lease_duration)
 
 
-if __name__ == "__main__":
+def main():
+    """Entrypoint wrapper to catch Ctrl+C when installed as a package binary."""
     try:
-        main()
+        run_cli()
     except KeyboardInterrupt:
-        print("\n\n🛑 Login aborted by user.")
+        print("\n\n🛑 Process aborted by user.")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()

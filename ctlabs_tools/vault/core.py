@@ -1360,8 +1360,13 @@ class HashiVault:
             except Exception:
                 pass
 
-            server.handle_request()
-            server.server_close()
+            # 🌟 FIX: Catch Ctrl+C and guarantee the socket closes!
+            try:
+                server.handle_request()
+            except KeyboardInterrupt:
+                print("\n🛑 Local listener aborted by user.")
+            finally:
+                server.server_close()
 
             state = callback_data.get('state')
             code = callback_data.get('code')
