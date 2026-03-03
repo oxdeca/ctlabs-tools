@@ -250,7 +250,9 @@ def main():
             sys.exit(1)
 
         mount_point = f"gcp/{project}"
-        sa_email = f"{args.sa_name}@{project}.iam.gserviceaccount.com"
+        # 🌟 FIX: Safely grab sa_name with a default fallback to prevent AttributeError
+        sa_name = getattr(args, "sa_name", "vault-admin")
+        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
 
         if action in ["create", "update"]:
             print(f"🚀 Initializing Zero-Touch GCP Engine at '{mount_point}/'...")
