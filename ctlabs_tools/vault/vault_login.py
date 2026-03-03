@@ -251,18 +251,22 @@ def run_cli():
     # 🌟 Catch OIDC first and bypass the legacy flows
     if args.command == "oidc":
         print(f"🚀 Initiating OIDC login for role: {args.role}")
-        # Pass the flag down!
         auth_result = vault.oidc_login(role=args.role, no_browser=args.no_browser) 
         
         if auth_result and auth_result.get("token"):
             token = auth_result["token"]
-            ttl = auth_result["ttl"]
-            display_name = auth_result["display_name"]
+            vault.client.token = token
+            info = vault.lookup_token() or {}
+            
+            # Extract the absolute source of truth
+            display_name = info.get('display_name', 'Unknown')
+            ttl = info.get('creation_ttl', auth_result.get('ttl', 3600))
+            policies = info.get('policies', auth_result.get('policies', []))
             
             cache_local_token(vault_addr, token, ttl)
             
             print(f"🎉 Welcome, {display_name}!")
-            print(f"📜 Policies granted: {', '.join(auth_result['policies'])}")
+            print(f"📜 Policies granted: {', '.join(policies)}")
             sys.exit(0)
         else:
             sys.exit(1)
