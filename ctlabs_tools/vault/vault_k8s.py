@@ -87,6 +87,20 @@ def get_args():
     # 4. INFO (Introspection)
     p_info = subparsers.add_parser("info", help="Introspect the active JIT Kubernetes token in your current shell")
 
+    # 5. Leases Management
+    p_leases = subparsers.add_parser("leases", help="Manage dynamic Kubernetes leases/tokens")
+    leases_subs = p_leases.add_subparsers(dest="action", required=True)
+
+    # list
+    p_leases_list = leases_subs.add_parser("list", help="List all active leases for a cluster")
+    p_leases_list.add_argument("cluster", help="The cluster name")
+
+    # revoke
+    p_leases_revoke = leases_subs.add_parser("revoke", help="Revoke leases")
+    p_leases_revoke.add_argument("cluster", help="The cluster name")
+    p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
+    p_leases_revoke.add_argument("--force", action="store_true", help="Force revoke ALL leases for this cluster")
+
     return parser.parse_args()
 
 def main():
@@ -220,6 +234,41 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
                 print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
                 sys.exit(1)
 
+    # ---------------------------------------------------------------------
+    # LEASES
+    # ---------------------------------------------------------------------
+    elif cmd == "leases":
+        mount_point = f"k8s/{args.cluster}"
+        
+        if action == "list":
+            print(f"🔍 Searching for active leases in '{mount_point}'...")
+            
+            # Step 1: Find all roles that have generated tokens
+            roles = vault.list_leases(f"{mount_point}/creds/")
+            if not roles:
+                print("✅ No active leases found.")
+            else:
+                print(f"📋 Active Leases:")
+                # Step 2: Fetch the actual lease IDs under each role
+                for role in roles:
+                    lease_ids = vault.list_leases(f"{mount_point}/creds/{role}")
+                    for lid in lease_ids:
+                        full_lease_id = f"{mount_point}/creds/{role}{lid}"
+                        print(f"  ├─ {full_lease_id}")
+                        
+        elif action == "revoke":
+            if args.id:
+                print(f"🗑️ Revoking specific lease '{args.id}'...")
+                if vault.revoke_lease(args.id):
+                    print("✅ Lease successfully revoked.")
+            elif getattr(args, "force", False):
+                print(f"🔥 Force revoking ALL leases under '{mount_point}'...")
+                if vault.force_revoke_prefix(mount_point):
+                    print("✅ All cluster leases forcefully wiped.")
+            else:
+                print("⚠️ You must provide either a specific '--id <lease_id>' or use '--force' to wipe the cluster.")
+
+
     # -------------------------------------------------------------------------
     # 2. ENGINE MANAGEMENT
     # -------------------------------------------------------------------------
@@ -344,6 +393,7 @@ type: kubernetes.io/service-account-token
                 
             if vault.update_k8s_engine_config(mount_point, host=args.host, jwt=args.jwt):
                 print("✅ Successfully updated K8s Engine Config!")
+
 
     # -------------------------------------------------------------------------
     # 3. ROLE MANAGEMENT

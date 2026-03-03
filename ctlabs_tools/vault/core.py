@@ -691,6 +691,29 @@ class HashiVault:
             print(f"❌ Error listing leases for {prefix}: {e}")
             return []
 
+    def revoke_lease(self, lease_id):
+        """Revokes a specific individual lease ID."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.write(f"sys/leases/revoke/{lease_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Error revoking lease '{lease_id}': {e}")
+            return False
+
+    def force_revoke_prefix(self, prefix):
+        """Forcefully wipes all leases under a prefix (fixes Ghost Clusters)."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            clean_prefix = prefix.strip('/')
+            client.write(f"sys/leases/revoke-force/{clean_prefix}")
+            return True
+        except Exception as e:
+            print(f"❌ Error force-revoking prefix '{prefix}': {e}")
+            return False
+
     def list_engines(self, backend_type=None):
         """Fetches a list of mounted secrets engines, optionally filtered by type."""
         client = self._get_client()
