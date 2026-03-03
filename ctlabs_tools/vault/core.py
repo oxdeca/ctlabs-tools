@@ -1282,10 +1282,11 @@ class HashiVault:
         client = hvac.Client(url=vault_url, verify=False)
         redirect_uri = f"http://localhost:{port}/oidc/callback"
 
-        # 1. Ask Vault to generate the Auth URL
+        # 1. Ask Vault to generate the Auth URL and the cryptographic Nonce
         try:
             res = client.write("auth/oidc/oidc/auth_url", role=role, redirect_uri=redirect_uri)
             auth_url = res['data']['auth_url']
+            client_nonce = res['data'].get('client_nonce', '')  # 🌟 FIX 1: Capture the nonce!
         except Exception as e:
             print(f"❌ Error initiating OIDC login (does role '{role}' exist?): {e}")
             return None
@@ -1352,14 +1353,12 @@ class HashiVault:
             print(f"🌐 Opening your browser to authenticate via SSO...")
             print(f"🔗 If a browser doesn't open automatically, restart with --no-browser or click:\n{auth_url}\n")
             
-            # Spin up the listener and open the browser
             server = HTTPServer(('localhost', port), OIDCHandler)
             try:
                 webbrowser.open(auth_url)
             except Exception:
                 pass
 
-            # Block and wait for the redirect
             server.handle_request()
             server.server_close()
 
@@ -1367,15 +1366,20 @@ class HashiVault:
             code = callback_data.get('code')
 
         # ---------------------------------------------------------------------
-        # Final Step: Exchange the code for a Vault Token
+        # Final Step: Exchange the code & nonce for a Vault Token
         # ---------------------------------------------------------------------
         if not state or not code:
             print("❌ Error: Missing 'state' or 'code' parameters.")
             return None
 
         try:
-            # 🧠 FIX: Use the dedicated hvac OIDC method instead of client.read()
-            res = client.auth.oidc.oidc_callback(code=code, state=state)
+            # 🌟 FIX 2: Pass the path, code, nonce, and state to hvac!
+            res = client.auth.oidc.oidc_callback(
+                code=code, 
+                path='oidc', 
+                nonce=client_nonce, 
+                state=state
+            )
             
             auth_data = res.get('auth', {})
             return {
