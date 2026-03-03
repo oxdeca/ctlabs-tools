@@ -86,6 +86,13 @@ def get_args():
     p_cleanup.add_argument("--project", required=True, help="The GCP Project ID where the Vault Broker SA lives")
     p_cleanup.add_argument("--folder-id", help="Optional: The GCP Folder ID where Vault's permissions were scoped")
 
+    # 7. GKE CREDENTIALS (Zero-Dependency Kubeconfig)
+    p_gke = subparsers.add_parser("get-gke-credentials", help="Fetch GKE cluster credentials via REST API (No gcloud required)")
+    p_gke.add_argument("project", help="The GCP Project ID")
+    p_gke.add_argument("location", help="GCP Location (e.g., us-central1)")
+    p_gke.add_argument("cluster", help="GKE Cluster Name")
+    p_gke.add_argument("--roleset", default="vault-admin", help="The Vault GCP Roleset to use for the API call")
+
     return parser.parse_args()
 
 def main():
@@ -384,6 +391,80 @@ def main():
                 
             print(f"🚀 Creating Roleset '{roleset_name}'...")
             vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
+
+    # -------------------------------------------------------------------------
+    # GKE CREDENTIALS (Zero-Dependency API Call)
+    # -------------------------------------------------------------------------
+    elif cmd == "get-gke-credentials":
+        project = args.project
+        location = args.location
+        cluster = args.cluster
+        mount_point = f"gcp/{project}"
+        
+        print(f"🔒 Fetching ephemeral GCP token for roleset '{args.roleset}'...", file=sys.stderr)
+        gcp_token = vault.get_gcp_token(roleset_name=args.roleset, mount_point=mount_point)
+        if not gcp_token:
+            sys.exit(1)
+            
+        print(f"🌐 Querying Google Container REST API for cluster details...", file=sys.stderr)
+        import urllib.request
+        import urllib.error
+        import ssl
+        
+        url = f"https://container.googleapis.com/v1/projects/{project}/locations/{location}/clusters/{cluster}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {gcp_token}"})
+        
+        try:
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, context=ctx) as response:
+                data = json.loads(response.read().decode())
+                
+            endpoint = data.get("endpoint")
+            ca_cert = data.get("masterAuth", {}).get("clusterCaCertificate")
+            
+            if not endpoint or not ca_cert:
+                print("❌ Error: Cluster endpoint or CA cert not found in API response.", file=sys.stderr)
+                sys.exit(1)
+                
+            # Construct a raw, dependency-free kubeconfig
+            kubeconfig = f"""apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: {ca_cert}
+    server: https://{endpoint}
+  name: {cluster}
+contexts:
+- context:
+    cluster: {cluster}
+    user: {cluster}-user
+  name: {cluster}-context
+current-context: {cluster}-context
+users:
+- name: {cluster}-user
+  user:
+    token: {gcp_token}
+"""
+            # Write to a sandboxed file so we don't destroy the user's default config
+            kube_dir = os.path.expanduser("~/.kube")
+            os.makedirs(kube_dir, exist_ok=True)
+            kube_file = os.path.join(kube_dir, f"config-gke-{cluster}")
+            
+            with open(kube_file, "w") as f:
+                f.write(kubeconfig)
+                
+            print(f"✅ GKE Credentials successfully generated! (No gcloud needed)")
+            print(f"👉 1. Activate it  : export KUBECONFIG={kube_file}")
+            print(f"👉 2. Test it      : kubectl get nodes")
+            print(f"👉 3. Mount to Vault: vault-k8s engine create {cluster}")
+            
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode()
+            print(f"❌ GCP API Error ({e.code}): {error_body}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error communicating with GKE API: {e}", file=sys.stderr)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
