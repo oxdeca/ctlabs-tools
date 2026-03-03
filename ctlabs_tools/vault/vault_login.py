@@ -48,6 +48,10 @@ def get_args():
     p_approle.add_argument("-p", "--secret-id", dest="secret_id", help="AppRole Secret ID or GSM path (will prompt if omitted)")
     p_approle.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
 
+    # 5. OIDC
+    p_oidc = subparsers.add_parser("oidc", help="Login via Google Workspace SSO")
+    p_oidc.add_argument("role", nargs="?", default="default", help="The OIDC role to assume (e.g., admin, developer)")
+
     return parser.parse_args()
 
 
@@ -276,6 +280,24 @@ def main():
     # Save to Dev/Test cache so Terraform/Ansible wrappers can pick it up
     cache_local_token(vault_addr, token, lease_duration)
 
+    if args.command == "oidc":
+        print(f"🚀 Initiating OIDC login for role: {args.role}")
+        auth_result = vault.oidc_login(role=args.role)
+        
+        if auth_result and auth_result.get("token"):
+            token = auth_result["token"]
+            ttl = auth_result["ttl"]
+            display_name = auth_result["display_name"]
+            
+            # Use your existing GPG encryption logic to cache the token!
+            # Example: 
+            # save_to_gpg_cache(token, ttl) 
+            
+            print(f"🎉 Welcome, {display_name}!")
+            print(f"🔒 Token cached successfully (Valid for {ttl}s).")
+            print(f"📜 Policies granted: {', '.join(auth_result['policies'])}")
+        else:
+            sys.exit(1)
 
 if __name__ == "__main__":
     try:

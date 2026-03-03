@@ -6,6 +6,8 @@
 import argparse
 import sys
 import json
+import getpass
+import subprocess
 from .core import HashiVault
 
 def get_args():
@@ -443,6 +445,13 @@ def main():
             import subprocess
             provider = name.lower()
 
+            # Register: Interactive Guided Setup for OIDC Providers
+        elif action == "register":
+            import subprocess
+            import getpass  # <-- Added for secure secret entry
+            
+            provider = name.lower()
+
             # -------------------------------------------------------------
             # PROVIDER: GOOGLE CLOUD (GCP)
             # -------------------------------------------------------------
@@ -482,58 +491,44 @@ def main():
                 print(f"      - https://vault.yourdomain.com:8200/ui/vault/auth/oidc/oidc/callback")
                 print("="*60)
                 
+                # Use standard input for the ID (it's public/non-sensitive)
                 client_id = input("🔑 Paste your new Client ID: ").strip()
-                client_secret = input("🕵️  Paste your new Client Secret: ").strip()
+                # Use getpass for the Secret (masked input)
+                client_secret = getpass.getpass("🕵️  Paste your new Client Secret: ").strip()
                 discovery_url = "https://accounts.google.com"
 
             # -------------------------------------------------------------
             # PROVIDER: MICROSOFT ENTRA ID (AZURE AD)
             # -------------------------------------------------------------
             elif provider in ["azure", "entraid"]:
-                print("\n" + "="*60)
-                print("🛑 ACTION REQUIRED: MANUAL ENTRA ID SETUP 🛑")
-                print("="*60)
-                print("1️⃣  Go to Azure Portal -> Microsoft Entra ID -> App Registrations.")
-                print("2️⃣  Create a new registration ('Vault SSO').")
-                print("3️⃣  Add Web Redirect URIs (localhost:8250 & Vault UI).")
-                print("4️⃣  Go to 'Certificates & secrets' and create a Client Secret.")
-                print("="*60)
+                # ... [Keep the Azure print statements the same] ...
                 
                 client_id = input("🔑 Paste your Entra ID Application (client) ID: ").strip()
-                client_secret = input("🕵️  Paste your Entra ID Client Secret: ").strip()
                 tenant_id = input("🏢 Paste your Directory (tenant) ID: ").strip()
+                client_secret = getpass.getpass("🕵️  Paste your Entra ID Client Secret: ").strip()
                 discovery_url = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
 
             # -------------------------------------------------------------
             # PROVIDER: OKTA
             # -------------------------------------------------------------
             elif provider == "okta":
-                print("\n" + "="*60)
-                print("🛑 ACTION REQUIRED: MANUAL OKTA SETUP 🛑")
-                print("="*60)
-                print("1️⃣  Go to Okta Admin Console -> Applications -> Create App Integration.")
-                print("2️⃣  Choose OIDC - OpenID Connect -> Web Application.")
-                print("3️⃣  Add Redirect URIs (localhost:8250 & Vault UI).")
-                print("="*60)
+                # ... [Keep the Okta print statements the same] ...
                 
                 okta_domain = input("🌐 Paste your Okta Domain (e.g., dev-123.okta.com): ").strip()
                 client_id = input("🔑 Paste your Client ID: ").strip()
-                client_secret = input("🕵️  Paste your Client Secret: ").strip()
-                # Normalize domain format
+                client_secret = getpass.getpass("🕵️  Paste your Client Secret: ").strip()
+                
                 okta_domain = okta_domain.replace("https://", "").strip("/")
                 discovery_url = f"https://{okta_domain}"
 
             # -------------------------------------------------------------
-            # UNKNOWN PROVIDER FALLBACK
+            # UNKNOWN PROVIDER FALLBACK & CONFIG
             # -------------------------------------------------------------
             else:
                 print(f"❌ Error: Unsupported OIDC provider '{provider}'.", file=sys.stderr)
                 print("   Supported providers: gcp, azure, okta", file=sys.stderr)
                 sys.exit(1)
 
-            # -------------------------------------------------------------
-            # UNIVERSAL VAULT CONFIGURATION
-            # -------------------------------------------------------------
             if not client_id or not client_secret:
                 print("❌ Aborting: Client ID and Secret are required.", file=sys.stderr)
                 sys.exit(1)
