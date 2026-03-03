@@ -238,6 +238,8 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
     # LEASES
     # ---------------------------------------------------------------------
     elif cmd == "leases":
+        action = args.action
+        
         if action == "list":
             # 🧠 SMART UX: Decide if we are looking at one engine or all of them
             if args.cluster:
