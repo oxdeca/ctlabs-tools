@@ -1388,6 +1388,11 @@ class HashiVault:
             )
             
             auth_data = res.get('auth', {})
+            
+            # 🌟 FIX: Smartly extract the display name from metadata if the top-level is empty
+            meta = auth_data.get('metadata', {})
+            display_name = meta.get('email') or auth_data.get('display_name') or 'Unknown'
+
             return {
                 "token": auth_data.get('client_token'),
                 "ttl": auth_data.get('lease_duration', 3600),
