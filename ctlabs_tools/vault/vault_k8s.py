@@ -261,22 +261,39 @@ type: kubernetes.io/service-account-token
         cluster = args.cluster
         role_name = args.role_name
         
-        # 🧠 SMART VALIDATION: Enforce cluster name for ALL role actions
+        # 🌟 NEW: If action is list, do the smart loop!
+        if action == "list":
+            if cluster:
+                engines_to_check = [f"k8s/{cluster}"]
+            else:
+                print("🔍 Searching across all active K8s engines...")
+                engines = vault.list_engines(backend_type="kubernetes") or []
+                engines_to_check = [e.strip('/') for e in engines]
+
+            if not engines_to_check:
+                print("ℹ️ No Kubernetes secrets engines currently mounted.")
+                sys.exit(0)
+
+            found_any = False
+            for mount in engines_to_check:
+                roles = vault.list_k8s_secret_roles(mount_point=mount)
+                if roles:
+                    found_any = True
+                    print(f"\n👥 Active Roles at '{mount}/':")
+                    for r in roles: 
+                        print(f"  ├─ {r}")
+                        
+            if not found_any:
+                print("\nℹ️ No roles found.")
+            sys.exit(0)
+
+        # 🧠 Enforce cluster name for all OTHER role actions (create, update, read, delete)
         if not cluster:
-            print("❌ Error: Cluster identifier required (e.g., vault-k8s role list prod-cluster).", file=sys.stderr)
+            print("❌ Error: Cluster identifier required (e.g., vault-k8s role read prod-cluster my-role).", file=sys.stderr)
             sys.exit(1)
 
         mount_point = f"k8s/{cluster}"
-
-        if action == "list":
-            keys = vault.list_k8s_secret_roles(mount_point=mount_point)
-            if keys:
-                print(f"👥 Active Roles at '{mount_point}/':")
-                for k in keys: print(f"  ├─ {k}")
-            else:
-                print(f"ℹ️ No roles found.")
-            sys.exit(0)
-
+        
         # Enforce role_name for everything EXCEPT list
         if not role_name:
             print("❌ Error: Role name is required for this action.", file=sys.stderr)

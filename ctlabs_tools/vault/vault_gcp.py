@@ -296,12 +296,30 @@ def main():
         mount_point = f"gcp/{project}" if project else "gcp"
 
         if action == "list":
-            keys = vault.list_gcp_rolesets(mount_point=mount_point)
-            if keys:
-                print(f"👥 Active Rolesets at '{mount_point}/':")
-                for k in keys: print(f"  ├─ {k}")
+            # 1. Determine which engines to check
+            if project:
+                engines_to_check = [f"gcp/{project}"]
             else:
-                print(f"ℹ️ No rolesets found.")
+                print("🔍 Searching across all active GCP engines...")
+                engines = vault.list_engines(backend_type="gcp") or []
+                engines_to_check = [e.strip('/') for e in engines]
+
+            if not engines_to_check:
+                print("ℹ️ No GCP secrets engines currently mounted.")
+                sys.exit(0)
+
+            # 2. Iterate and list
+            found_any = False
+            for mount in engines_to_check:
+                roles = vault.list_gcp_rolesets(mount_point=mount)
+                if roles:
+                    found_any = True
+                    print(f"\n👥 Active Rolesets at '{mount}/':")
+                    for r in roles: 
+                        print(f"  ├─ {r}")
+                        
+            if not found_any:
+                print("\nℹ️ No rolesets found.")
             sys.exit(0)
 
         if not project or not roleset_name:
