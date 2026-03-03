@@ -228,6 +228,19 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
 
         if action == "create":
             print(f"🚀 Initializing Zero-Touch K8s Engine at '{mount_point}/'...")
+
+            # 🌉 NEW: Auto-Detect and Consume GKE Bridge Credentials
+            kube_dir = os.path.expanduser("~/.kube")
+            temp_kube_file = os.path.join(kube_dir, f"config-gke-{cluster}")
+            used_temp_kubeconfig = False
+            
+            if os.path.exists(temp_kube_file):
+                print(f"🌉 Detected temporary GKE kubeconfig! Routing kubectl through the bridge...", file=sys.stderr)
+                # Inject it into the local script environment. 
+                # This safely scopes it ONLY to the subprocesses run by this script!
+                os.environ["KUBECONFIG"] = temp_kube_file
+                used_temp_kubeconfig = True
+
             print(f"  ├─ Creating K8s Service Account '{sa_name}'...")
             run_kubectl(["kubectl", "create", "serviceaccount", sa_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
             print(f"  ├─ Binding to cluster-admin...")
@@ -272,6 +285,17 @@ type: kubernetes.io/service-account-token
             print(f"  ├─ Configuring Vault Engine...")
             if vault.setup_k8s_secrets_engine(mount_point=mount_point, host=kube_host, ca_cert=ca_pem, jwt=jwt_token):
                 print(f"🎉 Kubernetes Secrets Engine ready at '{mount_point}/'!")
+
+            # 🧹 NEW: Burn the bridge after successful setup
+            if used_temp_kubeconfig:
+                print(f"🔥 Burning the bridge: Destroying temporary kubeconfig...")
+                try:
+                    os.remove(temp_kube_file)
+                    print(f"✅ Temporary credentials for '{cluster}' securely deleted from disk.")
+                except OSError as e:
+                    print(f"⚠️ Could not delete temporary kubeconfig: {e}", file=sys.stderr)
+                    
+            print(f"🎉 Kubernetes Engine '{mount_point}/' is fully operational!")
             
         elif action == "delete":
             print(f"🧹 Tearing down engine at '{mount_point}/'...")
