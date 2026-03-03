@@ -1147,12 +1147,37 @@ class HashiVault:
         client = self._get_client()
         if not client: return False
         
+        # 🧠 SMART UX: Auto-detect the role type from the YAML payload!
+        import yaml
+        role_type = "Role" # Default fallback
+        rules_string = rules_payload
+        
+        try:
+            import os
+            # Check if the CLI passed a file path, or the raw YAML string itself
+            if os.path.isfile(rules_payload):
+                with open(rules_payload, 'r') as f:
+                    data = yaml.safe_load(f)
+                    f.seek(0)
+                    rules_string = f.read() # Read raw string for Vault
+            else:
+                data = yaml.safe_load(rules_payload)
+
+            # Extract the 'kind' if it exists in the YAML
+            if isinstance(data, dict):
+                role_type = data.get("kind", "Role")
+                
+        except Exception as e:
+            print(f"⚠️ Could not auto-detect 'kind' from YAML, defaulting to 'Role': {e}")
+        
         payload = {
+            "kubernetes_role_type": role_type,  # 🌟 Dynamically set based on the YAML!
             "allowed_kubernetes_namespaces": [ns.strip() for ns in allowed_namespaces.split(",")],
-            "generated_role_rules": rules_payload, # 🧠 Vault natively accepts JSON or YAML here!
+            "generated_role_rules": rules_string,
             "token_default_ttl": ttl,
             "token_max_ttl": ttl
         }
+        
         try:
             client.write(f"{mount_point}/roles/{name}", **payload)
             return True
