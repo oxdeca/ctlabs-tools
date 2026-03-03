@@ -111,8 +111,27 @@ def main():
             sys.exit(1)
 
         # 1. Fetch the Token
+        print(f"🔍 Inspecting admin role '{args.role}'...", file=sys.stderr)
+        role_config = vault.read_k8s_secret_role(args.role, mount_point)
+        
+        if not role_config:
+            print(f"❌ Error: Vault role '{args.role}' does not exist.", file=sys.stderr)
+            sys.exit(1)
+
+        # 🧠 SMART UX: The tool enforces the Admin's design automatically!
+        is_cluster_role = (role_config.get("kubernetes_role_type") == "ClusterRole")
+        allows_all_ns = ("*" in role_config.get("allowed_kubernetes_namespaces", []))
+        
+        # Vault ONLY allows ClusterRoleBindings if the admin authorized '*' namespaces
+        auto_cluster_wide = is_cluster_role and allows_all_ns
+
         print(f"🔒 Fetching secure K8s token for role '{args.role}' in namespace '{args.namespace}'...", file=sys.stderr)
-        token = vault.get_k8s_secret_token(role_name=args.role, k8s_namespace=args.namespace, mount_point=mount_point)
+        token = vault.get_k8s_secret_token(
+            role_name=args.role, 
+            k8s_namespace=args.namespace, 
+            mount_point=mount_point,
+            cluster_wide=auto_cluster_wide  # Automatically set based on the Vault Role!
+        )
         if not token: sys.exit(1)
 
         # 2. 🧠 SMART OVERRIDE: Check CLI -> Check Env -> Check Cache -> Check Vault

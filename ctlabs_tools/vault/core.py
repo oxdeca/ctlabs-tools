@@ -1218,12 +1218,18 @@ class HashiVault:
             if "404" not in str(e): print(f"❌ Error listing K8s roles: {e}")
             return []
 
-    def get_k8s_secret_token(self, role_name, k8s_namespace, mount_point):
+    def get_k8s_secret_token(self, role_name, k8s_namespace, mount_point, cluster_wide=False):
         """Requests a dynamic, ephemeral K8s Service Account token."""
         client = self._get_client()
         if not client: return None
         try:
-            res = client.write(f"{mount_point}/creds/{role_name}", kubernetes_namespace=k8s_namespace)
+            payload = {"kubernetes_namespace": k8s_namespace}
+            
+            # 🌟 NEW: Tell Vault to break out of the namespace sandbox
+            if cluster_wide:
+                payload["cluster_role_binding"] = True
+                
+            res = client.write(f"{mount_point}/creds/{role_name}", **payload)
             return res.get('data', {}).get('service_account_token')
         except Exception as e:
             print(f"❌ Error generating K8s token for '{role_name}': {e}")
