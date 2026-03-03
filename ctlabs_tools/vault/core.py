@@ -1158,6 +1158,114 @@ class HashiVault:
             print(f"❌ Error fetching K8s host from Vault: {e}")
             return None
 
+    # -------------------------------------------------------------------------
+    # OIDC / SSO MANAGEMENT
+    # -------------------------------------------------------------------------
+    def configure_oidc(self, client_id, client_secret, default_role="default", discovery_url="https://accounts.google.com"):
+        """Configures the OIDC auth engine to talk to an Identity Provider (e.g., Google)."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            # 1. Safely enable the OIDC auth method
+            try:
+                client.sys.enable_auth_method(method_type='oidc', path='oidc')
+                print("✅ Enabled OIDC auth method at 'oidc/'")
+            except Exception as e:
+                if "path is already in use" not in str(e):
+                    print(f"❌ Failed to enable OIDC auth method: {e}")
+                    return False
+
+            # 2. Apply the configuration
+            client.write(
+                "auth/oidc/config",
+                oidc_discovery_url=discovery_url,
+                oidc_client_id=client_id,
+                oidc_client_secret=client_secret,
+                default_role=default_role
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Error configuring OIDC engine: {e}")
+            return False
+
+    def get_oidc_client_id(self):
+        """Helper to safely fetch the current Client ID from the OIDC config."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read("auth/oidc/config")
+            return res.get('data', {}).get('oidc_client_id') if res else None
+        except Exception as e:
+            print(f"❌ Error reading OIDC config: {e}")
+            return None
+
+    def create_oidc_role(self, name, bound_claims, policies=None, ttl="1h", client_id=None):
+        """Creates or updates an OIDC role mapping groups/emails to Vault policies."""
+        client = self._get_client()
+        if not client: return False
+        
+        # Auto-fetch client_id if not explicitly provided
+        if not client_id:
+            client_id = self.get_oidc_client_id()
+            if not client_id:
+                print("❌ Cannot create OIDC role: Missing Client ID. Run 'config' first.")
+                return False
+
+        payload = {
+            "bound_audiences": client_id,
+            "allowed_redirect_uris": [
+                "http://localhost:8250/oidc/callback",
+                # TODO: Replace with your actual Vault UI domain
+                "https://vault.yourdomain.com:8200/ui/vault/auth/oidc/oidc/callback" 
+            ],
+            "user_claim": "email",
+            "bound_claims": bound_claims,
+            "token_ttl": ttl
+        }
+        
+        if policies:
+            payload['token_policies'] = policies if isinstance(policies, list) else [p.strip() for p in policies.split(",")]
+            
+        try:
+            client.write(f"auth/oidc/role/{name}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating OIDC role '{name}': {e}")
+            return False
+
+    def read_oidc_role(self, name):
+        """Reads an OIDC role configuration."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"auth/oidc/role/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading OIDC role '{name}': {e}")
+            return None
+
+    def delete_oidc_role(self, name):
+        """Deletes an OIDC role."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"auth/oidc/role/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting OIDC role '{name}': {e}")
+            return False
+
+    def list_oidc_roles(self):
+        """Lists all OIDC roles."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list("auth/oidc/role")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing OIDC roles: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 
 
