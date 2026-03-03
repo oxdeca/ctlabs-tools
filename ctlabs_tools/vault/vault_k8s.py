@@ -81,7 +81,7 @@ def get_args():
     p_role.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
     p_role.add_argument("cluster", nargs="?", default="", help="Cluster identifier")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
-    p_role.add_argument("--namespaces", default="*", help="Comma-separated allowed namespaces")
+    p_role.add_argument("--namespaces", default=None, help="Comma-separated allowed namespaces (Overrides YAML if provided)")
     p_role.add_argument("--rules", help="Path to a JSON or YAML file containing K8s RBAC rules to dynamically generate")
 
     # 4. INFO (Introspection)

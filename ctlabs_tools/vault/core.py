@@ -1142,37 +1142,48 @@ class HashiVault:
             print(f"❌ Error updating config at '{mount_point}/': {e}")
             return False
 
-    def create_k8s_secret_role(self, name, mount_point, allowed_namespaces, rules_payload, ttl="1h"):
-        """Creates a role defining what K8s privileges can be dynamically generated."""
+    def create_k8s_secret_role(self, name, mount_point, rules_payload, allowed_namespaces=None, ttl="1h"):
         client = self._get_client()
         if not client: return False
         
-        # 🧠 SMART UX: Auto-detect the role type from the YAML payload!
         import yaml
-        role_type = "Role" # Default fallback
+        role_type = "Role"
         rules_string = rules_payload
+        yaml_namespaces = None  # 🌟 NEW: Variable to hold YAML-defined namespaces
         
         try:
             import os
-            # Check if the CLI passed a file path, or the raw YAML string itself
             if os.path.isfile(rules_payload):
                 with open(rules_payload, 'r') as f:
                     data = yaml.safe_load(f)
-                    f.seek(0)
-                    rules_string = f.read() # Read raw string for Vault
             else:
                 data = yaml.safe_load(rules_payload)
 
-            # Extract the 'kind' if it exists in the YAML
             if isinstance(data, dict):
                 role_type = data.get("kind", "Role")
+                yaml_namespaces = data.get("allowed_namespaces") # 🌟 NEW: Extract from YAML!
+                
+                # Vault ONLY wants the rules array, so we isolate it cleanly
+                import json
+                rules_string = json.dumps({"rules": data.get("rules", [])})
                 
         except Exception as e:
-            print(f"⚠️ Could not auto-detect 'kind' from YAML, defaulting to 'Role': {e}")
-        
+            print(f"⚠️ Could not fully parse YAML: {e}")
+
+        # 🧠 SMART UX: Prefer YAML namespaces, fallback to CLI argument, default to "default"
+        if yaml_namespaces:
+            if isinstance(yaml_namespaces, list):
+                final_namespaces = [str(n).strip() for n in yaml_namespaces]
+            else:
+                final_namespaces = [n.strip() for n in str(yaml_namespaces).split(",")]
+        elif allowed_namespaces:
+            final_namespaces = [ns.strip() for ns in allowed_namespaces.split(",")]
+        else:
+            final_namespaces = ["default"]
+
         payload = {
-            "kubernetes_role_type": role_type,  # 🌟 Dynamically set based on the YAML!
-            "allowed_kubernetes_namespaces": [ns.strip() for ns in allowed_namespaces.split(",")],
+            "kubernetes_role_type": role_type,
+            "allowed_kubernetes_namespaces": final_namespaces, # 🌟 Dynamically set!
             "generated_role_rules": rules_string,
             "token_default_ttl": ttl,
             "token_max_ttl": ttl
