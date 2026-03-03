@@ -67,7 +67,7 @@ def get_args():
     p_engine.add_argument("--max-ttl", help="Update max lease TTL (e.g., '24h')")
 
     # 4. ROLESET
-    p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
+    p_roleset = subparsers.add_parser("role", help="Manage GCP rolesets (team service accounts)")
     p_roleset.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
     p_roleset.add_argument("project", nargs="?", default="", help="GCP Project ID")
     p_roleset.add_argument("roleset_name", nargs="?", default="", help="Name of the roleset")
