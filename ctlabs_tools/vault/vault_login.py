@@ -255,8 +255,15 @@ def run_cli():
         
         if auth_result and auth_result.get("token"):
             token = auth_result["token"]
-            vault.client.token = token
-            info = vault.lookup_token() or {}
+            
+            # 🌟 FIX: Use a temporary hvac client to look up the token details!
+            import hvac
+            temp_client = hvac.Client(url=vault_addr, token=token, verify=False)
+            try:
+                lookup_res = temp_client.auth.token.lookup_self()
+                info = lookup_res.get('data', {})
+            except Exception:
+                info = {}
             
             # Extract the absolute source of truth
             display_name = info.get('display_name', 'Unknown')
