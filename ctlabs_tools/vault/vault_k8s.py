@@ -247,7 +247,7 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
                 print("🔍 Searching for active leases across ALL K8s engines...")
                 raw_engines = vault.list_engines(backend_type="kubernetes")
                 mounts = [m.rstrip('/') for m in (raw_engines or [])]
-                if not mounts:
+            if not mounts:
                 print("✅ No Kubernetes engines found.")
             else:
                 found_any = False

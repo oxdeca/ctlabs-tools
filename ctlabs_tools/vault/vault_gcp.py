@@ -169,6 +169,7 @@ def main():
     # LEASES (GCP)
     # ---------------------------------------------------------------------
     elif cmd == "leases":
+        action = args.action
         mount_point = args.mount.strip('/')
         
         if action == "list":
