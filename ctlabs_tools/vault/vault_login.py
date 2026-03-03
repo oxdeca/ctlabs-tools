@@ -233,7 +233,7 @@ def main():
         sys.exit(0)
 
     # ---------------------------------------------------------
-    # 3. LOGIN COMMANDS (User, AppRole, or Interactive Fallback)
+    # 3. LOGIN COMMANDS (OIDC, User, AppRole, or Interactive)
     # ---------------------------------------------------------
     
     # Smart Address Resolution: CLI Flag -> Environment Variable -> Interactive Prompt
@@ -241,9 +241,31 @@ def main():
     if not vault_addr:
         vault_addr = input("Enter Vault Address (e.g., https://IP:PORT): ").strip()
         
+    # Inject vault_addr into the environment so core.py's oidc_login can find it
+    os.environ["VAULT_ADDR"] = vault_addr
+        
     check_vault_health(vault_addr)
-    client = hvac.Client(url=vault_addr, verify=False)
     
+    # 🌟 NEW: Catch OIDC first and bypass the legacy flows
+    if args.command == "oidc":
+        print(f"🚀 Initiating OIDC login for role: {args.role}")
+        auth_result = vault.oidc_login(role=args.role)
+        
+        if auth_result and auth_result.get("token"):
+            token = auth_result["token"]
+            ttl = auth_result["ttl"]
+            display_name = auth_result["display_name"]
+            
+            cache_local_token(vault_addr, token, ttl)
+            
+            print(f"🎉 Welcome, {display_name}!")
+            print(f"📜 Policies granted: {', '.join(auth_result['policies'])}")
+            sys.exit(0)
+        else:
+            sys.exit(1)
+
+    # --- Legacy Login Flows (AppRole & Userpass) ---
+    client = hvac.Client(url=vault_addr, verify=False)
     login_res = None
     used_method = None
 
@@ -280,24 +302,6 @@ def main():
     # Save to Dev/Test cache so Terraform/Ansible wrappers can pick it up
     cache_local_token(vault_addr, token, lease_duration)
 
-    if args.command == "oidc":
-        print(f"🚀 Initiating OIDC login for role: {args.role}")
-        auth_result = vault.oidc_login(role=args.role)
-        
-        if auth_result and auth_result.get("token"):
-            token = auth_result["token"]
-            ttl = auth_result["ttl"]
-            display_name = auth_result["display_name"]
-            
-            # Use your existing GPG encryption logic to cache the token!
-            # Example: 
-            # save_to_gpg_cache(token, ttl) 
-            
-            print(f"🎉 Welcome, {display_name}!")
-            print(f"🔒 Token cached successfully (Valid for {ttl}s).")
-            print(f"📜 Policies granted: {', '.join(auth_result['policies'])}")
-        else:
-            sys.exit(1)
 
 if __name__ == "__main__":
     try:
