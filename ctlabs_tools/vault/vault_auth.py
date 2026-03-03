@@ -59,17 +59,27 @@ def get_args():
     p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles & Configuration")
     p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
     p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role (Required for all except list/configure)")
-    
-    # Flags for Role Management
     p_k8s.add_argument("--sa-names", help="Allowed K8s Service Accounts")
     p_k8s.add_argument("--sa-namespaces", help="Allowed K8s Namespaces")
     p_k8s.add_argument("--policies", help="Vault policies to grant")
     p_k8s.add_argument("--ttl", default="1h", help="Token TTL")
-    
-    # Flags for Backend Configuration (The "Phone Line")
     p_k8s.add_argument("--host", help="K8s API Host (for 'configure' action)")
     p_k8s.add_argument("--ca-cert", help="Path to K8s CA Cert file (for 'configure' action)")
-    
+
+    # 8. OIDC AUTH (NEW)
+    p_oidc = subparsers.add_parser("oidc", help="Manage OIDC Auth & Roles (SSO)")
+    p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
+    p_oidc.add_argument("name", nargs="?", default="", help="Name of the OIDC role (Required for all except list/configure)")
+    # Config flags
+    p_oidc.add_argument("--client-id", help="OIDC Client ID (for 'configure' action)")
+    p_oidc.add_argument("--client-secret", help="OIDC Client Secret (for 'configure' action)")
+    p_oidc.add_argument("--default-role", default="default", help="Default OIDC role (for 'configure' action)")
+    # Role flags
+    p_oidc.add_argument("--emails", help="Comma-separated list of allowed emails")
+    p_oidc.add_argument("--groups", help="Comma-separated list of allowed Google Groups")
+    p_oidc.add_argument("--policies", help="Comma-separated list of Vault policies")
+    p_oidc.add_argument("--ttl", default="1h", help="Token TTL")
+
     return parser.parse_args()
 
 def main():
@@ -84,7 +94,7 @@ def main():
     action = args.action
     name = getattr(args, 'name', '')
 
-    # Ensure name is provided for everything except 'list'
+    # 🧠 Ensure 'name' is bypassed for all and list commands across all modules
     if cmd != "alias" and action not in ["list", "configure"] and not name:
         print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
         sys.exit(1)
@@ -106,12 +116,12 @@ def main():
             if vault.create_or_update_approle(name, policies, ttl=args.ttl):
                 print(f"✅ AppRole '{name}' successfully created/updated.")
                 
-        elif action == "read":  # Retrieves RoleID and SecretID
+        elif action == "read":
             creds = vault.get_approle_credentials(name)
             if creds: print(json.dumps(creds, indent=2))
             else: print(f"⚠️ Could not generate credentials for AppRole '{name}'.")
             
-        elif action == "info":  # Introspects the config
+        elif action == "info":
             details = vault.read_approle(name)
             if details: print(json.dumps(details, indent=2))
             else: print(f"⚠️ AppRole '{name}' not found.")
@@ -124,27 +134,22 @@ def main():
     # 2. USER MANAGEMENT (Userpass & LDAP)
     # -------------------------------------------------------------------------
     elif cmd == "user":
-        # 🧠 SMART UX: If no method provided, check BOTH for list, default to userpass for others
         method = getattr(args, 'method', None)
 
         if action == "list":
             methods_to_check = [method] if method else ["userpass", "ldap"]
             found_any = False
-            
             for m in methods_to_check:
                 users = vault.list_users(auth_type=m)
                 if users:
                     print(f"👥 Existing '{m}' users:")
                     for u in users: print(f"  ├─ {u}")
                     found_any = True
-                    
             if not found_any:
                 print(f"ℹ️ No users found.")
                 
         else:
-            # For create/update/read/delete, default to 'userpass' if not specified
             method = method or "userpass"
-            
             if action in ["create", "update"]:
                 if method == "userpass" and action == "create" and not args.password:
                     print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
@@ -180,8 +185,6 @@ def main():
             try:
                 with open(args.file, 'r') as f:
                     rules = f.read()
-                    
-                # 🧠 FIX: Use our new clean abstraction layer
                 if vault.create_policy(name, rules):
                     print(f"✅ Policy '{name}' successfully created/updated from {args.file}.")
             except Exception as e:
@@ -190,7 +193,7 @@ def main():
                 
         elif action == "read":
             rules = vault.read_policy(name)
-            if rules: print(rules)  # Print raw HCL string
+            if rules: print(rules)
             else: print(f"⚠️ Policy '{name}' not found.")
             
         elif action == "delete":
@@ -202,7 +205,6 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "group":
         method = getattr(args, 'method', 'ldap')
-        
         if action == "list":
             groups = vault.list_groups(auth_type=method)
             if groups:
@@ -215,7 +217,6 @@ def main():
             if not name:
                 print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
-                
             if action in ["create", "update"]:
                 if not args.policies:
                     print("⚠️ Warning: Creating a group without --policies means it grants no access.", file=sys.stderr)
@@ -258,23 +259,19 @@ def main():
             if not name:
                 print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
-                
             if action in ["create", "update"]:
                 if vault.create_entity(name, policies=args.policies):
                     print(f"✅ Entity '{name}' successfully created/updated.")
-                    
             elif action in ["read", "info"]:
                 details = vault.read_entity(name)
                 if details: print(json.dumps(details, indent=2))
                 else: print(f"⚠️ Entity '{name}' not found.")
-
             elif action == "merge":
                 if not args.target:
                     print("❌ Error: --target <destination_entity> is required when merging.", file=sys.stderr)
                     sys.exit(1)
                 if vault.merge_entities(from_entity_name=name, to_entity_name=args.target):
                     print(f"✅ Successfully merged '{name}' into '{args.target}'. '{name}' has been deleted.")
-                
             elif action == "delete":
                 if vault.delete_entity(name):
                     print(f"✅ Deleted entity '{name}'.")
@@ -289,9 +286,6 @@ def main():
         mount = args.mount
         client = vault._get_client()
 
-        # ---------------------------------------------------------
-        # LIST: Show all aliases globally to get their IDs
-        # ---------------------------------------------------------
         if action == "list":
             try:
                 res = client.list("identity/entity-alias/id")
@@ -305,7 +299,6 @@ def main():
                             mnt = a_data['data'].get('mount_path', 'Unknown')
                             canonical_id = a_data['data'].get('canonical_id')
                             
-                            # 🧠 REVERSE LOOKUP: Fetch the parent entity name
                             parent_entity = "Unknown"
                             if canonical_id:
                                 e_data = client.read(f"identity/entity/id/{canonical_id}")
@@ -319,17 +312,12 @@ def main():
                 print(f"❌ Error fetching alias list: {e}", file=sys.stderr)
             sys.exit(0)
 
-        # 🧠 ENFORCE ALIAS ARGUMENT for all other actions
         if not alias_arg:
             print(f"❌ Error: Alias Name or ID is required for '{action}'.", file=sys.stderr)
             sys.exit(1)
 
-        # ---------------------------------------------------------
-        # READ: Dump the raw JSON using the Alias ID
-        # ---------------------------------------------------------
         if action == "read":
             try:
-                # You can now pass the ID you got from 'list' directly here
                 res = client.read(f"identity/entity-alias/id/{alias_arg}")
                 if res and 'data' in res: 
                     print(json.dumps(res['data'], indent=2))
@@ -338,9 +326,6 @@ def main():
             except Exception as e:
                 print(f"❌ Error reading alias: {e}", file=sys.stderr)
 
-        # ---------------------------------------------------------
-        # CREATE / UPDATE: Vault treats POST as an upsert
-        # ---------------------------------------------------------
         elif action in ["create", "update"]:
             if not entity_name or not mount:
                 print("❌ Error: --entity and --mount are required to create/update an alias.", file=sys.stderr)
@@ -349,9 +334,6 @@ def main():
             if vault.create_entity_alias(entity_name=entity_name, alias_name=alias_arg, mount_accessor_or_path=mount):
                 print(f"✅ Alias successfully {action}d.")
 
-        # ---------------------------------------------------------
-        # DELETE: Destroy it by ID
-        # ---------------------------------------------------------
         elif action == "delete":
             try:
                 client.delete(f"identity/entity-alias/id/{alias_arg}")
@@ -367,13 +349,10 @@ def main():
             if not args.host or not args.ca_cert:
                 print("❌ Error: --host and --ca-cert are required for configuration.", file=sys.stderr)
                 sys.exit(1)
-            
             try:
                 with open(args.ca_cert, 'r') as f:
                     ca_content = f.read()
-                
                 client = vault._get_client()
-                # Link the Vault Auth Backend to the K8s Cluster
                 client.write("auth/kubernetes/config", kubernetes_host=args.host, kubernetes_ca_cert=ca_content)
                 print(f"✅ Kubernetes Auth Backend successfully linked to {args.host}")
             except Exception as e:
@@ -389,12 +368,10 @@ def main():
                 print("ℹ️ No Kubernetes roles found.")
                 
         else:
-            # Note: 'name' is already validated by the global check at the top
             if action in ["create", "update"]:
                 if not args.sa_names or not args.sa_namespaces:
                     print("❌ Error: --sa-names and --sa-namespaces are required to create a Kubernetes role.", file=sys.stderr)
                     sys.exit(1)
-                    
                 if vault.create_kubernetes_role(name, sa_names=args.sa_names, sa_namespaces=args.sa_namespaces, policies=args.policies, ttl=args.ttl):
                     print(f"✅ Kubernetes role '{name}' successfully created/updated.")
                     
@@ -406,6 +383,57 @@ def main():
             elif action == "delete":
                 if vault.delete_kubernetes_role(name):
                     print(f"✅ Deleted Kubernetes role '{name}'.")
+
+    # -------------------------------------------------------------------------
+    # 8. OIDC / SSO MANAGEMENT (NEW)
+    # -------------------------------------------------------------------------
+    elif cmd == "oidc":
+        # Config: One-time setup to link Vault to Google
+        if action == "configure":
+            if not args.client_id or not args.client_secret:
+                print("❌ Error: --client-id and --client-secret are required for configure.", file=sys.stderr)
+                sys.exit(1)
+            if vault.configure_oidc(args.client_id, args.client_secret, args.default_role):
+                print("✅ OIDC Engine configured successfully. Vault is now linked to Google.")
+            else:
+                sys.exit(1)
+
+        # List: Show all OIDC roles
+        elif action == "list":
+            roles = vault.list_oidc_roles()
+            if roles:
+                print("🌐 Existing OIDC Roles:")
+                for r in roles: print(f"  ├─ {r}")
+            else:
+                print("ℹ️ No OIDC roles found.")
+
+        # Create/Update: Map Google Users/Groups to Vault Policies
+        elif action in ["create", "update"]:
+            if not args.emails and not args.groups:
+                print("❌ Error: Must provide either --emails or --groups to bind to the role.", file=sys.stderr)
+                sys.exit(1)
+            
+            bound_claims = {}
+            if args.emails:
+                bound_claims["email"] = [e.strip() for e in args.emails.split(",")]
+            if args.groups:
+                bound_claims["groups"] = [g.strip() for g in args.groups.split(",")]
+
+            if vault.create_oidc_role(name, bound_claims, policies=args.policies, ttl=args.ttl):
+                print(f"✅ OIDC Role '{name}' successfully {action}d.")
+
+        # Read/Info: Introspect the Role mapping
+        elif action in ["read", "info"]:
+            details = vault.read_oidc_role(name)
+            if details:
+                print(json.dumps(details, indent=2))
+            else:
+                print(f"⚠️ OIDC role '{name}' not found.")
+
+        # Delete: Remove the Role mapping
+        elif action == "delete":
+            if vault.delete_oidc_role(name):
+                print(f"✅ Deleted OIDC role '{name}'.")
 
 
 if __name__ == "__main__":
