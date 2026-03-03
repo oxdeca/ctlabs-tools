@@ -41,9 +41,14 @@ def get_args():
 
     # 2. ENGINE (Bootstrap)
     p_engine = subparsers.add_parser("engine", help="Manage K8s Secrets Engines")
-    p_engine.add_argument("action", choices=["create", "delete", "list"], help="Action to perform")
+    # 🌟 Added read, info, and update to the choices
+    p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"], help="Action to perform")
     p_engine.add_argument("cluster", nargs="?", default="", help="Cluster identifier (mounts at k8s/<cluster>)")
     p_engine.add_argument("--sa-name", default="vault-k8s-master", help="Master Service Account name")
+    
+    # 🌟 Added flags for the update command
+    p_engine.add_argument("--host", help="Update K8s API Host")
+    p_engine.add_argument("--jwt", help="Update SA JWT Token")
 
     # 3. ROLE (Access Profiles)
     p_role = subparsers.add_parser("role", help="Manage K8s Secrets Roles")
@@ -227,6 +232,26 @@ type: kubernetes.io/service-account-token
             run_kubectl(["kubectl", "delete", "clusterrolebinding", f"{sa_name}-admin-binding"], ignore_errors=True, quiet=True)
             run_kubectl(["kubectl", "delete", "secret", secret_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
             print("🎉 Engine destroyed!")
+
+        elif action in ["read", "info"]:
+            print(f"🔍 Reading K8s Engine Config for '{mount_point}/'...")
+            config = vault.read_k8s_engine_config(mount_point=mount_point)
+            if config:
+                # Mask the JWT so it doesn't spill onto the screen by default
+                if "service_account_jwt" in config and config["service_account_jwt"]:
+                    config["service_account_jwt"] = "*** REDACTED ***"
+                print(json.dumps(config, indent=2))
+            else:
+                print("❌ Config not found or engine not configured.")
+                
+        elif action == "update":
+            print(f"⚙️ Updating K8s Engine Config for '{mount_point}/'...")
+            if not args.host and not args.jwt:
+                print("❌ Error: Provide --host or --jwt to update.")
+                sys.exit(1)
+                
+            if vault.update_k8s_engine_config(mount_point, host=args.host, jwt=args.jwt):
+                print("✅ Successfully updated K8s Engine Config!")
 
     # -------------------------------------------------------------------------
     # 3. ROLE MANAGEMENT

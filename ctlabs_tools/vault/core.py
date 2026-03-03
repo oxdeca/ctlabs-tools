@@ -519,7 +519,36 @@ class HashiVault:
         except Exception as e:
             # NO MORE SILENT FAILURES! Pass the exact error back to the CLI.
             return {"error": f"Network/Python error: {e.__class__.__name__} - {str(e)}"}
+    
+    def read_gcp_engine_config(self, mount_point):
+        """Reads the configuration of a GCP secrets engine."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"{mount_point}/config")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading config at '{mount_point}/': {e}")
+            return None
 
+    def update_gcp_engine_config(self, mount_point, ttl=None, max_ttl=None):
+        """Updates the TTL settings of a GCP secrets engine."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            payload = {}
+            if ttl: payload['ttl'] = ttl
+            if max_ttl: payload['max_ttl'] = max_ttl
+            
+            if not payload:
+                print("ℹ️ No update parameters provided.")
+                return True
+                
+            client.write(f"{mount_point}/config", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error updating config at '{mount_point}/': {e}")
+            return False
 
     def configure_oidc_issuer(self, issuer_url):
         """Phase 1: Tells Vault to broadcast its identity for WIF."""
@@ -1082,6 +1111,35 @@ class HashiVault:
             return True
         except Exception as e:
             print(f"❌ Error tearing down K8s Secrets engine: {e}")
+            return False
+
+    def read_k8s_engine_config(self, mount_point):
+        """Reads the configuration of a K8s secrets engine."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"{mount_point}/config")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading config at '{mount_point}/': {e}")
+            return None
+
+    def update_k8s_engine_config(self, mount_point, host=None, ca_cert=None, jwt=None):
+        """Updates specific fields in a K8s secrets engine config without wiping the others."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            # Smart Merge: Read current state, then overwrite only what was provided
+            current = self.read_k8s_engine_config(mount_point) or {}
+            payload = {
+                "kubernetes_host": host or current.get("kubernetes_host", ""),
+                "kubernetes_ca_cert": ca_cert or current.get("kubernetes_ca_cert", ""),
+                "service_account_jwt": jwt or current.get("service_account_jwt", "")
+            }
+            client.write(f"{mount_point}/config", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error updating config at '{mount_point}/': {e}")
             return False
 
     def create_k8s_secret_role(self, name, mount_point, allowed_namespaces, rules_payload, ttl="1h"):

@@ -58,9 +58,13 @@ def get_args():
 
     # 3. ENGINE (Legacy Project-level setup)
     p_engine = subparsers.add_parser("engine", help="Manage GCP Secrets Engines")
-    p_engine.add_argument("action", choices=["create", "update", "delete", "list"], help="Action to perform")
+    # 🌟 Added read, info, update
+    p_engine.add_argument("action", choices=["setup", "teardown", "list", "read", "info", "update"])
     p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID")
-    p_engine.add_argument("--sa-name", default="vault-gcp-master", help="Master Service Account name")
+    
+    # 🌟 Added update flags
+    p_engine.add_argument("--ttl", help="Update default lease TTL (e.g., '1h')")
+    p_engine.add_argument("--max-ttl", help="Update max lease TTL (e.g., '24h')")
 
     # 4. ROLESET
     p_roleset = subparsers.add_parser("roleset", help="Manage GCP rolesets (team service accounts)")
@@ -266,6 +270,19 @@ def main():
             vault.teardown_gcp_engine(mount_point=mount_point)
             run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
             print("🎉 Engine destroyed!")
+
+        elif action in ["read", "info"]:
+            print(f"🔍 Reading GCP Engine Config for '{mount_point}/'...")
+            config = vault.read_gcp_engine_config(mount_point=mount_point)
+            if config:
+                print(json.dumps(config, indent=2))
+            else:
+                print("❌ Config not found.")
+                
+        elif action == "update":
+            print(f"⚙️ Updating GCP Engine Config for '{mount_point}/'...")
+            if vault.update_gcp_engine_config(mount_point, ttl=args.ttl, max_ttl=args.max_ttl):
+                print("✅ Successfully updated GCP Engine TTLs!")
 
     # -------------------------------------------------------------------------
     # ROLESET
