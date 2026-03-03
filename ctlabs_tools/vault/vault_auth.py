@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/ctlabs_tools/pytest/vault_auth.py
+# File    : ctlabs-tools/ctlabs_tools/vault/vault_auth.py
 # Purpose : Dedicated CLI for Vault Authentication & Policy Management
 # -----------------------------------------------------------------------------
 

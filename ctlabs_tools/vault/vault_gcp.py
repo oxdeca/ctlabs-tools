@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/ctlabs_tools/pytest/vault_gcp.py
+# File    : ctlabs-tools/ctlabs_tools/vault/vault_gcp.py
 # Purpose : Dedicated CLI for GCP Dynamic Secrets & Identity Management
 # -----------------------------------------------------------------------------
 import argparse

@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/ctlabs_tools/pytest/vault_secret.py
+# File    : ctlabs-tools/ctlabs_tools/vault/vault_secret.py
 # Purpose : Dedicated CLI for Vault KV Secrets & Raw Data Management
 # -----------------------------------------------------------------------------
 import argparse

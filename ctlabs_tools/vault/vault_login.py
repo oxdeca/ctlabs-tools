@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/ctlabs_tools/pytest/vault_login.py
+# File    : ctlabs-tools/ctlabs_tools/vault/vault_login.py
 # License : MIT
 # -----------------------------------------------------------------------------
 
