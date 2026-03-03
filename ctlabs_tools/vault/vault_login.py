@@ -50,7 +50,8 @@ def get_args():
 
     # 5. OIDC
     p_oidc = subparsers.add_parser("oidc", help="Login via Google Workspace SSO")
-    p_oidc.add_argument("role", nargs="?", default="default", help="The OIDC role to assume")
+    p_oidc.add_argument("role", nargs="?", default="default", help="The OIDC role to assume (e.g., admin, developer)")
+    p_oidc.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
     p_oidc.add_argument("--no-browser", action="store_true", help="Print the auth URL instead of opening a browser (useful for SSH)")
 
     return parser.parse_args()

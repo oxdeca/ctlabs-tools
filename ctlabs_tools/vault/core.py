@@ -1374,7 +1374,9 @@ class HashiVault:
             return None
 
         try:
-            res = client.read("auth/oidc/oidc/callback", state=state, code=code)
+            # 🧠 FIX: Use the dedicated hvac OIDC method instead of client.read()
+            res = client.auth.oidc.oidc_callback(code=code, state=state)
+            
             auth_data = res.get('auth', {})
             return {
                 "token": auth_data.get('client_token'),
