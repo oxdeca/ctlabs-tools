@@ -239,7 +239,7 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
     # ---------------------------------------------------------------------
     elif cmd == "leases":
         action = args.action
-        
+
         if action == "list":
             # 🧠 SMART UX: Decide if we are looking at one engine or all of them
             if args.cluster:
@@ -268,7 +268,9 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
                     print("✅ No active K8s leases found.")
                         
         elif action == "revoke":
-            if args.id:
+            mount_point = f"k8s/{args.cluster}"  # 🌟 ADD THIS LINE
+            
+            if getattr(args, "id", None):
                 print(f"🗑️ Revoking specific lease '{args.id}'...")
                 if vault.revoke_lease(args.id):
                     print("✅ Lease successfully revoked.")
@@ -378,12 +380,15 @@ type: kubernetes.io/service-account-token
             
         elif action == "delete":
             print(f"🧹 Tearing down engine at '{mount_point}/'...")
-            vault.teardown_k8s_secrets_engine(mount_point=mount_point)
-            print(f"  ├─ Cleaning up K8s resources...")
-            run_kubectl(["kubectl", "delete", "serviceaccount", sa_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
-            run_kubectl(["kubectl", "delete", "clusterrolebinding", f"{sa_name}-admin-binding"], ignore_errors=True, quiet=True)
-            run_kubectl(["kubectl", "delete", "secret", secret_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
-            print("🎉 Engine destroyed!")
+            # 🌟 FIX: Only print success and cleanup K8s if the Vault teardown actually succeeds!
+            if vault.teardown_k8s_secrets_engine(mount_point=mount_point):
+                print(f"  ├─ Cleaning up K8s resources...")
+                run_kubectl(["kubectl", "delete", "serviceaccount", sa_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
+                run_kubectl(["kubectl", "delete", "clusterrolebinding", f"{sa_name}-admin-binding"], ignore_errors=True, quiet=True)
+                run_kubectl(["kubectl", "delete", "secret", secret_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
+                print("🎉 Engine destroyed!")
+            else:
+                print("❌ Engine teardown aborted due to errors.")
 
         elif action in ["read", "info"]:
             print(f"🔍 Reading K8s Engine Config for '{mount_point}/'...")
