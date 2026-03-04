@@ -66,6 +66,26 @@ def get_random_passphrase(length=32):
     os.chmod(KEY_FILE, 0o600)
     return pwd
 
+def get_cached_vault_server():
+    """Retrieves the last successfully used Vault URL from the local cache."""
+    cache_file = os.path.join(SECURE_DIR, "vault_server.json")
+    if os.path.exists(cache_file):
+        try:
+            import json
+            with open(cache_file, 'r') as f:
+                return json.load(f).get("default")
+        except Exception: pass
+    return None
+
+def save_cached_vault_server(server_url):
+    """Saves the Vault URL to the local cache so the user doesn't have to type it again."""
+    cache_file = os.path.join(SECURE_DIR, "vault_server.json")
+    try:
+        import json
+        with open(cache_file, 'w') as f:
+            json.dump({"default": server_url}, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not cache Vault server URL: {e}", file=sys.stderr)
 
 def check_vault_health(vault_addr):
     """Pings the Vault health endpoint."""
@@ -238,11 +258,29 @@ def run_cli():
     # 3. LOGIN COMMANDS (OIDC, User, AppRole, or Interactive)
     # ---------------------------------------------------------
     
-    # Smart Address Resolution: CLI Flag -> Environment Variable -> Interactive Prompt
-    vault_addr = getattr(args, 'addr', None) or os.environ.get("VAULT_ADDR")
-    if not vault_addr:
-        vault_addr = input("Enter Vault Address (e.g., https://IP:PORT): ").strip()
+    # 🧠 Smart Address Resolution: CLI Flag -> Env Var -> Local Cache -> Interactive Prompt
+    vault_addr = getattr(args, 'addr', None)
+    
+    if vault_addr:
+        print(f"🌐 Using server from CLI flag: {vault_addr}")
+    else:
+        vault_addr = os.environ.get("VAULT_ADDR")
+        if vault_addr:
+            print(f"🌐 Using server from environment variable: {vault_addr}")
+        else:
+            vault_addr = get_cached_vault_server()
+            if vault_addr:
+                print(f"🌐 Using locally cached server: {vault_addr}")
+            else:
+                vault_addr = input("Enter Vault Address (e.g., https://127.0.0.1:8200): ").strip()
+
+    # Ensure the URL is formatted correctly before we cache it or use it
+    if not vault_addr.startswith("http"):
+        vault_addr = f"https://{vault_addr}"
         
+    # Save the successful URL to the cache for next time
+    save_cached_vault_server(vault_addr)
+    
     # Inject vault_addr into the environment so core.py's oidc_login can find it
     os.environ["VAULT_ADDR"] = vault_addr
         
