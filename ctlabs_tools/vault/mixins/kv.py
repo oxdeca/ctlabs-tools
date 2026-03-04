@@ -74,7 +74,7 @@ class VaultKVMixin:
         client = self._get_client()
         if not client: return
         
-        base_path = base_path.strip('/') if base_path else ""  # 🌟 FIX: Clean path
+        base_path = base_path.strip('/') if base_path else "" 
         
         import re
         try:
@@ -100,18 +100,27 @@ class VaultKVMixin:
                         else:
                             yield from _recurse(next_path, is_folder=False)
                 except Exception as e:
+                    # If listing fails on the base_path, fallback to checking if it's a leaf node
                     if current == base_path:
                         yield from _recurse(current, is_folder=False)
             else:
                 matched_keys = []
+                secret_exists = True  # 🌟 NEW: Track if it actually exists in Vault!
+                
                 try:
                     secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
                     secret_data = secret_res.get('data', {}).get('data', {})
                     matched_keys = [sk for sk in secret_data.keys() if regex.search(sk)]
-                except Exception:
-                    pass 
+                except Exception as e:
+                    # 🌟 FIX: If Vault throws a 404, this secret does not exist. Do not yield it!
+                    if "404" in str(e) or "InvalidPath" in type(e).__name__:
+                        secret_exists = False
+                    elif current == base_path:
+                        # If it's a 403 Permission Denied on the base path, we can't confirm it exists
+                        secret_exists = False
                 
-                if path_matches or matched_keys:
+                # 🌟 FIX: Only yield if we proved the secret actually exists
+                if secret_exists and (path_matches or matched_keys):
                     yield current, matched_keys, path_matches, False
 
         yield from _recurse(base_path, is_folder=True)
