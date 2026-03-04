@@ -4,10 +4,11 @@
 # -----------------------------------------------------------------------------
 
 class VaultSystemMixin:
-	def lookup_token(self):
+    def lookup_token(self):
         """Fetches metadata about the currently active token."""
         client = self._get_client()
-        if not client: return None
+        if not client:
+            return None
         try:
             res = client.auth.token.lookup_self()
             return res.get('data', {})
