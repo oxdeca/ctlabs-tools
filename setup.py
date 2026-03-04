@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.2.81",
+    version="0.2.82",
     description="CTLabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -20,6 +20,7 @@ setup(
       "cryptography",
       "flask",
       "flask-jwt-extended",
+      "pyyaml",
       "python-dotenv",
     ],
     extras_require={
