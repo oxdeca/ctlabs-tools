@@ -11,6 +11,8 @@ class VaultKVMixin:
         client = self._get_client()
         if not client: return None
 
+        path = path.strip('/') if path else ""  # 🌟 FIX: Clean path
+
         try:
             if mount_point.lower() == 'cubbyhole':
                 response = client.read(f"cubbyhole/{path}")
@@ -27,6 +29,8 @@ class VaultKVMixin:
     def write_secret(self, path, secret_data, mount_point='secret'):
         client = self._get_client()
         if not client: return False
+
+        path = path.strip('/') if path else ""  # 🌟 FIX: Clean path
 
         try:
             if mount_point.lower() == 'cubbyhole':
@@ -46,16 +50,18 @@ class VaultKVMixin:
     def list_secrets(self, path, mount_point='secret'):
         client = self._get_client()
         if not client: return None
+        
+        path = path.strip('/') if path else ""  # 🌟 FIX: Clean path
+
         try:
             if mount_point in ['secret', 'kv', 'kvv2']:
                 res = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount_point)
             else:
-                res = client.list(f"{mount_point}/{path}")
+                api_path = f"{mount_point}/{path}" if path else f"{mount_point}/"
+                res = client.list(api_path)
 
             return res.get('data', {}).get('keys', [])
         except Exception as e:
-            # Vault throws an InvalidPath/404 when trying to list a leaf node.
-            # We fail silently here so the CLI can smoothly fall back to a "read".
             error_str = str(e)
             if "404" in error_str or "InvalidPath" in type(e).__name__ or "None, on list" in error_str:
                 return []
@@ -68,6 +74,8 @@ class VaultKVMixin:
         client = self._get_client()
         if not client: return
         
+        base_path = base_path.strip('/') if base_path else ""  # 🌟 FIX: Clean path
+        
         import re
         try:
             regex = re.compile(search_pattern, re.IGNORECASE)
@@ -79,9 +87,8 @@ class VaultKVMixin:
             path_matches = bool(regex.search(current))
             
             if is_folder:
-                # If the folder path itself matches, yield it immediately
                 if path_matches and current != base_path:
-                    yield current, [], True, True # path, matched_keys, path_matches, is_folder
+                    yield current, [], True, True 
                 
                 try:
                     res = client.secrets.kv.v2.list_secrets(path=current, mount_point=mount_point)
@@ -93,20 +100,17 @@ class VaultKVMixin:
                         else:
                             yield from _recurse(next_path, is_folder=False)
                 except Exception as e:
-                    # If listing fails on the base_path, it might actually be a leaf node
                     if current == base_path:
                         yield from _recurse(current, is_folder=False)
             else:
-                # It's a secret (leaf node). Read the payload to check the keys.
                 matched_keys = []
                 try:
                     secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
                     secret_data = secret_res.get('data', {}).get('data', {})
                     matched_keys = [sk for sk in secret_data.keys() if regex.search(sk)]
                 except Exception:
-                    pass # Ignore permission errors
+                    pass 
                 
-                # Yield if the secret's path matches OR if any keys inside matched
                 if path_matches or matched_keys:
                     yield current, matched_keys, path_matches, False
 

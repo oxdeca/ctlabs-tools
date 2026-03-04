@@ -50,11 +50,19 @@ def main():
         else: print(f"⚠️ No data found at {args.path}")
         sys.exit(0)
 
-    # We enforce mount_point/secret_path routing here
+    # 🌟 FIX: Allow root mount points for 'list' without requiring a trailing slash!
     parts = args.path.split('/', 1)
-    if len(parts) < 2:
-        print("❌ Error: Path must include the mount point (e.g., kvv2/my-secret)", file=sys.stderr)
-        sys.exit(1)
+    
+    if len(parts) == 1:
+        if args.command == "list":
+            mount_point = parts[0]
+            path = ""
+        else:
+            print("❌ Error: For read/write, path must include the mount point (e.g., kvv2/my-secret)")
+            sys.exit(1)
+    else:
+        mount_point = parts[0]
+        path = parts[1]
         
     mount_point, secret_path = parts[0], parts[1]
 
@@ -81,7 +89,8 @@ def main():
     elif cmd == "list":
         keys = vault.list_secrets(path=secret_path, mount_point=mount_point)
         if keys:
-            print(f"📂 Folders/Secrets at {args.path}/:")
+            display_path = f"{mount_point}/{path}" if path else f"{mount_point}/"
+            print(f"📂 Folders/Secrets at {display_path}:")
             for k in keys: print(f"  ├─ {k}")
         else:
             data = vault.read_secret(path=secret_path, mount_point=mount_point)
