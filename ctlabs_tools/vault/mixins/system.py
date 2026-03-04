@@ -3,6 +3,8 @@
 # License : MIT
 # -----------------------------------------------------------------------------
 
+import sys
+
 class VaultSystemMixin:
     def lookup_token(self):
         """Fetches metadata about the currently active token."""
