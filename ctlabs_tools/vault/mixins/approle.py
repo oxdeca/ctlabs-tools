@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 
 class VaultAppRoleMixin:
-	#
+    #
     # AppRoles
     #
     def approle_login(self, vault_url, role_id, secret_id):

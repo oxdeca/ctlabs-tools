@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 
 class VaultGCPMixin:
-	def get_gcp_token(self, roleset_name, mount_point='gcp'):
+    def get_gcp_token(self, roleset_name, mount_point='gcp'):
         """Generates a dynamic, short-lived GCP OAuth token from Vault."""
         client = self._get_client()
         if not client: return None

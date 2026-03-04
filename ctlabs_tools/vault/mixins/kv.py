@@ -4,7 +4,7 @@
 # -----------------------------------------------------------------------------
 
 class VaultKVMixin:
-	#
+    #
     # Secrets
     #
     def read_secret(self, path, mount_point='secret'):
