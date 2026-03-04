@@ -15,6 +15,7 @@ from .mixins.k8s      import VaultK8sMixin
 from .mixins.oidc     import VaultOIDCMixin
 from .mixins.approle  import VaultAppRoleMixin
 from .mixins.identity import VaultIdentityMixin
+from .gsm             import GCPSecretManage
 
 class HashiVault(
     VaultBase,
