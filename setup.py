@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.2.94",
+    version="0.2.95",
     description="CTLabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -36,6 +36,7 @@ setup(
             'vault-login=ctlabs_tools.vault.vault_login:main',
             'vault-auth=ctlabs_tools.vault.vault_auth:main',
             'vault-secret=ctlabs_tools.vault.vault_secret:main',
+            'vault-ldap=ctlabs_tools.vault.vault_ldap:main',
             'vault-gcp=ctlabs_tools.vault.vault_gcp:main',
             'vault-k8s=ctlabs_tools.vault.vault_k8s:main',
             'vault-trap=ctlabs_tools.vault.vault_trap:main',
