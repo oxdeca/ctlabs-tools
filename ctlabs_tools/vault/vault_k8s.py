@@ -403,12 +403,26 @@ type: kubernetes.io/service-account-token
                 
         elif action == "update":
             print(f"⚙️ Updating K8s Engine Config for '{mount_point}/'...")
-            if not args.host and not args.jwt:
-                print("❌ Error: Provide --host or --jwt to update.")
-                sys.exit(1)
+            
+            jwt_token = args.jwt
+            kube_host = args.host
+
+            # 🧠 SMART UX: If no flags provided, auto-fetch the fresh token!
+            if not jwt_token and not kube_host:
+                print(f"🔄 Auto-fetching fresh credentials from current kubectl context...")
                 
-            if vault.update_k8s_engine_config(mount_point, host=args.host, jwt=args.jwt):
-                print("✅ Successfully updated K8s Engine Config!")
+                # Fetch the token from the existing secret
+                b64_token = run_kubectl(["kubectl", "get", "secret", secret_name, "-n", sa_namespace, "-o", "jsonpath={.data.token}"], capture=True, ignore_errors=True)
+                
+                if not b64_token:
+                    print(f"❌ Failed to retrieve token. Does the '{sa_name}' service account still exist in the cluster?", file=sys.stderr)
+                    sys.exit(1)
+                    
+                jwt_token = base64.b64decode(b64_token).decode('utf-8')
+                print("✅ Successfully extracted fresh JWT from the cluster.")
+
+            if vault.update_k8s_engine_config(mount_point, host=kube_host, jwt=jwt_token):
+                print("🎉 Successfully updated K8s Engine Config in Vault!")
 
 
     # -------------------------------------------------------------------------
