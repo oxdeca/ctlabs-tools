@@ -72,18 +72,25 @@ def get_args():
     p_oidc = subparsers.add_parser("oidc", help="Manage OIDC Auth & Roles (SSO)")
     p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure", "register"], help="Action to perform")
     p_oidc.add_argument("name", nargs="?", default="", help="Role name (OR 'Provider' like gcp/aws/okta for 'register')")
-    # Config flags
     p_oidc.add_argument("--client-id", help="OIDC Client ID (for 'configure' action)")
     p_oidc.add_argument("--client-secret", help="OIDC Client Secret (for 'configure')")
     p_oidc.add_argument("--default-role", default="default", help="Default OIDC role (for 'configure')")
-    # Role flags
     p_oidc.add_argument("--emails", help="Comma-separated list of allowed emails")
     p_oidc.add_argument("--groups", help="Comma-separated list of allowed Google Groups")
     p_oidc.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_oidc.add_argument("--ttl", default="1h", help="Token TTL")
-    # New flags for the interactive 'register' command
     p_oidc.add_argument("--gcp-project", help="GCP Project ID to use or create for the OAuth Client (for 'register')")
     p_oidc.add_argument("--admin-email", help="Your Google email to grant IAM roles to (for 'register')")
+
+    # 9. GCP AUTH
+    p_gcp = subparsers.add_parser("gcp", help="Manage GCP Auth Roles & Configuration")
+    p_gcp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
+    p_gcp.add_argument("name", nargs="?", default="", help="Name of the Vault role (Required for all except list/configure)")
+    p_gcp.add_argument("--sa-emails", help="Comma-separated allowed GCP Service Accounts")
+    p_gcp.add_argument("--policies", help="Comma-separated list of Vault policies")
+    p_gcp.add_argument("--ttl", default="1h", help="Token TTL")
+    p_gcp.add_argument("--type", default="iam", choices=["iam", "gce"], help="Type of GCP auth role (iam or gce)")
+    p_gcp.add_argument("--credentials", help="Path to GCP credentials JSON file (for 'configure' action)")
 
     return parser.parse_args()
 
@@ -100,7 +107,7 @@ def main():
     name = getattr(args, 'name', '')
 
     # 🧠 Ensure 'name' is bypassed for all and list commands across all modules
-    if cmd != "alias" and action not in ["list", "configure"] and not name:
+    if cmd != "alias" and action not in ["list", "configure", "register"] and not name:
         print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
         sys.exit(1)
 
@@ -390,7 +397,7 @@ def main():
                     print(f"✅ Deleted Kubernetes role '{name}'.")
 
     # -------------------------------------------------------------------------
-    # 8. OIDC / SSO MANAGEMENT (NEW)
+    # 8. OIDC / SSO MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "oidc":
         # Config: One-time setup to link Vault to Google
@@ -443,18 +450,10 @@ def main():
         # Register: Interactive Guided Setup for OIDC Providers
         elif action == "register":
             import subprocess
-            provider = name.lower()
-
-            # Register: Interactive Guided Setup for OIDC Providers
-        elif action == "register":
-            import subprocess
-            import getpass  # <-- Added for secure secret entry
+            import getpass  
             
             provider = name.lower()
 
-            # -------------------------------------------------------------
-            # PROVIDER: GOOGLE CLOUD (GCP)
-            # -------------------------------------------------------------
             if provider == "gcp":
                 if not args.gcp_project or not args.admin_email:
                     print("❌ Error: --gcp-project and --admin-email are required for 'register gcp'.", file=sys.stderr)
@@ -491,29 +490,17 @@ def main():
                 print(f"      - https://vault.yourdomain.com:8200/ui/vault/auth/oidc/oidc/callback")
                 print("="*60)
                 
-                # Use standard input for the ID (it's public/non-sensitive)
                 client_id = input("🔑 Paste your new Client ID: ").strip()
-                # Use getpass for the Secret (masked input)
                 client_secret = getpass.getpass("🕵️  Paste your new Client Secret: ").strip()
                 discovery_url = "https://accounts.google.com"
 
-            # -------------------------------------------------------------
-            # PROVIDER: MICROSOFT ENTRA ID (AZURE AD)
-            # -------------------------------------------------------------
             elif provider in ["azure", "entraid"]:
-                # ... [Keep the Azure print statements the same] ...
-                
                 client_id = input("🔑 Paste your Entra ID Application (client) ID: ").strip()
                 tenant_id = input("🏢 Paste your Directory (tenant) ID: ").strip()
                 client_secret = getpass.getpass("🕵️  Paste your Entra ID Client Secret: ").strip()
                 discovery_url = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
 
-            # -------------------------------------------------------------
-            # PROVIDER: OKTA
-            # -------------------------------------------------------------
             elif provider == "okta":
-                # ... [Keep the Okta print statements the same] ...
-                
                 okta_domain = input("🌐 Paste your Okta Domain (e.g., dev-123.okta.com): ").strip()
                 client_id = input("🔑 Paste your Client ID: ").strip()
                 client_secret = getpass.getpass("🕵️  Paste your Client Secret: ").strip()
@@ -521,9 +508,6 @@ def main():
                 okta_domain = okta_domain.replace("https://", "").strip("/")
                 discovery_url = f"https://{okta_domain}"
 
-            # -------------------------------------------------------------
-            # UNKNOWN PROVIDER FALLBACK & CONFIG
-            # -------------------------------------------------------------
             else:
                 print(f"❌ Error: Unsupported OIDC provider '{provider}'.", file=sys.stderr)
                 print("   Supported providers: gcp, azure, okta", file=sys.stderr)
@@ -539,5 +523,50 @@ def main():
             else:
                 sys.exit(1)
 
+    # -------------------------------------------------------------------------
+    # 9. GCP AUTH MANAGEMENT
+    # -------------------------------------------------------------------------
+    elif cmd == "gcp":
+        if action == "configure":
+            creds_content = None
+            if args.credentials:
+                try:
+                    with open(args.credentials, 'r') as f:
+                        creds_content = f.read()
+                except Exception as e:
+                    print(f"❌ Error reading credentials file: {e}", file=sys.stderr)
+                    sys.exit(1)
+            
+            if vault.configure_gcp_auth(credentials=creds_content):
+                print(f"✅ GCP Auth Backend successfully configured.")
+            else:
+                sys.exit(1)
+                
+        elif action == "list":
+            roles = vault.list_gcp_auth_roles()
+            if roles:
+                print("☁️ Existing GCP Auth Roles:")
+                for r in roles: print(f"  ├─ {r}")
+            else:
+                print("ℹ️ No GCP auth roles found.")
+                
+        else:
+            if action in ["create", "update"]:
+                if not args.sa_emails:
+                    print("❌ Error: --sa-emails is required to create a GCP auth role.", file=sys.stderr)
+                    sys.exit(1)
+                if vault.create_gcp_auth_role(name, sa_emails=args.sa_emails, policies=args.policies, ttl=args.ttl, role_type=args.type):
+                    print(f"✅ GCP auth role '{name}' successfully created/updated.")
+                    
+            elif action in ["read", "info"]:
+                details = vault.read_gcp_auth_role(name)
+                if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ GCP auth role '{name}' not found.")
+                
+            elif action == "delete":
+                if vault.delete_gcp_auth_role(name):
+                    print(f"✅ Deleted GCP auth role '{name}'.")
+
 if __name__ == "__main__":
     main()
+

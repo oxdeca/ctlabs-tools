@@ -2,6 +2,7 @@
 # File    : ctlabs-tools/ctlabs_tools/vault/mixins/gcp.py
 # License : MIT
 # -----------------------------------------------------------------------------
+import sys
 
 class VaultGCPMixin:
     def get_gcp_token(self, roleset_name, mount_point='gcp'):
@@ -67,9 +68,9 @@ class VaultGCPMixin:
             print(f"❌ Error updating config at '{mount_point}/': {e}")
             return False
 
-    #
-    # secret engines
-    #
+    # -------------------------------------------------------------------------
+    # SECRETS ENGINE MANAGEMENT
+    # -------------------------------------------------------------------------
     def setup_gcp_engine(self, creds_json, mount_point='gcp'):
         """Phase 1: Enables GCP engine and configures it with the Master JSON key."""
         client = self._get_client()
@@ -136,7 +137,6 @@ class VaultGCPMixin:
             print(f"❌ Error reading roleset '{name}': {e}")
             return None
 
-
     def delete_gcp_roleset(self, name, mount_point='gcp'):
         """Deletes a GCP roleset and cleans up its underlying Service Account in GCP."""
         client = self._get_client()
@@ -182,3 +182,82 @@ class VaultGCPMixin:
             error_msg = str(e).strip()
             print(f"⚠️ Could not disable GCP engine: {error_msg if error_msg else type(e).__name__}")
             return False
+
+    # -------------------------------------------------------------------------
+    # GCP AUTH MANAGEMENT
+    # -------------------------------------------------------------------------
+    def configure_gcp_auth(self, credentials=None):
+        """Configures the GCP Auth Method."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            try:
+                client.sys.enable_auth_method(method_type='gcp', path='gcp')
+                print("✅ Enabled GCP auth method at 'gcp/'")
+            except Exception as e:
+                if "path is already in use" not in str(e):
+                    print(f"❌ Failed to enable GCP auth method: {e}")
+                    return False
+            
+            payload = {}
+            if credentials:
+                payload['credentials'] = credentials
+            
+            client.write("auth/gcp/config", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error configuring GCP auth: {e}", file=sys.stderr)
+            return False
+
+    def create_gcp_auth_role(self, name, sa_emails, policies=None, ttl="1h", role_type="iam"):
+        """Creates or updates a GCP Auth Role."""
+        client = self._get_client()
+        if not client: return False
+        
+        payload = {
+            "type": role_type,
+            "bound_service_accounts": [sa.strip() for sa in sa_emails.split(",")],
+            "token_ttl": ttl
+        }
+        if policies:
+            payload['token_policies'] = [p.strip() for p in policies.split(",")]
+            
+        try:
+            client.write(f"auth/gcp/role/{name}", **payload)
+            return True
+        except Exception as e:
+            print(f"❌ Error creating GCP auth role '{name}': {e}", file=sys.stderr)
+            return False
+
+    def read_gcp_auth_role(self, name):
+        """Reads configuration details for a GCP Auth Role."""
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"auth/gcp/role/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading GCP auth role '{name}': {e}", file=sys.stderr)
+            return None
+
+    def delete_gcp_auth_role(self, name):
+        """Deletes a GCP Auth Role."""
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"auth/gcp/role/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting GCP auth role '{name}': {e}", file=sys.stderr)
+            return False
+
+    def list_gcp_auth_roles(self):
+        """Lists all GCP Auth Roles."""
+        client = self._get_client()
+        if not client: return []
+        try:
+            res = client.list("auth/gcp/role")
+            return res.get('data', {}).get('keys', []) if res else []
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error listing GCP auth roles: {e}", file=sys.stderr)
+            return []
