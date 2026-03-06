@@ -68,7 +68,7 @@ def get_args():
     p_k8s.add_argument("--host", help="K8s API Host (for 'configure' action)")
     p_k8s.add_argument("--ca-cert", help="Path to K8s CA Cert file (for 'configure' action)")
 
-    # 8. OIDC AUTH (NEW)
+    # 8. OIDC AUTH
     p_oidc = subparsers.add_parser("oidc", help="Manage OIDC Auth & Roles (SSO)")
     p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure", "register"], help="Action to perform")
     p_oidc.add_argument("name", nargs="?", default="", help="Role name (OR 'Provider' like gcp/aws/okta for 'register')")
@@ -90,7 +90,11 @@ def get_args():
     p_gcp.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_gcp.add_argument("--ttl", default="1h", help="Token TTL")
     p_gcp.add_argument("--type", default="iam", choices=["iam", "gce"], help="Type of GCP auth role (iam or gce)")
-    p_gcp.add_argument("--credentials", help="Path to GCP credentials JSON file (for 'configure' action)")
+    
+    # Auth configuration flags
+    p_gcp.add_argument("--project", help="GCP Project ID to auto-generate a Zero-Touch credential (for 'configure' action)")
+    p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup (default: vault-gcp-auth)")
+    p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file (Alternative to --project)")
 
     return parser.parse_args()
 
@@ -450,8 +454,6 @@ def main():
         # Register: Interactive Guided Setup for OIDC Providers
         elif action == "register":
             import subprocess
-            import getpass  
-            
             provider = name.lower()
 
             if provider == "gcp":
@@ -529,14 +531,63 @@ def main():
     elif cmd == "gcp":
         if action == "configure":
             creds_content = None
-            if args.credentials:
+            
+            # 1. Provide manual credentials JSON path
+            if getattr(args, 'credentials', None):
                 try:
                     with open(args.credentials, 'r') as f:
                         creds_content = f.read()
                 except Exception as e:
                     print(f"❌ Error reading credentials file: {e}", file=sys.stderr)
                     sys.exit(1)
+                    
+            # 2. Zero-Touch Setup via gcloud (like bootstrap)
+            elif getattr(args, 'project', None):
+                project = args.project
+                sa_name = args.sa_name
+                sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+                
+                print(f"🚀 Initializing Zero-Touch GCP Auth Verifier in project: {project}...")
+                
+                print(f"  ├─ Ensuring Service Account '{sa_name}' exists...")
+                # We ignore errors here in case it already exists
+                subprocess.run([
+                    "gcloud", "iam", "service-accounts", "create", sa_name,
+                    "--display-name=Vault GCP Auth Verifier", "--project", project
+                ], capture_output=True) 
+                
+                print(f"  ├─ Granting necessary IAM roles for token verification...")
+                # Need KeyAdmin to look up properties of incoming JWTs/Service Accounts
+                subprocess.run([
+                    "gcloud", "projects", "add-iam-policy-binding", project,
+                    f"--member=serviceAccount:{sa_email}",
+                    "--role=roles/iam.serviceAccountKeyAdmin"
+                ], capture_output=True)
+                
+                # Needed if you plan on doing GCE (VM instance) auth
+                subprocess.run([
+                    "gcloud", "projects", "add-iam-policy-binding", project,
+                    f"--member=serviceAccount:{sa_email}",
+                    "--role=roles/compute.viewer"
+                ], capture_output=True)
+                
+                print("  ├─ 🔑 Generating JSON Key in-memory and updating Vault...")
+                res = subprocess.run([
+                    "gcloud", "iam", "service-accounts", "keys", "create", "-",
+                    f"--iam-account={sa_email}", "--project", project
+                ], capture_output=True, text=True)
+                
+                if res.returncode != 0:
+                    print(f"❌ Failed to generate Service Account key: {res.stderr}", file=sys.stderr)
+                    sys.exit(1)
+                    
+                creds_content = res.stdout.strip()
+                
+            else:
+                print("❌ Error: You must provide either --project (for zero-touch) or --credentials (for manual file).", file=sys.stderr)
+                sys.exit(1)
             
+            # Finally, hand it off to the Mixin to configure Vault
             if vault.configure_gcp_auth(credentials=creds_content):
                 print(f"✅ GCP Auth Backend successfully configured.")
             else:
@@ -569,4 +620,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
