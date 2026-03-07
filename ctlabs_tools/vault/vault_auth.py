@@ -37,11 +37,12 @@ def get_args():
     p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules (used with create/update)")
 
     # 4. GROUP
-    p_group = subparsers.add_parser("group", help="Manage Auth Method Groups (e.g., LDAP groups)")
+    p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_group.add_argument("name", nargs="?", default="", help="Name of the group in LDAP")
-    p_group.add_argument("--method", choices=["ldap", "okta"], default="ldap", help="Auth method (default: ldap)")
+    p_group.add_argument("name", nargs="?", default="", help="Name of the group")
+    p_group.add_argument("--method", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
+    p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --method identity)")
 
     # 5. ENTITY
     p_entity = subparsers.add_parser("entity", help="Manage Vault Identity Entities")
@@ -217,39 +218,67 @@ def main():
                 print(f"✅ Deleted policy '{name}'.")
 
     # -------------------------------------------------------------------------
-    # 4. GROUP MANAGEMENT (LDAP/OIDC)
+    # 4. GROUP MANAGEMENT (Identity & External)
     # -------------------------------------------------------------------------
     elif cmd == "group":
-        method = getattr(args, 'method', 'ldap')
+        method = getattr(args, 'method', 'identity')
+        
         if action == "list":
-            groups = vault.list_groups(auth_type=method)
+            if method == "identity":
+                groups = vault.list_identity_groups()
+                label = "Internal Vault Identity Groups"
+            else:
+                groups = vault.list_groups(auth_type=method)
+                label = f"External '{method}' Group Mappings"
+
             if groups:
-                print(f"🏢 Existing '{method}' group mappings:")
+                print(f"🏢 Existing {label}:")
                 for g in groups: print(f"  ├─ {g}")
             else:
-                print(f"ℹ️ No '{method}' groups found.")
+                print(f"ℹ️ No {label} found.")
                 
         else:
             if not name:
                 print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
+                
             if action in ["create", "update"]:
-                if not args.policies:
-                    print("⚠️ Warning: Creating a group without --policies means it grants no access.", file=sys.stderr)
-                if vault.create_group(name, policies=args.policies, auth_type=method):
-                    print(f"✅ Group '{name}' ({method}) successfully mapped.")
+                if method == "identity":
+                    # 🧠 SMART UX: Lookup UUIDs automatically from Entity Names
+                    entity_ids = []
+                    if args.members:
+                        for member_name in [m.strip() for m in args.members.split(",")]:
+                            ent = vault.read_entity(member_name)
+                            if ent and 'id' in ent:
+                                entity_ids.append(ent['id'])
+                            else:
+                                print(f"⚠️ Warning: Entity '{member_name}' not found. Cannot add to group.", file=sys.stderr)
+
+                    if vault.create_identity_group(name, policies=args.policies, member_entity_ids=entity_ids):
+                        print(f"✅ Vault Identity Group '{name}' successfully created/updated.")
+                else:
+                    if vault.create_group(name, policies=args.policies, auth_type=method):
+                        print(f"✅ External Group Mapping '{name}' ({method}) successfully created/updated.")
                     
             elif action in ["read", "info"]:
-                details = vault.read_group(name, auth_type=method)
+                if method == "identity":
+                    details = vault.read_identity_group(name)
+                else:
+                    details = vault.read_group(name, auth_type=method)
+                    
                 if details: print(json.dumps(details, indent=2))
-                else: print(f"⚠️ Group '{name}' not found in '{method}'.")
+                else: print(f"⚠️ Group '{name}' not found for method '{method}'.")
                 
             elif action == "delete":
-                if vault.delete_group(name, auth_type=method):
-                    print(f"✅ Deleted group mapping '{name}' ({method}).")
+                if method == "identity":
+                    if vault.delete_identity_group(name):
+                        print(f"✅ Deleted Identity Group '{name}'.")
+                else:
+                    if vault.delete_group(name, auth_type=method):
+                        print(f"✅ Deleted external group mapping '{name}' ({method}).")
 
     # -------------------------------------------------------------------------
-    # 5. ENTITY MANAGEMENT (Identity Secrets Engine)
+    # 5. ENTITY MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "entity":
         if action == "list":
@@ -404,7 +433,6 @@ def main():
     # 8. OIDC / SSO MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "oidc":
-        # Config: One-time setup to link Vault to Google
         if action == "configure":
             if not args.client_id or not args.client_secret:
                 print("❌ Error: --client-id and --client-secret are required for configure.", file=sys.stderr)
@@ -414,7 +442,6 @@ def main():
             else:
                 sys.exit(1)
 
-        # List: Show all OIDC roles
         elif action == "list":
             roles = vault.list_oidc_roles()
             if roles:
@@ -423,7 +450,6 @@ def main():
             else:
                 print("ℹ️ No OIDC roles found.")
 
-        # Create/Update: Map Google Users/Groups to Vault Policies
         elif action in ["create", "update"]:
             if not args.emails and not args.groups:
                 print("❌ Error: Must provide either --emails or --groups to bind to the role.", file=sys.stderr)
@@ -438,7 +464,6 @@ def main():
             if vault.create_oidc_role(name, bound_claims, policies=args.policies, ttl=args.ttl):
                 print(f"✅ OIDC Role '{name}' successfully {action}d.")
 
-        # Read/Info: Introspect the Role mapping
         elif action in ["read", "info"]:
             details = vault.read_oidc_role(name)
             if details:
@@ -446,14 +471,13 @@ def main():
             else:
                 print(f"⚠️ OIDC role '{name}' not found.")
 
-        # Delete: Remove the Role mapping
         elif action == "delete":
             if vault.delete_oidc_role(name):
                 print(f"✅ Deleted OIDC role '{name}'.")
     
-        # Register: Interactive Guided Setup for OIDC Providers
         elif action == "register":
             import subprocess
+            
             provider = name.lower()
 
             if provider == "gcp":
@@ -532,7 +556,6 @@ def main():
         if action == "configure":
             creds_content = None
             
-            # 1. Provide manual credentials JSON path
             if getattr(args, 'credentials', None):
                 try:
                     with open(args.credentials, 'r') as f:
@@ -541,7 +564,6 @@ def main():
                     print(f"❌ Error reading credentials file: {e}", file=sys.stderr)
                     sys.exit(1)
                     
-            # 2. Zero-Touch Setup via gcloud (like bootstrap)
             elif getattr(args, 'project', None):
                 project = args.project
                 sa_name = args.sa_name
@@ -550,21 +572,18 @@ def main():
                 print(f"🚀 Initializing Zero-Touch GCP Auth Verifier in project: {project}...")
                 
                 print(f"  ├─ Ensuring Service Account '{sa_name}' exists...")
-                # We ignore errors here in case it already exists
                 subprocess.run([
                     "gcloud", "iam", "service-accounts", "create", sa_name,
                     "--display-name=Vault GCP Auth Verifier", "--project", project
                 ], capture_output=True) 
                 
                 print(f"  ├─ Granting necessary IAM roles for token verification...")
-                # Need KeyAdmin to look up properties of incoming JWTs/Service Accounts
                 subprocess.run([
                     "gcloud", "projects", "add-iam-policy-binding", project,
                     f"--member=serviceAccount:{sa_email}",
                     "--role=roles/iam.serviceAccountKeyAdmin"
                 ], capture_output=True)
                 
-                # Needed if you plan on doing GCE (VM instance) auth
                 subprocess.run([
                     "gcloud", "projects", "add-iam-policy-binding", project,
                     f"--member=serviceAccount:{sa_email}",
@@ -587,7 +606,6 @@ def main():
                 print("❌ Error: You must provide either --project (for zero-touch) or --credentials (for manual file).", file=sys.stderr)
                 sys.exit(1)
             
-            # Finally, hand it off to the Mixin to configure Vault
             if vault.configure_gcp_auth(credentials=creds_content):
                 print(f"✅ GCP Auth Backend successfully configured.")
             else:
