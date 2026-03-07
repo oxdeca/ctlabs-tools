@@ -12,6 +12,8 @@ from .mixins.system   import VaultSystemMixin
 from .mixins.kv       import VaultKVMixin
 from .mixins.gcp      import VaultGCPMixin
 from .mixins.k8s      import VaultK8sMixin
+from .mixins.ssh      import VaultSSHMixin
+from .mixins.pki      import VaultPKIMixin
 from .mixins.ldap     import VaultLDAPMixin
 from .mixins.oidc     import VaultOIDCMixin
 from .mixins.approle  import VaultAppRoleMixin
