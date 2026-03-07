@@ -32,7 +32,7 @@ def get_args():
 
     # 3. POLICY
     p_policy = subparsers.add_parser("policy", help="Manage Vault ACL Policies")
-    p_policy.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_policy.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_policy.add_argument("name", nargs="?", default="", help="Name of the policy")
     p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules (used with create/update)")
 
@@ -218,9 +218,13 @@ def main():
                 print(f"❌ Error managing policy '{name}': {e}", file=sys.stderr)
                 sys.exit(1)
                 
-        elif action == "read":
+        elif action in ["read", "info"]:
             rules = vault.read_policy(name)
-            if rules: print(rules)
+            if rules:
+                if action == "info":
+                    print(f"📜 Policy: {name}")
+                    print("-" * 40)
+                print(rules)
             else: print(f"⚠️ Policy '{name}' not found.")
             
         elif action == "delete":
@@ -258,6 +262,7 @@ def main():
                         print(f"⚠️ Group '{name}' not found.")
                 else:
                     print(f"ℹ️ Member listing is not supported for external '{method}' groups.")
+            
             else:
                 if method == "identity":
                     groups = vault.list_identity_groups()
@@ -304,6 +309,7 @@ def main():
             elif action == "read":
                 if method == "identity":
                     details = vault.read_identity_group(name)
+                    
                     if details:
                         member_ids = details.get("member_entity_ids", [])
                         if member_ids:
@@ -319,6 +325,7 @@ def main():
                                 except Exception:
                                     member_names.append(eid)
                             details["member_entity_names"] = member_names
+                            
                 else:
                     details = vault.read_group(name, auth_type=method)
                     
