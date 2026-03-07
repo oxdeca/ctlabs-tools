@@ -7,49 +7,55 @@ import sys
 import os
 import subprocess
 import json
+import fnmatch
 from .core import HashiVault
 
 def parse_ssh_config(target_host):
-    """Parses ~/.ssh/config to find the User and IdentityFile for a specific host."""
+    """Parses ~/.ssh/config using OpenSSH's strict 'first match wins' rule."""
     config_path = os.path.expanduser("~/.ssh/config")
     
-    # Smart Defaults
-    principal = os.environ.get("USER", "root")
-    identity_file = "~/.ssh/id_ed25519" 
-    
-    # Fallback to RSA if ed25519 doesn't exist and config is missing
-    if not os.path.exists(os.path.expanduser(identity_file)):
-        identity_file = "~/.ssh/id_rsa"
+    principal = None
+    identity_file = None
 
-    if not os.path.exists(config_path):
-        return principal, identity_file
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            lines = f.readlines()
 
-    with open(config_path, 'r') as f:
-        lines = f.readlines()
-
-    in_host_block = False
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'): continue
-        
-        parts = line.split()
-        key = parts[0].lower()
-        
-        # Check if we entered the block for our target host (or a wildcard block)
-        if key == 'host':
-            in_host_block = target_host in parts[1:] or '*' in parts[1:]
+        in_host_block = False
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'): continue
             
-        if in_host_block:
-            if key == 'user' and len(parts) > 1:
-                principal = parts[1]
-            elif key == 'identityfile' and len(parts) > 1:
-                identity_file = parts[1]
+            parts = line.split()
+            key = parts[0].lower()
+            
+            if key == 'host':
+                # OpenSSH supports wildcards (e.g., Host db-* *.prod)
+                in_host_block = any(fnmatch.fnmatch(target_host, pat) for pat in parts[1:])
+                continue
+                
+            if in_host_block:
+                # OpenSSH uses the FIRST value it encounters for a parameter
+                if key == 'user' and not principal:
+                    principal = parts[1]
+                elif key == 'identityfile' and not identity_file:
+                    identity_file = parts[1].strip('"\'')
+
+    # Smart Fallbacks
+    if not principal:
+        principal = os.environ.get("USER", "root")
+        
+    if not identity_file:
+        if os.path.exists(os.path.expanduser("~/.ssh/id_ed25519")):
+            identity_file = "~/.ssh/id_ed25519"
+        else:
+            identity_file = "~/.ssh/id_rsa"
 
     return principal, identity_file
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault SSH Certificate Authority Manager")
-    parser.add_argument("--timeout", type=int, default=30, help="API HTTP timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # 1. INFO
@@ -61,16 +67,16 @@ def get_args():
     p_exec.add_argument("role", help="Vault SSH Role")
     p_exec.add_argument("target_host", help="The SSH host to connect to (e.g., db-prod)")
     p_exec.add_argument("--key", help="Explicit path to public key (overrides ~/.ssh/config)")
-    p_exec.add_argument("exec_cmd", nargs='*', help="Optional command to run remotely (prefix with '--')")
+    p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     # 3. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage SSH CA Engines")
-    p_engine.add_argument("action", choices=["create", "delete", "list", "read"], help="Action to perform")
+    p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_engine.add_argument("mount", nargs="?", default="ssh", help="Mount point")
 
     # 4. ROLE
     p_role = subparsers.add_parser("role", help="Manage SSH Roles (Principals & Access)")
-    p_role.add_argument("action", choices=["create", "delete", "list", "read"], help="Action to perform")
+    p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_role.add_argument("mount", nargs="?", default="ssh", help="Mount point")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
     p_role.add_argument("--default-user", default="ubuntu", help="Default SSH principal")
@@ -102,16 +108,22 @@ def main():
         mount = args.engine.strip('/')
         target_host = args.target_host
         
-        # Override with explicit flag, or fallback to smart config parsing
+        command_list = args.exec_cmd
+        if command_list and command_list[0] == "--":
+            command_list = command_list[1:]
+        
         if args.key:
             principal = os.environ.get("USER", "root")
-            identity_file = args.key.replace(".pub", "")
+            identity_file = args.key
         else:
             principal, identity_file = parse_ssh_config(target_host)
         
-        # Clean up path
-        identity_file = os.path.expanduser(identity_file.strip('"\''))
-        pub_key_path = f"{identity_file}.pub"
+        identity_file = os.path.expanduser(identity_file)
+        if identity_file.endswith(".pub"):
+            pub_key_path = identity_file
+            identity_file = identity_file[:-4]
+        else:
+            pub_key_path = f"{identity_file}.pub"
         
         if not os.path.exists(pub_key_path):
             print(f"❌ Error: Public key not found at {pub_key_path}", file=sys.stderr)
@@ -126,18 +138,15 @@ def main():
         signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
         if not signed_key: sys.exit(1)
         
-        # Save the certificate exactly where SSH expects it
-        cert_path = pub_key_path.replace(".pub", "-cert.pub")
+        cert_path = f"{identity_file}-cert.pub"
         with open(cert_path, 'w') as f:
             f.write(signed_key)
             
         print(f"✅ Certificate saved to {cert_path} and ready for use.", file=sys.stderr)
         
-        # Build the SSH command
         ssh_command = ["ssh", target_host]
-        command_list = args.exec_cmd
-        if command_list and command_list[0] == "--": 
-            ssh_command.extend(command_list[1:])
+        if command_list:
+            ssh_command.extend(command_list)
         
         print(f"🚀 Connecting to {target_host}...\n" + "-"*40, file=sys.stderr)
         sys.exit(subprocess.run(ssh_command).returncode)
@@ -146,9 +155,10 @@ def main():
     # 3. ENGINE
     # -------------------------------------------------------------------------
     elif cmd == "engine":
+        action = args.action
         mount = args.mount.strip('/')
         
-        if args.action == "list":
+        if action == "list":
             engines = vault.list_engines(backend_type="ssh")
             if engines:
                 print("🌐 Active SSH CA Engines:")
@@ -157,12 +167,12 @@ def main():
                 print("ℹ️ No SSH CA Engines mounted.")
             sys.exit(0)
             
-        elif args.action == "create":
+        elif action == "create":
             print(f"🚀 Configuring SSH CA Engine at '{mount}/'...")
             if vault.setup_ssh_engine(mount):
                 print(f"🎉 SSH CA enabled at '{mount}/'")
                 
-        elif args.action == "read":
+        elif action in ["read", "info"]:
             client = vault._get_client()
             try:
                 res = client.read(f"{mount}/config/ca")
@@ -173,7 +183,10 @@ def main():
             except Exception as e:
                 print(f"❌ Error reading SSH engine: {e}")
                 
-        elif args.action == "delete":
+        elif action == "update":
+            print("ℹ️ Update action is not applicable to SSH CA root engine. Use 'role update' instead.")
+                
+        elif action == "delete":
             print(f"🧹 Tearing down SSH CA engine at '{mount}/'...")
             if vault.teardown_ssh_engine(mount):
                 print(f"🎉 Engine destroyed!")
@@ -182,9 +195,11 @@ def main():
     # 4. ROLE
     # -------------------------------------------------------------------------
     elif cmd == "role":
+        action = args.action
         mount = args.mount.strip('/')
+        role_name = args.role_name
         
-        if args.action == "list":
+        if action == "list":
             client = vault._get_client()
             try:
                 res = client.list(f"{mount}/roles")
@@ -199,31 +214,31 @@ def main():
                 else: print(f"❌ Error listing SSH roles: {e}")
             sys.exit(0)
             
-        if not args.role_name:
+        if not role_name:
             print("❌ Error: role_name is required for this action.", file=sys.stderr)
             sys.exit(1)
             
-        if args.action == "create":
-            print(f"🚀 Creating SSH Role '{args.role_name}'...")
-            if vault.create_ssh_role(args.role_name, mount, args.default_user, args.allowed_users, args.ttl):
-                print(f"✅ SSH Role '{args.role_name}' successfully configured.")
+        if action in ["create", "update"]:
+            print(f"🚀 {action.capitalize()}ing SSH Role '{role_name}'...")
+            if vault.create_ssh_role(role_name, mount, args.default_user, args.allowed_users, args.ttl):
+                print(f"✅ SSH Role '{role_name}' successfully configured.")
                 
-        elif args.action == "read":
+        elif action in ["read", "info"]:
             client = vault._get_client()
             try:
-                res = client.read(f"{mount}/roles/{args.role_name}")
+                res = client.read(f"{mount}/roles/{role_name}")
                 if res and 'data' in res:
                     print(json.dumps(res['data'], indent=2))
                 else:
-                    print(f"❌ Role '{args.role_name}' not found.")
+                    print(f"❌ Role '{role_name}' not found.")
             except Exception as e:
                 print(f"❌ Error reading role: {e}")
                 
-        elif args.action == "delete":
+        elif action == "delete":
             client = vault._get_client()
             try:
-                client.delete(f"{mount}/roles/{args.role_name}")
-                print(f"✅ Deleted SSH role '{args.role_name}'.")
+                client.delete(f"{mount}/roles/{role_name}")
+                print(f"✅ Deleted SSH role '{role_name}'.")
             except Exception as e:
                 print(f"❌ Error deleting SSH role: {e}")
 
