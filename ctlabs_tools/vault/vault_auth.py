@@ -92,7 +92,6 @@ def get_args():
     p_gcp.add_argument("--ttl", default="1h", help="Token TTL")
     p_gcp.add_argument("--type", default="iam", choices=["iam", "gce"], help="Type of GCP auth role (iam or gce)")
     
-    # Auth configuration flags
     p_gcp.add_argument("--project", help="GCP Project ID to auto-generate a Zero-Touch credential (for 'configure' action)")
     p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup (default: vault-gcp-auth)")
     p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file (Alternative to --project)")
@@ -103,7 +102,6 @@ def main():
     args = get_args()
     vault = HashiVault(timeout=args.timeout)
     
-    # Fast-fail for CLI tools
     if not vault.ensure_valid_token(interactive=False):
         sys.exit(1)
 
@@ -111,7 +109,6 @@ def main():
     action = args.action
     name = getattr(args, 'name', '')
 
-    # 🧠 Ensure 'name' is bypassed for all and list commands across all modules
     if cmd != "alias" and action not in ["list", "configure", "register"] and not name:
         print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
         sys.exit(1)
@@ -244,15 +241,22 @@ def main():
                 
             if action in ["create", "update"]:
                 if method == "identity":
-                    # 🧠 SMART UX: Lookup UUIDs automatically from Entity Names
                     entity_ids = []
+                    missing_entities = []
+                    
                     if args.members:
-                        for member_name in [m.strip() for m in args.members.split(",")]:
+                        for member_name in [m.strip() for m in args.members.split(",") if m.strip()]:
                             ent = vault.read_entity(member_name)
                             if ent and 'id' in ent:
                                 entity_ids.append(ent['id'])
                             else:
-                                print(f"⚠️ Warning: Entity '{member_name}' not found. Cannot add to group.", file=sys.stderr)
+                                missing_entities.append(member_name)
+                                
+                    # 🌟 FIX: Fail Fast if any entities are missing!
+                    if missing_entities:
+                        print(f"❌ Error: The following entities were not found in Vault: {', '.join(missing_entities)}", file=sys.stderr)
+                        print("👉 You must create them first using 'vault-auth entity create <name>' before adding them to a group.", file=sys.stderr)
+                        sys.exit(1)
 
                     if vault.create_identity_group(name, policies=args.policies, member_entity_ids=entity_ids):
                         print(f"✅ Vault Identity Group '{name}' successfully created/updated.")
