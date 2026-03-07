@@ -39,7 +39,7 @@ def get_args():
     # 4. GROUP
     p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_group.add_argument("name", nargs="?", default="", help="Name of the group (or group to list members for)")
+    p_group.add_argument("name", nargs="?", default="", help="Name of the group")
     p_group.add_argument("--method", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
     p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --method identity)")
@@ -53,7 +53,7 @@ def get_args():
 
     # 6. ALIAS
     p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases")
-    p_alias.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_alias.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_alias.add_argument("alias_identifier", nargs="?", default="", help="Alias Name (for create) or Alias ID (for read/update/delete)")
     p_alias.add_argument("--entity", help="Entity name (required for create/update)")
     p_alias.add_argument("--mount", help="Auth mount path (e.g., userpass) (required for create/update)")
@@ -137,7 +137,12 @@ def main():
             
         elif action == "info":
             details = vault.read_approle(name)
-            if details: print(json.dumps(details, indent=2))
+            if details:
+                print(f"🤖 AppRole: {name}")
+                policies = details.get('token_policies', [])
+                print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}")
+                print(f"  ├─ Bind Secret ID: {details.get('bind_secret_id', True)}")
             else: print(f"⚠️ AppRole '{name}' not found.")
             
         elif action == "delete":
@@ -171,9 +176,17 @@ def main():
                 if vault.create_user(name, password=args.password, policies=args.policies, auth_type=method):
                     print(f"✅ User '{name}' ({method}) successfully created/updated.")
                     
-            elif action in ["read", "info"]:
+            elif action == "read":
                 details = vault.read_user(name, auth_type=method)
                 if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ User '{name}' not found in '{method}'.")
+                
+            elif action == "info":
+                details = vault.read_user(name, auth_type=method)
+                if details:
+                    print(f"👤 User: {name} ({method})")
+                    policies = details.get('token_policies', [])
+                    print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 else: print(f"⚠️ User '{name}' not found in '{method}'.")
                 
             elif action == "delete":
@@ -221,7 +234,6 @@ def main():
         method = getattr(args, 'method', 'identity')
         
         if action == "list":
-            # 🌟 SMART UX: If a specific name is provided, show the team roster!
             if name:
                 if method == "identity":
                     details = vault.read_identity_group(name)
@@ -245,9 +257,7 @@ def main():
                     else:
                         print(f"⚠️ Group '{name}' not found.")
                 else:
-                    print(f"ℹ️ Member listing is not supported for external '{method}' groups (managed by the external IdP).")
-            
-            # Standard list all groups
+                    print(f"ℹ️ Member listing is not supported for external '{method}' groups.")
             else:
                 if method == "identity":
                     groups = vault.list_identity_groups()
@@ -291,11 +301,9 @@ def main():
                     if vault.create_group(name, policies=args.policies, auth_type=method):
                         print(f"✅ External Group Mapping '{name}' ({method}) successfully created/updated.")
                     
-            elif action in ["read", "info"]:
+            elif action == "read":
                 if method == "identity":
                     details = vault.read_identity_group(name)
-                    
-                    # 🌟 SMART UX: Auto-resolve UUIDs into names for the JSON output too!
                     if details:
                         member_ids = details.get("member_entity_ids", [])
                         if member_ids:
@@ -311,12 +319,46 @@ def main():
                                 except Exception:
                                     member_names.append(eid)
                             details["member_entity_names"] = member_names
-                            
                 else:
                     details = vault.read_group(name, auth_type=method)
                     
                 if details: print(json.dumps(details, indent=2))
                 else: print(f"⚠️ Group '{name}' not found for method '{method}'.")
+                
+            elif action == "info":
+                if method == "identity":
+                    details = vault.read_identity_group(name)
+                    if details:
+                        print(f"🏢 Identity Group: {name}")
+                        print(f"  ├─ ID: {details.get('id')}")
+                        policies = details.get('policies', [])
+                        print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                        
+                        member_ids = details.get("member_entity_ids", [])
+                        if member_ids:
+                            client = vault._get_client()
+                            print(f"  ├─ Members:")
+                            for eid in member_ids:
+                                try:
+                                    e_data = client.read(f"identity/entity/id/{eid}")
+                                    if e_data and 'data' in e_data:
+                                        print(f"  │  ├─ {e_data['data'].get('name', eid)} (ID: {eid})")
+                                    else:
+                                        print(f"  │  ├─ {eid} (Unknown Name)")
+                                except Exception:
+                                    print(f"  │  ├─ {eid} (Error fetching name)")
+                        else:
+                            print(f"  ├─ Members: None")
+                    else:
+                        print(f"⚠️ Group '{name}' not found.")
+                else:
+                    details = vault.read_group(name, auth_type=method)
+                    if details:
+                        print(f"🏢 External Group ({method}): {name}")
+                        policies = details.get('policies', [])
+                        print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                    else:
+                        print(f"⚠️ Group '{name}' not found for method '{method}'.")
                 
             elif action == "delete":
                 if method == "identity":
@@ -356,16 +398,54 @@ def main():
             if action in ["create", "update"]:
                 if vault.create_entity(name, policies=args.policies):
                     print(f"✅ Entity '{name}' successfully created/updated.")
-            elif action in ["read", "info"]:
+                    
+            elif action == "read":
                 details = vault.read_entity(name)
                 if details: print(json.dumps(details, indent=2))
                 else: print(f"⚠️ Entity '{name}' not found.")
+                
+            elif action == "info":
+                details = vault.read_entity(name)
+                if details:
+                    print(f"👤 Entity: {details.get('name')}")
+                    print(f"  ├─ ID: {details.get('id')}")
+                    policies = details.get('policies', [])
+                    print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                    
+                    aliases = details.get('aliases', [])
+                    if aliases:
+                        print(f"  ├─ Aliases:")
+                        for a in aliases:
+                            print(f"  │  ├─ {a.get('name')} (Mount: {a.get('mount_path')})")
+                    else:
+                        print(f"  ├─ Aliases: None")
+                        
+                    groups = details.get('group_ids', [])
+                    if groups:
+                        group_names = []
+                        client = vault._get_client()
+                        for gid in groups:
+                            try:
+                                g_data = client.read(f"identity/group/id/{gid}")
+                                if g_data and 'data' in g_data:
+                                    group_names.append(g_data['data'].get('name', gid))
+                                else:
+                                    group_names.append(gid)
+                            except:
+                                group_names.append(gid)
+                        print(f"  ├─ Groups: {', '.join(group_names)}")
+                    else:
+                        print(f"  ├─ Groups: None")
+                else: 
+                    print(f"⚠️ Entity '{name}' not found.")
+                    
             elif action == "merge":
                 if not args.target:
                     print("❌ Error: --target <destination_entity> is required when merging.", file=sys.stderr)
                     sys.exit(1)
                 if vault.merge_entities(from_entity_name=name, to_entity_name=args.target):
                     print(f"✅ Successfully merged '{name}' into '{args.target}'. '{name}' has been deleted.")
+                    
             elif action == "delete":
                 if vault.delete_entity(name):
                     print(f"✅ Deleted entity '{name}'.")
@@ -419,6 +499,30 @@ def main():
                     print(f"❌ Alias ID '{alias_arg}' not found.", file=sys.stderr)
             except Exception as e:
                 print(f"❌ Error reading alias: {e}", file=sys.stderr)
+                
+        elif action == "info":
+            try:
+                res = client.read(f"identity/entity-alias/id/{alias_arg}")
+                if res and 'data' in res: 
+                    data = res['data']
+                    print(f"🔗 Alias: {data.get('name')}")
+                    print(f"  ├─ ID: {data.get('id')}")
+                    print(f"  ├─ Mount: {data.get('mount_path')}")
+                    
+                    canonical_id = data.get('canonical_id')
+                    parent_entity = "Unknown"
+                    if canonical_id:
+                        try:
+                            e_data = client.read(f"identity/entity/id/{canonical_id}")
+                            if e_data and 'data' in e_data:
+                                parent_entity = e_data['data'].get('name', canonical_id)
+                        except:
+                            pass
+                    print(f"  ├─ Entity: {parent_entity}")
+                else: 
+                    print(f"❌ Alias ID '{alias_arg}' not found.", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ Error fetching alias info: {e}", file=sys.stderr)
 
         elif action in ["create", "update"]:
             if not entity_name or not mount:
@@ -469,9 +573,20 @@ def main():
                 if vault.create_kubernetes_role(name, sa_names=args.sa_names, sa_namespaces=args.sa_namespaces, policies=args.policies, ttl=args.ttl):
                     print(f"✅ Kubernetes role '{name}' successfully created/updated.")
                     
-            elif action in ["read", "info"]:
+            elif action == "read":
                 details = vault.read_kubernetes_role(name)
                 if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ Kubernetes role '{name}' not found.")
+                
+            elif action == "info":
+                details = vault.read_kubernetes_role(name)
+                if details:
+                    print(f"⚓ Kubernetes Role: {name}")
+                    print(f"  ├─ Service Accounts: {', '.join(details.get('bound_service_account_names', []))}")
+                    print(f"  ├─ Namespaces: {', '.join(details.get('bound_service_account_namespaces', []))}")
+                    policies = details.get('token_policies', [])
+                    print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                    print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}s")
                 else: print(f"⚠️ Kubernetes role '{name}' not found.")
                 
             elif action == "delete":
@@ -513,10 +628,28 @@ def main():
             if vault.create_oidc_role(name, bound_claims, policies=args.policies, ttl=args.ttl):
                 print(f"✅ OIDC Role '{name}' successfully {action}d.")
 
-        elif action in ["read", "info"]:
+        elif action == "read":
             details = vault.read_oidc_role(name)
             if details:
                 print(json.dumps(details, indent=2))
+            else:
+                print(f"⚠️ OIDC role '{name}' not found.")
+                
+        elif action == "info":
+            details = vault.read_oidc_role(name)
+            if details:
+                print(f"🌐 OIDC Role: {name}")
+                claims = details.get('bound_claims', {})
+                if claims:
+                    print(f"  ├─ Bound Claims:")
+                    for k, v in claims.items():
+                        val_str = ', '.join(v) if isinstance(v, list) else v
+                        print(f"  │  ├─ {k}: {val_str}")
+                else:
+                    print(f"  ├─ Bound Claims: None")
+                policies = details.get('token_policies', [])
+                print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}s")
             else:
                 print(f"⚠️ OIDC role '{name}' not found.")
 
@@ -676,9 +809,20 @@ def main():
                 if vault.create_gcp_auth_role(name, sa_emails=args.sa_emails, policies=args.policies, ttl=args.ttl, role_type=args.type):
                     print(f"✅ GCP auth role '{name}' successfully created/updated.")
                     
-            elif action in ["read", "info"]:
+            elif action == "read":
                 details = vault.read_gcp_auth_role(name)
                 if details: print(json.dumps(details, indent=2))
+                else: print(f"⚠️ GCP auth role '{name}' not found.")
+                
+            elif action == "info":
+                details = vault.read_gcp_auth_role(name)
+                if details:
+                    print(f"☁️ GCP Auth Role: {name}")
+                    print(f"  ├─ Type: {details.get('type', 'iam')}")
+                    print(f"  ├─ Service Accounts: {', '.join(details.get('bound_service_accounts', []))}")
+                    policies = details.get('token_policies', [])
+                    print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
+                    print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}s")
                 else: print(f"⚠️ GCP auth role '{name}' not found.")
                 
             elif action == "delete":
