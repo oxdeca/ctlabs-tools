@@ -129,6 +129,7 @@ def get_args():
     p_engine = subparsers.add_parser("engine", help="Manage SSH CA Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_engine.add_argument("mount", nargs="?", default="ssh", help="Mount point")
+    p_engine.add_argument("--private-key", help="Path to a pre-generated private key to import (e.g., ./vault_ca_key)")
 
     # 4. ROLE
     p_role = subparsers.add_parser("role", help="Manage SSH Roles (Principals & Access)")
@@ -355,7 +356,7 @@ def main():
             
         elif action == "create":
             print(f"🚀 Configuring SSH CA Engine at '{mount}/'...")
-            if vault.setup_ssh_engine(mount):
+            if vault.setup_ssh_engine(mount, private_key_path=args.private_key):
                 print(f"🎉 SSH CA enabled at '{mount}/'")
                 
         elif action in ["read", "info"]:

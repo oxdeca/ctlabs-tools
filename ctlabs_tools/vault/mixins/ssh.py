@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 class VaultSSHMixin:
-    def setup_ssh_engine(self, mount_point, key_type="ed25519"):
+    def setup_ssh_engine(self, mount_point, key_type="ed25519", private_key_path=None):
         client = self._get_client()
         if not client: return False
         try:
@@ -11,16 +11,30 @@ class VaultSSHMixin:
             if f"{mount_point}/" not in current_mounts:
                 client.sys.enable_secrets_engine('ssh', path=mount_point)
             
-            # 🌟 FIX: Force Vault to generate a modern ed25519 CA key instead of RSA!
-            client.write(
-                f"{mount_point}/config/ca", 
-                generate_signing_key=True,
-                key_type=key_type 
-            )
+            if private_key_path:
+                # 📥 IMPORT EXTERNAL KEY (Vault infers the key_type from the file contents)
+                with open(private_key_path, 'r') as f: priv = f.read()
+                with open(f"{private_key_path}.pub", 'r') as f: pub = f.read()
+                
+                client.write(
+                    f"{mount_point}/config/ca", 
+                    private_key=priv,
+                    public_key=pub
+                )
+                print("📥 External CA Key imported successfully.")
+            else:
+                # 🎲 GENERATE INTERNAL KEY (Uses the key_type parameter)
+                client.write(
+                    f"{mount_point}/config/ca", 
+                    generate_signing_key=True,
+                    key_type=key_type
+                )
+                print(f"🎲 Internal CA Key ({key_type}) generated successfully.")
             return True
         except Exception as e:
             print(f"❌ Error setting up SSH engine: {e}")
             return False
+
 
     def teardown_ssh_engine(self, mount_point):
         client = self._get_client()
