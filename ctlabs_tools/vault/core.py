@@ -27,7 +27,9 @@ class HashiVault(
     VaultOIDCMixin,
     VaultAppRoleMixin,
     VaultIdentityMixin,
-    VaultLDAPMixin
+    VaultLDAPMixin,
+    VaultPKIMixin,
+    VaultSSHMixin
 ):
     """
     Unified Vault Client.

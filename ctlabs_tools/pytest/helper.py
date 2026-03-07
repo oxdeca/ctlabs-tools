@@ -241,7 +241,7 @@ class Terraform:
                 print(">>> Skipping destruction.")
                 return None
 
-        print(">>> Destroying infrastructure...")
+        print("\n>>> Destroying infrastructure...")
         return self._run_cmd(["terraform", "destroy", "-auto-approve"], capture=False)
 
     def cleanup(self):
