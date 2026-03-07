@@ -46,11 +46,23 @@ def parse_ssh_config(target_host):
     if not principal:
         principal = os.environ.get("USER", "root")
         
+    # 🌟 NEW: Advanced Key Discovery Logic
     if not identity_file:
-        if os.path.exists(os.path.expanduser("~/.ssh/id_ed25519")):
+        keys_dir = os.path.expanduser("~/.ssh/keys")
+        
+        # 1. Try to find a default ed25519 key in the new dedicated folder
+        if os.path.exists(os.path.join(keys_dir, "id_ed25519")):
+            identity_file = os.path.join(keys_dir, "id_ed25519")
+            
+        # 2. If no exact match, but there is exactly ONE .pub key in the folder, auto-use it
+        elif os.path.exists(keys_dir) and os.path.isdir(keys_dir):
+            pub_files = [f for f in os.listdir(keys_dir) if f.endswith(".pub") and not f.endswith("-cert.pub")]
+            if len(pub_files) == 1:
+                identity_file = os.path.join(keys_dir, pub_files[0][:-4]) # Strip .pub
+                
+        # 3. Fallback to standard ~/.ssh/id_ed25519
+        if not identity_file and os.path.exists(os.path.expanduser("~/.ssh/id_ed25519")):
             identity_file = "~/.ssh/id_ed25519"
-        else:
-            identity_file = "~/.ssh/id_rsa"
 
     return principal, identity_file
 
@@ -99,13 +111,17 @@ def main():
     # -------------------------------------------------------------------------
     if cmd == "info":
         cert_paths = []
-        for default_key in ["id_ed25519", "id_rsa"]:
-            path = os.path.expanduser(f"~/.ssh/{default_key}-cert.pub")
-            if os.path.exists(path):
-                cert_paths.append(path)
+        
+        # 🌟 NEW: Scan both legacy ~/.ssh and new ~/.ssh/keys directories for certs
+        for target_dir in ["~/.ssh", "~/.ssh/keys"]:
+            search_path = os.path.expanduser(target_dir)
+            if os.path.exists(search_path) and os.path.isdir(search_path):
+                for f in os.listdir(search_path):
+                    if f.endswith("-cert.pub"):
+                        cert_paths.append(os.path.join(search_path, f))
                 
         if not cert_paths:
-            print("❌ No active local SSH certificates found at standard paths (~/.ssh/*-cert.pub).", file=sys.stderr)
+            print("❌ No active local SSH certificates (*-cert.pub) found in ~/.ssh/ or ~/.ssh/keys/.", file=sys.stderr)
             sys.exit(1)
             
         print("🔍 Introspecting Local SSH Certificates...")
@@ -177,6 +193,12 @@ def main():
             identity_file = args.key
         else:
             principal, identity_file = parse_ssh_config(target_host)
+            
+        # 🌟 NEW: Graceful failure if no key could be found
+        if not identity_file:
+            print(f"❌ Error: Could not determine which SSH key to use for '{target_host}'.", file=sys.stderr)
+            print("👉 Create an ed25519 key in ~/.ssh/keys/, define an IdentityFile in ~/.ssh/config, or pass --key.", file=sys.stderr)
+            sys.exit(1)
         
         identity_file = os.path.expanduser(identity_file)
         if identity_file.endswith(".pub"):
