@@ -10,6 +10,7 @@ import json
 import fnmatch
 import tempfile
 import shutil
+import glob
 from datetime import datetime
 from .core import HashiVault
 
@@ -33,12 +34,10 @@ def parse_ssh_config(target_host):
             key = parts[0].lower()
             
             if key == 'host':
-                # OpenSSH supports wildcards (e.g., Host db-* *.prod)
                 in_host_block = any(fnmatch.fnmatch(target_host, pat) for pat in parts[1:])
                 continue
                 
             if in_host_block:
-                # OpenSSH uses the FIRST value it encounters for a parameter
                 if key == 'user' and not principal:
                     principal = parts[1]
                 elif key == 'identityfile' and not identity_file:
@@ -60,13 +59,54 @@ def parse_ssh_config(target_host):
         elif os.path.exists(keys_dir) and os.path.isdir(keys_dir):
             pub_files = [f for f in os.listdir(keys_dir) if f.endswith(".pub") and not f.endswith("-cert.pub")]
             if len(pub_files) == 1:
-                identity_file = os.path.join(keys_dir, pub_files[0][:-4]) # Strip .pub
+                identity_file = os.path.join(keys_dir, pub_files[0][:-4])
                 
         # 3. Fallback to standard ~/.ssh/id_ed25519
         if not identity_file and os.path.exists(os.path.expanduser("~/.ssh/id_ed25519")):
             identity_file = "~/.ssh/id_ed25519"
 
     return principal, identity_file
+
+def find_valid_ephemeral_key(principal):
+    """Scans for an active, unexpired ephemeral key matching the target principal."""
+    temp_dir = tempfile.gettempdir()
+    cert_paths = glob.glob(os.path.join(temp_dir, "vault-ssh-*", "id_ed25519-cert.pub"))
+    
+    for cert in cert_paths:
+        try:
+            res = subprocess.run(["ssh-keygen", "-L", "-f", cert], capture_output=True, text=True, check=True)
+            lines = res.stdout.strip().split('\n')
+            
+            valid_str = ""
+            principals = []
+            parsing_principals = False
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith("Valid:"):
+                    valid_str = line.split(":", 1)[1].strip()
+                elif line.startswith("Principals:"):
+                    parsing_principals = True
+                elif parsing_principals:
+                    if line.startswith("Critical Options:") or line.startswith("Extensions:"):
+                        parsing_principals = False
+                    elif line and line != "(none)":
+                        principals.append(line)
+            
+            # Check if this cert grants access to our desired user
+            if principal not in principals:
+                continue
+                
+            # Check if it has at least 30 seconds of life left
+            if " to " in valid_str:
+                to_date_str = valid_str.split(" to ")[1].strip()
+                to_date = datetime.fromisoformat(to_date_str)
+                if (to_date - datetime.now()).total_seconds() > 30:
+                    return cert.replace("-cert.pub", "")
+        except Exception:
+            continue
+            
+    return None
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault SSH Certificate Authority Manager")
@@ -115,18 +155,24 @@ def main():
     if cmd == "info":
         cert_paths = []
         
+        # 1. Check Standard Permanent Keys
         for target_dir in ["~/.ssh", "~/.ssh/keys"]:
             search_path = os.path.expanduser(target_dir)
             if os.path.exists(search_path) and os.path.isdir(search_path):
                 for f in os.listdir(search_path):
                     if f.endswith("-cert.pub"):
                         cert_paths.append(os.path.join(search_path, f))
+                        
+        # 2. Check Ephemeral Key Directories (Active Sessions)
+        temp_dir = tempfile.gettempdir()
+        ephemeral_certs = glob.glob(os.path.join(temp_dir, "vault-ssh-*", "*-cert.pub"))
+        cert_paths.extend(ephemeral_certs)
                 
         if not cert_paths:
-            print("❌ No active local SSH certificates (*-cert.pub) found in ~/.ssh/ or ~/.ssh/keys/.", file=sys.stderr)
+            print("❌ No active local SSH certificates (*-cert.pub) found.", file=sys.stderr)
             sys.exit(1)
             
-        print("🔍 Introspecting Local SSH Certificates...")
+        print("🔍 Introspecting Active SSH Certificates...")
         for cert in cert_paths:
             try:
                 res = subprocess.run(["ssh-keygen", "-L", "-f", cert], capture_output=True, text=True, check=True)
@@ -166,8 +212,11 @@ def main():
                         else:
                             if line and line != "(none)":
                                 principals.append(line)
-                            
-                print(f"\n📄 Certificate : {cert}")
+                                
+                is_ephemeral = "vault-ssh-" in cert
+                badge = " (👻 Ephemeral Sandbox Key)" if is_ephemeral else ""
+                
+                print(f"\n📄 Certificate : {cert}{badge}")
                 print(f"🆔 Key ID      : {key_id}")
                 print(f"👤 Principals  : {', '.join(principals) if principals else 'None'}")
                 print(f"⏳ Time Remaining: {time_str}")
@@ -201,9 +250,7 @@ def main():
             else:
                 principal, identity_file = parse_ssh_config(target_host)
                 
-            # 🌟 NEW: Auto-fallback to ephemeral generation if no key exists
             if not identity_file:
-                print(f"ℹ️ No local SSH key found. Automatically falling back to ephemeral key generation.", file=sys.stderr)
                 use_ephemeral = True
                 if not principal:
                     principal = os.environ.get("USER", "root")
@@ -216,24 +263,32 @@ def main():
             if use_ephemeral:
                 if not principal: principal = os.environ.get("USER", "root")
                 
-                temp_dir = tempfile.mkdtemp(prefix="vault-ssh-")
-                os.chmod(temp_dir, 0o700)
-                identity_file = os.path.join(temp_dir, "id_ed25519")
+                # 🧠 NEW: Scan for a valid running key before making a new one!
+                existing_key = find_valid_ephemeral_key(principal)
                 
-                print(f"🔐 Generating temporary ephemeral SSH key...", file=sys.stderr)
-                # Generate key quietly with no passphrase
-                subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", identity_file, "-N", "", "-q", "-C", "vault-ephemeral"], check=True)
-                
-                pub_key_path = f"{identity_file}.pub"
-                with open(pub_key_path, 'r') as f: pub_key = f.read()
-                
-                print(f"🔍 Resolved target '{target_host}': Principal '{principal}'", file=sys.stderr)
-                print(f"🔒 Requesting signed ephemeral SSH certificate from Vault...", file=sys.stderr)
-                signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
-                if not signed_key: sys.exit(1)
-                
-                cert_path = f"{identity_file}-cert.pub"
-                with open(cert_path, 'w') as f: f.write(signed_key)
+                if existing_key:
+                    print(f"♻️  Reusing active ephemeral SSH key for principal '{principal}'...", file=sys.stderr)
+                    identity_file = existing_key
+                    # temp_dir remains None so this "freeloader" process doesn't shred the creator's key!
+                else:
+                    print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
+                    temp_dir = tempfile.mkdtemp(prefix="vault-ssh-")
+                    os.chmod(temp_dir, 0o700)
+                    identity_file = os.path.join(temp_dir, "id_ed25519")
+                    
+                    print(f"🔐 Generating temporary ephemeral SSH key...", file=sys.stderr)
+                    subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", identity_file, "-N", "", "-q", "-C", "vault-ephemeral"], check=True)
+                    
+                    pub_key_path = f"{identity_file}.pub"
+                    with open(pub_key_path, 'r') as f: pub_key = f.read()
+                    
+                    print(f"🔍 Resolved target '{target_host}': Principal '{principal}'", file=sys.stderr)
+                    print(f"🔒 Requesting signed ephemeral SSH certificate from Vault...", file=sys.stderr)
+                    signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
+                    if not signed_key: sys.exit(1)
+                    
+                    cert_path = f"{identity_file}-cert.pub"
+                    with open(cert_path, 'w') as f: f.write(signed_key)
                 
             # --- STANDARD FLOW ---
             else:
@@ -264,7 +319,6 @@ def main():
             # Build the SSH command
             ssh_command = ["ssh"]
             if use_ephemeral:
-                # Force SSH to use our ephemeral key and ignore running agents or standard keys
                 ssh_command.extend(["-i", identity_file, "-o", "IdentitiesOnly=yes"])
                 
             ssh_command.append(target_host)
@@ -276,7 +330,7 @@ def main():
             exit_code = subprocess.run(ssh_command).returncode
 
         finally:
-            # 🧹 SECURITY: Shred ephemeral keys on exit, no matter what happens!
+            # 🧹 SECURITY: Shred ephemeral keys on exit (but ONLY if this shell created it!)
             if temp_dir and os.path.exists(temp_dir):
                 print(f"\n🧹 Shredding temporary SSH keys...", file=sys.stderr)
                 shutil.rmtree(temp_dir, ignore_errors=True)
