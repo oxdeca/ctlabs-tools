@@ -6,9 +6,66 @@
 import argparse
 import sys
 import json
-import getpass
+import re
 import subprocess
 from .core import HashiVault
+
+def print_policy_table(name, hcl_text):
+    """Parses raw Vault HCL and prints a color-coded permission table."""
+    print(f"\n📜 Policy: {name}")
+    print("=" * 95)
+    
+    # 1. Strip comments to prevent regex confusion
+    hcl_clean = re.sub(r'(#|//).*', '', hcl_text)
+    hcl_clean = re.sub(r'/\*.*?\*/', '', hcl_clean, flags=re.DOTALL)
+    
+    # 2. Extract paths and capabilities
+    paths = {}
+    path_pattern = re.compile(r'path\s+"([^"]+)"\s*\{([^}]+)\}', re.MULTILINE)
+    cap_pattern = re.compile(r'capabilities\s*=\s*\[(.*?)\]')
+    
+    for match in path_pattern.finditer(hcl_clean):
+        path = match.group(1)
+        body = match.group(2)
+        cap_match = cap_pattern.search(body)
+        if cap_match:
+            caps_raw = cap_match.group(1)
+            caps = [c.strip().strip('"\'') for c in caps_raw.split(',') if c.strip()]
+            paths[path] = caps
+        else:
+            paths[path] = []
+
+    if not paths:
+        print("⚠️ No parsable paths/capabilities found in this policy.")
+        print("-" * 95)
+        print(hcl_text.strip())
+        return
+
+    # 3. Define columns and formatting
+    all_caps = ["create", "read", "update", "delete", "list", "sudo", "deny"]
+    max_path_len = max([len(p) for p in paths.keys()] + [25])
+    
+    header = f"{'Path'.ljust(max_path_len)} | " + " | ".join([c.capitalize().center(6) for c in all_caps])
+    print(header)
+    print("-" * len(header))
+    
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    
+    # 4. Render Rows
+    for path, caps in sorted(paths.items()):
+        row = f"{path.ljust(max_path_len)} | "
+        cap_strs = []
+        for c in all_caps:
+            if c in caps:
+                cap_strs.append(f"{GREEN}{'ok'.center(6)}{RESET}")
+            else:
+                cap_strs.append(f"{DIM}{'--'.center(6)}{RESET}")
+        row += " | ".join(cap_strs)
+        print(row)
+    print("=" * 95 + "\n")
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Authentication & Policy Manager")
@@ -222,9 +279,9 @@ def main():
             rules = vault.read_policy(name)
             if rules:
                 if action == "info":
-                    print(f"📜 Policy: {name}")
-                    print("-" * 40)
-                print(rules)
+                    print_policy_table(name, rules)
+                else:
+                    print(rules)
             else: print(f"⚠️ Policy '{name}' not found.")
             
         elif action == "delete":
