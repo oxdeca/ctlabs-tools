@@ -8,6 +8,8 @@ import os
 import subprocess
 import json
 import fnmatch
+import tempfile
+import shutil
 from datetime import datetime
 from .core import HashiVault
 
@@ -46,7 +48,7 @@ def parse_ssh_config(target_host):
     if not principal:
         principal = os.environ.get("USER", "root")
         
-    # 🌟 NEW: Advanced Key Discovery Logic
+    # Advanced Key Discovery Logic
     if not identity_file:
         keys_dir = os.path.expanduser("~/.ssh/keys")
         
@@ -80,6 +82,7 @@ def get_args():
     p_exec.add_argument("role", help="Vault SSH Role")
     p_exec.add_argument("target_host", help="The SSH host to connect to (e.g., db-prod)")
     p_exec.add_argument("--key", help="Explicit path to public key (overrides ~/.ssh/config)")
+    p_exec.add_argument("--ephemeral", action="store_true", help="Force generation of a temporary, one-time-use SSH key")
     p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     # 3. ENGINE
@@ -112,7 +115,6 @@ def main():
     if cmd == "info":
         cert_paths = []
         
-        # 🌟 NEW: Scan both legacy ~/.ssh and new ~/.ssh/keys directories for certs
         for target_dir in ["~/.ssh", "~/.ssh/keys"]:
             search_path = os.path.expanduser(target_dir)
             if os.path.exists(search_path) and os.path.isdir(search_path):
@@ -188,50 +190,98 @@ def main():
         if command_list and command_list[0] == "--":
             command_list = command_list[1:]
         
-        if args.key:
-            principal = os.environ.get("USER", "root")
-            identity_file = args.key
-        else:
-            principal, identity_file = parse_ssh_config(target_host)
+        use_ephemeral = args.ephemeral
+        principal = None
+        identity_file = None
+
+        if not use_ephemeral:
+            if args.key:
+                principal = os.environ.get("USER", "root")
+                identity_file = args.key
+            else:
+                principal, identity_file = parse_ssh_config(target_host)
+                
+            # 🌟 NEW: Auto-fallback to ephemeral generation if no key exists
+            if not identity_file:
+                print(f"ℹ️ No local SSH key found. Automatically falling back to ephemeral key generation.", file=sys.stderr)
+                use_ephemeral = True
+                if not principal:
+                    principal = os.environ.get("USER", "root")
+
+        temp_dir = None
+        exit_code = 1
+
+        try:
+            # --- EPHEMERAL FLOW ---
+            if use_ephemeral:
+                if not principal: principal = os.environ.get("USER", "root")
+                
+                temp_dir = tempfile.mkdtemp(prefix="vault-ssh-")
+                os.chmod(temp_dir, 0o700)
+                identity_file = os.path.join(temp_dir, "id_ed25519")
+                
+                print(f"🔐 Generating temporary ephemeral SSH key...", file=sys.stderr)
+                # Generate key quietly with no passphrase
+                subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", identity_file, "-N", "", "-q", "-C", "vault-ephemeral"], check=True)
+                
+                pub_key_path = f"{identity_file}.pub"
+                with open(pub_key_path, 'r') as f: pub_key = f.read()
+                
+                print(f"🔍 Resolved target '{target_host}': Principal '{principal}'", file=sys.stderr)
+                print(f"🔒 Requesting signed ephemeral SSH certificate from Vault...", file=sys.stderr)
+                signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
+                if not signed_key: sys.exit(1)
+                
+                cert_path = f"{identity_file}-cert.pub"
+                with open(cert_path, 'w') as f: f.write(signed_key)
+                
+            # --- STANDARD FLOW ---
+            else:
+                identity_file = os.path.expanduser(identity_file)
+                if identity_file.endswith(".pub"):
+                    pub_key_path = identity_file
+                    identity_file = identity_file[:-4]
+                else:
+                    pub_key_path = f"{identity_file}.pub"
+                
+                if not os.path.exists(pub_key_path):
+                    print(f"❌ Error: Public key not found at {pub_key_path}", file=sys.stderr)
+                    sys.exit(1)
+                    
+                with open(pub_key_path, 'r') as f: pub_key = f.read()
+                    
+                print(f"🔍 Resolved target '{target_host}': Principal '{principal}', Key '{pub_key_path}'", file=sys.stderr)
+                print(f"🔒 Requesting signed SSH certificate from Vault...", file=sys.stderr)
+                
+                signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
+                if not signed_key: sys.exit(1)
+                
+                cert_path = f"{identity_file}-cert.pub"
+                with open(cert_path, 'w') as f: f.write(signed_key)
+                    
+                print(f"✅ Certificate saved to {cert_path} and ready for use.", file=sys.stderr)
+
+            # Build the SSH command
+            ssh_command = ["ssh"]
+            if use_ephemeral:
+                # Force SSH to use our ephemeral key and ignore running agents or standard keys
+                ssh_command.extend(["-i", identity_file, "-o", "IdentitiesOnly=yes"])
+                
+            ssh_command.append(target_host)
             
-        # 🌟 NEW: Graceful failure if no key could be found
-        if not identity_file:
-            print(f"❌ Error: Could not determine which SSH key to use for '{target_host}'.", file=sys.stderr)
-            print("👉 Create an ed25519 key in ~/.ssh/keys/, define an IdentityFile in ~/.ssh/config, or pass --key.", file=sys.stderr)
-            sys.exit(1)
-        
-        identity_file = os.path.expanduser(identity_file)
-        if identity_file.endswith(".pub"):
-            pub_key_path = identity_file
-            identity_file = identity_file[:-4]
-        else:
-            pub_key_path = f"{identity_file}.pub"
-        
-        if not os.path.exists(pub_key_path):
-            print(f"❌ Error: Public key not found at {pub_key_path}", file=sys.stderr)
-            sys.exit(1)
+            if command_list:
+                ssh_command.extend(command_list)
             
-        with open(pub_key_path, 'r') as f:
-            pub_key = f.read()
-            
-        print(f"🔍 Resolved target '{target_host}': Principal '{principal}', Key '{pub_key_path}'", file=sys.stderr)
-        print(f"🔒 Requesting signed SSH certificate from Vault...", file=sys.stderr)
-        
-        signed_key = vault.sign_ssh_key(args.role, mount, pub_key, principal)
-        if not signed_key: sys.exit(1)
-        
-        cert_path = f"{identity_file}-cert.pub"
-        with open(cert_path, 'w') as f:
-            f.write(signed_key)
-            
-        print(f"✅ Certificate saved to {cert_path} and ready for use.", file=sys.stderr)
-        
-        ssh_command = ["ssh", target_host]
-        if command_list:
-            ssh_command.extend(command_list)
-        
-        print(f"🚀 Connecting to {target_host}...\n" + "-"*40, file=sys.stderr)
-        sys.exit(subprocess.run(ssh_command).returncode)
+            print(f"🚀 Connecting to {target_host}...\n" + "-"*40, file=sys.stderr)
+            exit_code = subprocess.run(ssh_command).returncode
+
+        finally:
+            # 🧹 SECURITY: Shred ephemeral keys on exit, no matter what happens!
+            if temp_dir and os.path.exists(temp_dir):
+                print(f"\n🧹 Shredding temporary SSH keys...", file=sys.stderr)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+            sys.exit(exit_code)
 
     # -------------------------------------------------------------------------
     # 3. ENGINE
