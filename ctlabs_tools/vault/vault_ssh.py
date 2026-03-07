@@ -8,6 +8,7 @@ import os
 import subprocess
 import json
 import fnmatch
+from datetime import datetime
 from .core import HashiVault
 
 def parse_ssh_config(target_host):
@@ -97,8 +98,67 @@ def main():
     # 1. INFO
     # -------------------------------------------------------------------------
     if cmd == "info":
-        print("🔍 Vault SSH Module Active.")
-        print("To see your active local SSH certificates, run: ssh-add -l")
+        cert_paths = []
+        for default_key in ["id_ed25519", "id_rsa"]:
+            path = os.path.expanduser(f"~/.ssh/{default_key}-cert.pub")
+            if os.path.exists(path):
+                cert_paths.append(path)
+                
+        if not cert_paths:
+            print("❌ No active local SSH certificates found at standard paths (~/.ssh/*-cert.pub).", file=sys.stderr)
+            sys.exit(1)
+            
+        print("🔍 Introspecting Local SSH Certificates...")
+        for cert in cert_paths:
+            try:
+                res = subprocess.run(["ssh-keygen", "-L", "-f", cert], capture_output=True, text=True, check=True)
+                lines = res.stdout.strip().split('\n')
+                
+                key_id = "Unknown"
+                principals = []
+                valid_str = "Unknown"
+                time_str = "Unknown"
+                
+                parsing_principals = False
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("Key ID:"):
+                        key_id = line.split(":", 1)[1].strip().strip('"')
+                    elif line.startswith("Valid:"):
+                        valid_str = line.split(":", 1)[1].strip()
+                        if " to " in valid_str:
+                            to_date_str = valid_str.split(" to ")[1].strip()
+                            try:
+                                to_date = datetime.fromisoformat(to_date_str)
+                                now = datetime.now()
+                                if now < to_date:
+                                    rem = int((to_date - now).total_seconds())
+                                    mins = rem // 60
+                                    time_str = f"{mins} minutes ({rem}s)"
+                                else:
+                                    time_str = "EXPIRED ⚠️"
+                            except ValueError:
+                                time_str = valid_str
+                    elif line.startswith("Principals:"):
+                        parsing_principals = True
+                        continue
+                    elif parsing_principals:
+                        if line.startswith("Critical Options:") or line.startswith("Extensions:"):
+                            parsing_principals = False
+                        else:
+                            if line and line != "(none)":
+                                principals.append(line)
+                            
+                print(f"\n📄 Certificate : {cert}")
+                print(f"🆔 Key ID      : {key_id}")
+                print(f"👤 Principals  : {', '.join(principals) if principals else 'None'}")
+                print(f"⏳ Time Remaining: {time_str}")
+                if "EXPIRED" in time_str:
+                    print(f"   (Valid was: {valid_str})")
+
+            except Exception as e:
+                print(f"⚠️ Could not parse {cert}: {e}")
+                
         sys.exit(0)
 
     # -------------------------------------------------------------------------
