@@ -34,10 +34,12 @@ def parse_ssh_config(target_host):
             key = parts[0].lower()
             
             if key == 'host':
+                # OpenSSH supports wildcards (e.g., Host db-* *.prod)
                 in_host_block = any(fnmatch.fnmatch(target_host, pat) for pat in parts[1:])
                 continue
                 
             if in_host_block:
+                # OpenSSH uses the FIRST value it encounters for a parameter
                 if key == 'user' and not principal:
                     principal = parts[1]
                 elif key == 'identityfile' and not identity_file:
@@ -51,26 +53,25 @@ def parse_ssh_config(target_host):
     if not identity_file:
         keys_dir = os.path.expanduser("~/.ssh/keys")
         
-        # 1. Try to find a default ed25519 key in the new dedicated folder
         if os.path.exists(os.path.join(keys_dir, "id_ed25519")):
             identity_file = os.path.join(keys_dir, "id_ed25519")
-            
-        # 2. If no exact match, but there is exactly ONE .pub key in the folder, auto-use it
         elif os.path.exists(keys_dir) and os.path.isdir(keys_dir):
             pub_files = [f for f in os.listdir(keys_dir) if f.endswith(".pub") and not f.endswith("-cert.pub")]
             if len(pub_files) == 1:
                 identity_file = os.path.join(keys_dir, pub_files[0][:-4])
-                
-        # 3. Fallback to standard ~/.ssh/id_ed25519
         if not identity_file and os.path.exists(os.path.expanduser("~/.ssh/id_ed25519")):
             identity_file = "~/.ssh/id_ed25519"
 
     return principal, identity_file
 
-def find_valid_ephemeral_key(principal):
-    """Scans for an active, unexpired ephemeral key matching the target principal."""
+def find_valid_ephemeral_key(principal, mount, role):
+    """Scans for an active, unexpired ephemeral key matching the target principal, mount, and role."""
+    safe_mount = mount.replace('/', '_')
     temp_dir = tempfile.gettempdir()
-    cert_paths = glob.glob(os.path.join(temp_dir, "vault-ssh-*", "id_ed25519-cert.pub"))
+    
+    # 🌟 FIX: Strictly limit the search to sandboxes created for this specific CA and Role!
+    search_pattern = os.path.join(temp_dir, f"vault-ssh-{safe_mount}-{role}-*", "id_ed25519-cert.pub")
+    cert_paths = glob.glob(search_pattern)
     
     for cert in cert_paths:
         try:
@@ -129,7 +130,6 @@ def get_args():
     p_engine = subparsers.add_parser("engine", help="Manage SSH CA Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_engine.add_argument("mount", nargs="?", default="ssh", help="Mount point")
-    p_engine.add_argument("--private-key", help="Path to a pre-generated private key to import (e.g., ./vault_ca_key)")
 
     # 4. ROLE
     p_role = subparsers.add_parser("role", help="Manage SSH Roles (Principals & Access)")
@@ -264,16 +264,19 @@ def main():
             if use_ephemeral:
                 if not principal: principal = os.environ.get("USER", "root")
                 
-                # 🧠 NEW: Scan for a valid running key before making a new one!
-                existing_key = find_valid_ephemeral_key(principal)
+                # 🌟 FIX: Pass mount and role to guarantee cryptographic isolation!
+                existing_key = find_valid_ephemeral_key(principal, mount, args.role)
                 
                 if existing_key:
-                    print(f"♻️  Reusing active ephemeral SSH key for principal '{principal}'...", file=sys.stderr)
+                    print(f"♻️  Reusing active ephemeral key for Mount: '{mount}' | Role: '{args.role}'...", file=sys.stderr)
                     identity_file = existing_key
-                    # temp_dir remains None so this "freeloader" process doesn't shred the creator's key!
                 else:
-                    print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
-                    temp_dir = tempfile.mkdtemp(prefix="vault-ssh-")
+                    if not args.ephemeral:
+                        print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
+                        
+                    # 🌟 FIX: Encode the mount and role into the temporary directory name
+                    safe_mount = mount.replace('/', '_')
+                    temp_dir = tempfile.mkdtemp(prefix=f"vault-ssh-{safe_mount}-{args.role}-")
                     os.chmod(temp_dir, 0o700)
                     identity_file = os.path.join(temp_dir, "id_ed25519")
                     
@@ -356,7 +359,7 @@ def main():
             
         elif action == "create":
             print(f"🚀 Configuring SSH CA Engine at '{mount}/'...")
-            if vault.setup_ssh_engine(mount, private_key_path=args.private_key):
+            if vault.setup_ssh_engine(mount):
                 print(f"🎉 SSH CA enabled at '{mount}/'")
                 
         elif action in ["read", "info"]:
