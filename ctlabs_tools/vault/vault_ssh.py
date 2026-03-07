@@ -34,12 +34,10 @@ def parse_ssh_config(target_host):
             key = parts[0].lower()
             
             if key == 'host':
-                # OpenSSH supports wildcards (e.g., Host db-* *.prod)
                 in_host_block = any(fnmatch.fnmatch(target_host, pat) for pat in parts[1:])
                 continue
                 
             if in_host_block:
-                # OpenSSH uses the FIRST value it encounters for a parameter
                 if key == 'user' and not principal:
                     principal = parts[1]
                 elif key == 'identityfile' and not identity_file:
@@ -69,7 +67,6 @@ def find_valid_ephemeral_key(principal, mount, role):
     safe_mount = mount.replace('/', '_')
     temp_dir = tempfile.gettempdir()
     
-    # 🌟 FIX: Strictly limit the search to sandboxes created for this specific CA and Role!
     search_pattern = os.path.join(temp_dir, f"vault-ssh-{safe_mount}-{role}-*", "id_ed25519-cert.pub")
     cert_paths = glob.glob(search_pattern)
     
@@ -94,11 +91,9 @@ def find_valid_ephemeral_key(principal, mount, role):
                     elif line and line != "(none)":
                         principals.append(line)
             
-            # Check if this cert grants access to our desired user
             if principal not in principals:
                 continue
                 
-            # Check if it has at least 30 seconds of life left
             if " to " in valid_str:
                 to_date_str = valid_str.split(" to ")[1].strip()
                 to_date = datetime.fromisoformat(to_date_str)
@@ -129,12 +124,13 @@ def get_args():
     # 3. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage SSH CA Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_engine.add_argument("mount", nargs="?", default="ssh", help="Mount point")
+    p_engine.add_argument("mount", nargs="?", default="", help="Mount point")
+    p_engine.add_argument("--private-key", help="Path to a pre-generated private key to import (e.g., ./vault_ca_key)")
 
     # 4. ROLE
     p_role = subparsers.add_parser("role", help="Manage SSH Roles (Principals & Access)")
     p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_role.add_argument("mount", nargs="?", default="ssh", help="Mount point")
+    p_role.add_argument("mount", nargs="?", default="", help="Mount point")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
     p_role.add_argument("--default-user", default="ubuntu", help="Default SSH principal")
     p_role.add_argument("--allowed-users", default="ubuntu,root", help="Comma-separated allowed principals")
@@ -156,7 +152,6 @@ def main():
     if cmd == "info":
         cert_paths = []
         
-        # 1. Check Standard Permanent Keys
         for target_dir in ["~/.ssh", "~/.ssh/keys"]:
             search_path = os.path.expanduser(target_dir)
             if os.path.exists(search_path) and os.path.isdir(search_path):
@@ -164,7 +159,6 @@ def main():
                     if f.endswith("-cert.pub"):
                         cert_paths.append(os.path.join(search_path, f))
                         
-        # 2. Check Ephemeral Key Directories (Active Sessions)
         temp_dir = tempfile.gettempdir()
         ephemeral_certs = glob.glob(os.path.join(temp_dir, "vault-ssh-*", "*-cert.pub"))
         cert_paths.extend(ephemeral_certs)
@@ -260,11 +254,9 @@ def main():
         exit_code = 1
 
         try:
-            # --- EPHEMERAL FLOW ---
             if use_ephemeral:
                 if not principal: principal = os.environ.get("USER", "root")
                 
-                # 🌟 FIX: Pass mount and role to guarantee cryptographic isolation!
                 existing_key = find_valid_ephemeral_key(principal, mount, args.role)
                 
                 if existing_key:
@@ -274,7 +266,6 @@ def main():
                     if not args.ephemeral:
                         print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
                         
-                    # 🌟 FIX: Encode the mount and role into the temporary directory name
                     safe_mount = mount.replace('/', '_')
                     temp_dir = tempfile.mkdtemp(prefix=f"vault-ssh-{safe_mount}-{args.role}-")
                     os.chmod(temp_dir, 0o700)
@@ -294,7 +285,6 @@ def main():
                     cert_path = f"{identity_file}-cert.pub"
                     with open(cert_path, 'w') as f: f.write(signed_key)
                 
-            # --- STANDARD FLOW ---
             else:
                 identity_file = os.path.expanduser(identity_file)
                 if identity_file.endswith(".pub"):
@@ -320,7 +310,6 @@ def main():
                     
                 print(f"✅ Certificate saved to {cert_path} and ready for use.", file=sys.stderr)
 
-            # Build the SSH command
             ssh_command = ["ssh"]
             if use_ephemeral:
                 ssh_command.extend(["-i", identity_file, "-o", "IdentitiesOnly=yes"])
@@ -334,7 +323,6 @@ def main():
             exit_code = subprocess.run(ssh_command).returncode
 
         finally:
-            # 🧹 SECURITY: Shred ephemeral keys on exit (but ONLY if this shell created it!)
             if temp_dir and os.path.exists(temp_dir):
                 print(f"\n🧹 Shredding temporary SSH keys...", file=sys.stderr)
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -357,9 +345,13 @@ def main():
                 print("ℹ️ No SSH CA Engines mounted.")
             sys.exit(0)
             
+        if not mount:
+            print("❌ Error: Mount point is required.", file=sys.stderr)
+            sys.exit(1)
+            
         elif action == "create":
             print(f"🚀 Configuring SSH CA Engine at '{mount}/'...")
-            if vault.setup_ssh_engine(mount):
+            if vault.setup_ssh_engine(mount, private_key_path=args.private_key):
                 print(f"🎉 SSH CA enabled at '{mount}/'")
                 
         elif action in ["read", "info"]:
@@ -390,19 +382,37 @@ def main():
         role_name = args.role_name
         
         if action == "list":
-            client = vault._get_client()
-            try:
-                res = client.list(f"{mount}/roles")
-                roles = res.get('data', {}).get('keys', []) if res else []
-                if roles:
-                    print(f"👥 Active SSH Roles at '{mount}/':")
-                    for r in roles: print(f"  ├─ {r}")
-                else:
-                    print("ℹ️ No SSH roles found.")
-            except Exception as e:
-                if "404" in str(e): print("ℹ️ No SSH roles found.")
-                else: print(f"❌ Error listing SSH roles: {e}")
+            if mount:
+                engines_to_check = [mount]
+            else:
+                print("🔍 Searching across all active SSH engines...")
+                engines = vault.list_engines(backend_type="ssh") or []
+                engines_to_check = [e.strip('/') for e in engines]
+
+            if not engines_to_check:
+                print("ℹ️ No SSH CA Engines currently mounted.")
+                sys.exit(0)
+
+            found_any = False
+            for m in engines_to_check:
+                client = vault._get_client()
+                try:
+                    res = client.list(f"{m}/roles")
+                    roles = res.get('data', {}).get('keys', []) if res else []
+                    if roles:
+                        found_any = True
+                        print(f"\n👥 Active SSH Roles at '{m}/':")
+                        for r in roles: print(f"  ├─ {r}")
+                except Exception as e:
+                    if "404" not in str(e): print(f"❌ Error listing SSH roles at '{m}/': {e}")
+            
+            if not found_any:
+                print("\nℹ️ No SSH roles found.")
             sys.exit(0)
+            
+        if not mount:
+            print("❌ Error: Mount point is required (e.g., vault-ssh role read ssh my-role).", file=sys.stderr)
+            sys.exit(1)
             
         if not role_name:
             print("❌ Error: role_name is required for this action.", file=sys.stderr)
