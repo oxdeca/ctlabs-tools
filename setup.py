@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ctlabs-tools",
-    version="0.2.99",
+    version="0.3.00",
     description="CTLabs tools and helpers",
     packages=find_packages(),
     package_data={
@@ -40,6 +40,7 @@ setup(
             'vault-gcp=ctlabs_tools.vault.vault_gcp:main',
             'vault-k8s=ctlabs_tools.vault.vault_k8s:main',
             'vault-ssh=ctlabs_tools.vault.vault_ssh:main',
+            'vault-pki=ctlabs_tools.vault.vault_pki:main',
             'vault-trap=ctlabs_tools.vault.vault_trap:main',
             'flashcards=ctlabs_tools.flashcards.server:main',
         ],

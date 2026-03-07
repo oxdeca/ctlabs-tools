@@ -1,9 +1,14 @@
 # -----------------------------------------------------------------------------
 # File    : ctlabs-tools/ctlabs_tools/vault/mixins/pki.py
+# License : MIT
 # -----------------------------------------------------------------------------
+import sys
 
 class VaultPKIMixin:
-    def setup_pki_engine(self, mount_point, common_name, max_ttl="8760h"):
+    # -------------------------------------------------------------------------
+    # ENGINE CONFIGURATION
+    # -------------------------------------------------------------------------
+    def setup_pki_engine(self, mount_point, common_name, max_ttl="87600h"):
         client = self._get_client()
         if not client: return False
         try:
@@ -12,7 +17,7 @@ class VaultPKIMixin:
                 client.sys.enable_secrets_engine('pki', path=mount_point, config={'max_lease_ttl': max_ttl})
             
             # Generate Root CA
-            res = client.write(f"{mount_point}/root/generate/internal", common_name=common_name, ttl=max_ttl)
+            client.write(f"{mount_point}/root/generate/internal", common_name=common_name, ttl=max_ttl)
             
             # Configure URLs
             client.write(f"{mount_point}/config/urls", 
@@ -33,6 +38,9 @@ class VaultPKIMixin:
             print(f"❌ Error tearing down PKI engine: {e}")
             return False
 
+    # -------------------------------------------------------------------------
+    # ROLE MANAGEMENT
+    # -------------------------------------------------------------------------
     def create_pki_role(self, name, mount_point, allowed_domains, allow_subdomains=True, max_ttl="72h"):
         client = self._get_client()
         if not client: return False
@@ -51,6 +59,29 @@ class VaultPKIMixin:
             print(f"❌ Error creating PKI role: {e}")
             return False
 
+    def read_pki_role(self, name, mount_point):
+        client = self._get_client()
+        if not client: return None
+        try:
+            res = client.read(f"{mount_point}/roles/{name}")
+            return res.get('data') if res else None
+        except Exception as e:
+            if "404" not in str(e): print(f"❌ Error reading PKI role '{name}': {e}")
+            return None
+
+    def delete_pki_role(self, name, mount_point):
+        client = self._get_client()
+        if not client: return False
+        try:
+            client.delete(f"{mount_point}/roles/{name}")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting PKI role '{name}': {e}")
+            return False
+
+    # -------------------------------------------------------------------------
+    # CERTIFICATE ISSUANCE
+    # -------------------------------------------------------------------------
     def issue_certificate(self, role_name, mount_point, common_name, ttl="24h"):
         client = self._get_client()
         if not client: return None
@@ -60,3 +91,4 @@ class VaultPKIMixin:
         except Exception as e:
             print(f"❌ Error issuing certificate: {e}")
             return None
+
