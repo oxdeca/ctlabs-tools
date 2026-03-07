@@ -39,7 +39,7 @@ def get_args():
     # 4. GROUP
     p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_group.add_argument("name", nargs="?", default="", help="Name of the group")
+    p_group.add_argument("name", nargs="?", default="", help="Name of the group (or group to list members for)")
     p_group.add_argument("--method", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
     p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --method identity)")
@@ -221,18 +221,46 @@ def main():
         method = getattr(args, 'method', 'identity')
         
         if action == "list":
-            if method == "identity":
-                groups = vault.list_identity_groups()
-                label = "Internal Vault Identity Groups"
+            # 🌟 SMART UX: If a specific name is provided, show the team roster!
+            if name:
+                if method == "identity":
+                    details = vault.read_identity_group(name)
+                    if details:
+                        member_ids = details.get("member_entity_ids", [])
+                        if not member_ids:
+                            print(f"ℹ️ Group '{name}' has no members.")
+                        else:
+                            print(f"👥 Members of Identity Group '{name}':")
+                            client = vault._get_client()
+                            for eid in member_ids:
+                                try:
+                                    e_data = client.read(f"identity/entity/id/{eid}")
+                                    if e_data and 'data' in e_data:
+                                        member_name = e_data['data'].get('name', 'Unknown')
+                                        print(f"  ├─ {member_name} (ID: {eid})")
+                                    else:
+                                        print(f"  ├─ {eid} (Unknown Name)")
+                                except Exception:
+                                    print(f"  ├─ {eid} (Error fetching name)")
+                    else:
+                        print(f"⚠️ Group '{name}' not found.")
+                else:
+                    print(f"ℹ️ Member listing is not supported for external '{method}' groups (managed by the external IdP).")
+            
+            # Standard list all groups
             else:
-                groups = vault.list_groups(auth_type=method)
-                label = f"External '{method}' Group Mappings"
+                if method == "identity":
+                    groups = vault.list_identity_groups()
+                    label = "Internal Vault Identity Groups"
+                else:
+                    groups = vault.list_groups(auth_type=method)
+                    label = f"External '{method}' Group Mappings"
 
-            if groups:
-                print(f"🏢 Existing {label}:")
-                for g in groups: print(f"  ├─ {g}")
-            else:
-                print(f"ℹ️ No {label} found.")
+                if groups:
+                    print(f"🏢 Existing {label}:")
+                    for g in groups: print(f"  ├─ {g}")
+                else:
+                    print(f"ℹ️ No {label} found.")
                 
         else:
             if not name:
@@ -252,7 +280,6 @@ def main():
                             else:
                                 missing_entities.append(member_name)
                                 
-                    # 🌟 FIX: Fail Fast if any entities are missing!
                     if missing_entities:
                         print(f"❌ Error: The following entities were not found in Vault: {', '.join(missing_entities)}", file=sys.stderr)
                         print("👉 You must create them first using 'vault-auth entity create <name>' before adding them to a group.", file=sys.stderr)
@@ -267,6 +294,24 @@ def main():
             elif action in ["read", "info"]:
                 if method == "identity":
                     details = vault.read_identity_group(name)
+                    
+                    # 🌟 SMART UX: Auto-resolve UUIDs into names for the JSON output too!
+                    if details:
+                        member_ids = details.get("member_entity_ids", [])
+                        if member_ids:
+                            client = vault._get_client()
+                            member_names = []
+                            for eid in member_ids:
+                                try:
+                                    e_data = client.read(f"identity/entity/id/{eid}")
+                                    if e_data and 'data' in e_data:
+                                        member_names.append(e_data['data'].get('name', eid))
+                                    else:
+                                        member_names.append(eid)
+                                except Exception:
+                                    member_names.append(eid)
+                            details["member_entity_names"] = member_names
+                            
                 else:
                     details = vault.read_group(name, auth_type=method)
                     
