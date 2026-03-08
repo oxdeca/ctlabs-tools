@@ -82,8 +82,8 @@ def get_args():
     p_approle = subparsers.add_parser("approle", help="Manage Machine Identities (AppRoles)")
     p_approle.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_approle.add_argument("name", nargs="?", default="", help="Name of the AppRole")
-    p_approle.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m) (used with create/update)")
-    p_approle.add_argument("--policies", help="Comma-separated list of policies (used with create/update)")
+    p_approle.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m)")
+    p_approle.add_argument("--policies", help="Comma-separated list of policies")
 
     # 2. USER
     p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
@@ -97,13 +97,13 @@ def get_args():
     p_policy = subparsers.add_parser("policy", help="Manage Vault ACL Policies")
     p_policy.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_policy.add_argument("name", nargs="?", default="", help="Name of the policy")
-    p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules (used with create/update)")
+    p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules")
 
     # 4. GROUP
     p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_group.add_argument("name", nargs="?", default="", help="Name of the group")
-    p_group.add_argument("--type", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
+    p_group.add_argument("--type", choices=["identity", "ldap", "okta"], help="Group type (defaults to 'identity' for create/read, 'all' for list)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
     p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --type identity)")
 
@@ -124,7 +124,7 @@ def get_args():
     # 7. KUBERNETES AUTH
     p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles & Configuration")
     p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
-    p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role (Required for all except list/configure)")
+    p_k8s.add_argument("name", nargs="?", default="", help="Name of the Vault role")
     p_k8s.add_argument("--sa-names", help="Allowed K8s Service Accounts")
     p_k8s.add_argument("--sa-namespaces", help="Allowed K8s Namespaces")
     p_k8s.add_argument("--policies", help="Vault policies to grant")
@@ -149,22 +149,21 @@ def get_args():
     # 9. GCP AUTH
     p_gcp = subparsers.add_parser("gcp", help="Manage GCP Auth Roles & Configuration")
     p_gcp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
-    p_gcp.add_argument("name", nargs="?", default="", help="Name of the Vault role (Required for all except list/configure)")
+    p_gcp.add_argument("name", nargs="?", default="", help="Name of the Vault role")
     p_gcp.add_argument("--sa-emails", help="Comma-separated allowed GCP Service Accounts")
     p_gcp.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_gcp.add_argument("--ttl", default="1h", help="Token TTL")
     p_gcp.add_argument("--type", default="iam", choices=["iam", "gce"], help="Type of GCP auth role (iam or gce)")
     p_gcp.add_argument("--project", help="GCP Project ID to auto-generate a Zero-Touch credential (for 'configure' action)")
-    p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup (default: vault-gcp-auth)")
-    p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file (Alternative to --project)")
+    p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup")
+    p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file")
 
     # 10. LDAP AUTH METHOD
-    p_ldap = subparsers.add_parser("ldap", help="Manage LDAP Auth Method")
+    p_ldap = subparsers.add_parser("ldap", help="Manage LDAP Auth Configuration & Mappings")
     ldap_subs = p_ldap.add_subparsers(dest="ldap_cmd", required=True)
 
-    # 10a. LDAP Config
     p_ldap_cfg = ldap_subs.add_parser("config", help="Manage LDAP Connection Config")
-    p_ldap_cfg.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_cfg.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
     p_ldap_cfg.add_argument("--url", help="LDAP server URL (e.g., ldaps://ldap.example.com)")
     p_ldap_cfg.add_argument("--bind-dn", help="Bind DN")
     p_ldap_cfg.add_argument("--bind-pass", help="Bind Password")
@@ -173,15 +172,13 @@ def get_args():
     p_ldap_cfg.add_argument("--user-attr", help="User attribute (e.g., uid, sAMAccountName)")
     p_ldap_cfg.add_argument("--group-attr", help="Group attribute (e.g., cn)")
 
-    # 10b. LDAP Group Mapping
     p_ldap_grp = ldap_subs.add_parser("group", help="Map LDAP Groups to Policies")
-    p_ldap_grp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_grp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
     p_ldap_grp.add_argument("name", nargs="?", default="", help="LDAP Group Name")
     p_ldap_grp.add_argument("--policies", help="Comma-separated Vault policies")
 
-    # 10c. LDAP User Mapping
     p_ldap_usr = ldap_subs.add_parser("user", help="Map specific LDAP Users to Policies")
-    p_ldap_usr.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_usr.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
     p_ldap_usr.add_argument("name", nargs="?", default="", help="LDAP User Name")
     p_ldap_usr.add_argument("--policies", help="Comma-separated Vault policies")
     p_ldap_usr.add_argument("--groups", help="Comma-separated LDAP groups to implicitly attach")
@@ -283,7 +280,7 @@ def main():
                 details = vault.read_user(name, auth_type=auth_type)
                 if details:
                     print(f"👤 User: {name} ({auth_type})")
-                    policies = details.get('token_policies', [])
+                    policies = details.get('token_policies', []) if auth_type == "userpass" else details.get('policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 else: print(f"⚠️ User '{name}' not found in '{auth_type}'.")
                 
@@ -333,11 +330,13 @@ def main():
     # 4. GROUP MANAGEMENT (Identity & External)
     # -------------------------------------------------------------------------
     elif cmd == "group":
-        grp_type = getattr(args, 'type', 'identity')
+        grp_type = getattr(args, 'type', None)
         
         if action == "list":
             if name:
-                if grp_type == "identity":
+                if grp_type and grp_type != "identity":
+                    print(f"ℹ️ Member listing is not supported for external '{grp_type}' groups.")
+                else:
                     details = vault.read_identity_group(name)
                     if details:
                         member_ids = details.get("member_entity_ids", [])
@@ -350,32 +349,33 @@ def main():
                                 try:
                                     e_data = client.read(f"identity/entity/id/{eid}")
                                     if e_data and 'data' in e_data:
-                                        member_name = e_data['data'].get('name', 'Unknown')
-                                        print(f"  ├─ {member_name} (ID: {eid})")
+                                        print(f"  ├─ {e_data['data'].get('name', 'Unknown')} (ID: {eid})")
                                     else:
                                         print(f"  ├─ {eid} (Unknown Name)")
                                 except Exception:
                                     print(f"  ├─ {eid} (Error fetching name)")
                     else:
                         print(f"⚠️ Group '{name}' not found.")
-                else:
-                    print(f"ℹ️ Member listing is not supported for external '{grp_type}' groups.")
-            
             else:
-                if grp_type == "identity":
-                    groups = vault.list_identity_groups()
-                    label = "Internal Vault Identity Groups"
-                else:
-                    groups = vault.list_groups(auth_type=grp_type)
-                    label = f"External '{grp_type}' Group Mappings"
+                methods_to_check = [grp_type] if grp_type else ["identity", "ldap", "okta"]
+                found_any = False
+                for m in methods_to_check:
+                    if m == "identity":
+                        groups = vault.list_identity_groups()
+                        label = "Internal Vault Identity Groups"
+                    else:
+                        groups = vault.list_groups(auth_type=m)
+                        label = f"External '{m}' Group Mappings"
 
-                if groups:
-                    print(f"🏢 Existing {label}:")
-                    for g in groups: print(f"  ├─ {g}")
-                else:
-                    print(f"ℹ️ No {label} found.")
+                    if groups:
+                        print(f"🏢 {label}:")
+                        for g in groups: print(f"  ├─ {g}")
+                        found_any = True
+                if not found_any:
+                    print("ℹ️ No groups found.")
                 
         else:
+            grp_type = grp_type or "identity"
             if not name:
                 print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
@@ -384,7 +384,6 @@ def main():
                 if grp_type == "identity":
                     entity_ids = []
                     missing_entities = []
-                    
                     if args.members:
                         for member_name in [m.strip() for m in args.members.split(",") if m.strip()]:
                             ent = vault.read_entity(member_name)
@@ -392,12 +391,10 @@ def main():
                                 entity_ids.append(ent['id'])
                             else:
                                 missing_entities.append(member_name)
-                                
                     if missing_entities:
                         print(f"❌ Error: The following entities were not found in Vault: {', '.join(missing_entities)}", file=sys.stderr)
                         print("👉 You must create them first using 'vault-auth entity create <name>' before adding them to a group.", file=sys.stderr)
                         sys.exit(1)
-
                     if vault.create_identity_group(name, policies=args.policies, member_entity_ids=entity_ids):
                         print(f"✅ Vault Identity Group '{name}' successfully created/updated.")
                 else:
@@ -436,7 +433,6 @@ def main():
                         print(f"  ├─ ID: {details.get('id')}")
                         policies = details.get('policies', [])
                         print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
-                        
                         member_ids = details.get("member_entity_ids", [])
                         if member_ids:
                             client = vault._get_client()
@@ -514,7 +510,6 @@ def main():
                     print(f"  ├─ ID: {details.get('id')}")
                     policies = details.get('policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
-                    
                     aliases = details.get('aliases', [])
                     if aliases:
                         print(f"  ├─ Aliases:")
@@ -522,7 +517,6 @@ def main():
                             print(f"  │  ├─ {a.get('name')} (Mount: {a.get('mount_path')})")
                     else:
                         print(f"  ├─ Aliases: None")
-                        
                     groups = details.get('group_ids', [])
                     if groups:
                         group_names = []
@@ -575,13 +569,11 @@ def main():
                             name = a_data['data'].get('name', 'Unknown')
                             mnt = a_data['data'].get('mount_path', 'Unknown')
                             canonical_id = a_data['data'].get('canonical_id')
-                            
                             parent_entity = "Unknown"
                             if canonical_id:
                                 e_data = client.read(f"identity/entity/id/{canonical_id}")
                                 if e_data and 'data' in e_data:
                                     parent_entity = e_data['data'].get('name', canonical_id)
-
                             print(f"  ├─ ID: {k} | Name: {name} | Mount: {mnt} | Entity: {parent_entity}")
                 else:
                     print("ℹ️ No aliases found in Vault.")
@@ -611,7 +603,6 @@ def main():
                     print(f"🔗 Alias: {data.get('name')}")
                     print(f"  ├─ ID: {data.get('id')}")
                     print(f"  ├─ Mount: {data.get('mount_path')}")
-                    
                     canonical_id = data.get('canonical_id')
                     parent_entity = "Unknown"
                     if canonical_id:
@@ -721,22 +712,17 @@ def main():
             if not args.emails and not args.groups:
                 print("❌ Error: Must provide either --emails or --groups to bind to the role.", file=sys.stderr)
                 sys.exit(1)
-            
             bound_claims = {}
-            if args.emails:
-                bound_claims["email"] = [e.strip() for e in args.emails.split(",")]
-            if args.groups:
-                bound_claims["groups"] = [g.strip() for g in args.groups.split(",")]
+            if args.emails: bound_claims["email"] = [e.strip() for e in args.emails.split(",")]
+            if args.groups: bound_claims["groups"] = [g.strip() for g in args.groups.split(",")]
 
             if vault.create_oidc_role(name, bound_claims, policies=args.policies, ttl=args.ttl):
                 print(f"✅ OIDC Role '{name}' successfully {action}d.")
 
         elif action == "read":
             details = vault.read_oidc_role(name)
-            if details:
-                print(json.dumps(details, indent=2))
-            else:
-                print(f"⚠️ OIDC role '{name}' not found.")
+            if details: print(json.dumps(details, indent=2))
+            else: print(f"⚠️ OIDC role '{name}' not found.")
                 
         elif action == "info":
             details = vault.read_oidc_role(name)
@@ -767,18 +753,15 @@ def main():
                 if not args.gcp_project or not args.admin_email:
                     print("❌ Error: --gcp-project and --admin-email are required for 'register gcp'.", file=sys.stderr)
                     sys.exit(1)
-                    
                 project_id = args.gcp_project
                 admin_email = args.admin_email
 
                 print(f"🚀 Step 1: Checking GCP Project '{project_id}'...")
                 res = subprocess.run(["gcloud", "projects", "describe", project_id], capture_output=True, text=True)
-                
                 if res.returncode != 0:
                     print(f"   ℹ️ Project not found. Creating '{project_id}'...")
                     subprocess.run(["gcloud", "projects", "create", project_id], check=True)
-                else:
-                    print("   ✅ Project exists.")
+                else: print("   ✅ Project exists.")
 
                 print(f"🚀 Step 2: Assigning OAuth IAM roles to {admin_email}...")
                 subprocess.run(["gcloud", "projects", "add-iam-policy-binding", project_id, 
@@ -813,13 +796,11 @@ def main():
                 okta_domain = input("🌐 Paste your Okta Domain (e.g., dev-123.okta.com): ").strip()
                 client_id = input("🔑 Paste your Client ID: ").strip()
                 client_secret = getpass.getpass("🕵️  Paste your Client Secret: ").strip()
-                
                 okta_domain = okta_domain.replace("https://", "").strip("/")
                 discovery_url = f"https://{okta_domain}"
 
             else:
                 print(f"❌ Error: Unsupported OIDC provider '{provider}'.", file=sys.stderr)
-                print("   Supported providers: gcp, azure, okta", file=sys.stderr)
                 sys.exit(1)
 
             if not client_id or not client_secret:
@@ -838,7 +819,6 @@ def main():
     elif cmd == "gcp":
         if action == "configure":
             creds_content = None
-            
             if getattr(args, 'credentials', None):
                 try:
                     with open(args.credentials, 'r') as f:
@@ -846,14 +826,12 @@ def main():
                 except Exception as e:
                     print(f"❌ Error reading credentials file: {e}", file=sys.stderr)
                     sys.exit(1)
-                    
             elif getattr(args, 'project', None):
                 project = args.project
                 sa_name = args.sa_name
                 sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
                 
                 print(f"🚀 Initializing Zero-Touch GCP Auth Verifier in project: {project}...")
-                
                 print(f"  ├─ Ensuring Service Account '{sa_name}' exists...")
                 subprocess.run([
                     "gcloud", "iam", "service-accounts", "create", sa_name,
@@ -861,30 +839,16 @@ def main():
                 ], capture_output=True) 
                 
                 print(f"  ├─ Granting necessary IAM roles for token verification...")
-                subprocess.run([
-                    "gcloud", "projects", "add-iam-policy-binding", project,
-                    f"--member=serviceAccount:{sa_email}",
-                    "--role=roles/iam.serviceAccountKeyAdmin"
-                ], capture_output=True)
-                
-                subprocess.run([
-                    "gcloud", "projects", "add-iam-policy-binding", project,
-                    f"--member=serviceAccount:{sa_email}",
-                    "--role=roles/compute.viewer"
-                ], capture_output=True)
+                subprocess.run(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", "--role=roles/iam.serviceAccountKeyAdmin"], capture_output=True)
+                subprocess.run(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", "--role=roles/compute.viewer"], capture_output=True)
                 
                 print("  ├─ 🔑 Generating JSON Key in-memory and updating Vault...")
-                res = subprocess.run([
-                    "gcloud", "iam", "service-accounts", "keys", "create", "-",
-                    f"--iam-account={sa_email}", "--project", project
-                ], capture_output=True, text=True)
+                res = subprocess.run(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project], capture_output=True, text=True)
                 
                 if res.returncode != 0:
                     print(f"❌ Failed to generate Service Account key: {res.stderr}", file=sys.stderr)
                     sys.exit(1)
-                    
                 creds_content = res.stdout.strip()
-                
             else:
                 print("❌ Error: You must provide either --project (for zero-touch) or --credentials (for manual file).", file=sys.stderr)
                 sys.exit(1)
@@ -931,13 +895,18 @@ def main():
                     print(f"✅ Deleted GCP auth role '{name}'.")
 
     # -------------------------------------------------------------------------
-    # 10. LDAP AUTH METHOD (Config only, Users/Groups map to normal types)
+    # 10. LDAP AUTH METHOD
     # -------------------------------------------------------------------------
     elif cmd == "ldap":
         ldap_cmd = args.ldap_cmd
         action = args.action
         mount = "auth/ldap"
         client = vault._get_client()
+
+        if ldap_cmd in ["user", "group"]:
+            if action not in ["list"] and not name:
+                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+                sys.exit(1)
 
         if ldap_cmd == "config":
             if action in ["read", "info", "list"]:
@@ -986,9 +955,61 @@ def main():
                     print("✅ LDAP Auth configuration deleted.")
                 except Exception as e:
                     print(f"❌ Error deleting LDAP config: {e}", file=sys.stderr)
-        
-        # User and Group mapping now redirects seamlessly to the main `user` and `group` commands below
-        # since we unified the API entirely around --type.
+
+        elif ldap_cmd in ["group", "user"]:
+            target = "groups" if ldap_cmd == "group" else "users"
+            
+            if action == "list":
+                try:
+                    res = client.list(f"{mount}/{target}")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print(f"👥 Configured LDAP {target.capitalize()}:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else:
+                        print(f"ℹ️ No LDAP {target} configured.")
+                except Exception as e:
+                    print(f"❌ Error: {e}", file=sys.stderr)
+                    
+            elif action in ["read", "info"]:
+                try:
+                    res = client.read(f"{mount}/{target}/{name}")
+                    if res and 'data' in res:
+                        if action == "read":
+                            print(json.dumps(res['data'], indent=2))
+                        else:
+                            d = res['data']
+                            icon = "🏢" if ldap_cmd == "group" else "👤"
+                            print(f"{icon} LDAP {ldap_cmd.capitalize()} Mapping: {name}")
+                            pols = d.get('policies', [])
+                            print(f"  ├─ Policies : {', '.join(pols) if pols else 'None'}")
+                            if ldap_cmd == "user":
+                                grps = d.get('groups', [])
+                                print(f"  ├─ Groups   : {', '.join(grps) if grps else 'None'}")
+                    else:
+                        print(f"❌ LDAP {ldap_cmd} '{name}' mapping not found.", file=sys.stderr)
+                except Exception as e:
+                    print(f"❌ Error: {e}", file=sys.stderr)
+                    
+            elif action in ["create", "update"]:
+                payload = {}
+                if getattr(args, "policies", None) is not None:
+                    payload["policies"] = [p.strip() for p in args.policies.split(",") if p.strip()]
+                if ldap_cmd == "user" and getattr(args, "groups", None) is not None:
+                    payload["groups"] = [g.strip() for g in args.groups.split(",") if g.strip()]
+                    
+                try:
+                    client.write(f"{mount}/{target}/{name}", **payload)
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapped successfully.")
+                except Exception as e:
+                    print(f"❌ Error updating mapping: {e}", file=sys.stderr)
+                    
+            elif action == "delete":
+                try:
+                    client.delete(f"{mount}/{target}/{name}")
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapping deleted.")
+                except Exception as e:
+                    print(f"❌ Error deleting mapping: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
