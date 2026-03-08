@@ -6,6 +6,9 @@ import argparse
 import sys
 import os
 import json
+import glob
+import subprocess
+from datetime import datetime
 from .core import HashiVault
 
 def get_args():
@@ -13,14 +16,18 @@ def get_args():
     parser.add_argument("--timeout", type=int, default=60, help="API HTTP timeout")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # 1. ENGINE
+    # 1. INFO (Global)
+    p_info = subparsers.add_parser("info", help="Introspect locally issued TLS certificates")
+    p_info.add_argument("--dir", default="./certs", help="Directory containing the certificates (default: ./certs)")
+
+    # 2. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage PKI Secrets Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_engine.add_argument("mount", nargs="?", default="", help="Mount point (e.g., pki, pki_int)")
     p_engine.add_argument("--common-name", default="CTLabs Internal Root CA", help="Common Name for a new Root CA")
     p_engine.add_argument("--ttl", default="87600h", help="Max TTL for the CA (default 10 years)")
 
-    # 2. ROLE
+    # 3. ROLE
     p_role = subparsers.add_parser("role", help="Manage PKI Roles (Allowed Domains)")
     p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_role.add_argument("mount", nargs="?", default="", help="Mount point")
@@ -29,7 +36,7 @@ def get_args():
     p_role.add_argument("--allow-subdomains", action="store_true", help="Allow issuing certs for subdomains")
     p_role.add_argument("--ttl", default="720h", help="Max TTL for issued certificates")
 
-    # 3. ISSUE
+    # 4. ISSUE
     p_issue = subparsers.add_parser("issue", help="Issue a TLS Certificate")
     p_issue.add_argument("mount", help="Mount point (e.g., pki)")
     p_issue.add_argument("role_name", help="PKI Role Name")
@@ -48,9 +55,79 @@ def main():
     cmd = args.command
     
     # -------------------------------------------------------------------------
-    # 1. ENGINE (CA Management)
+    # 1. INFO (Global Introspection)
     # -------------------------------------------------------------------------
-    if cmd == "engine":
+    if cmd == "info":
+        cert_dir = args.dir
+        if not os.path.exists(cert_dir) or not os.path.isdir(cert_dir):
+            print(f"❌ Directory '{cert_dir}' not found.", file=sys.stderr)
+            sys.exit(1)
+
+        cert_paths = glob.glob(os.path.join(cert_dir, "*.crt")) + glob.glob(os.path.join(cert_dir, "*.pem"))
+        
+        if not cert_paths:
+            print(f"❌ No certificates (*.crt, *.pem) found in '{cert_dir}'.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"🔍 Introspecting Local TLS Certificates in '{cert_dir}'...")
+        for cert in cert_paths:
+            try:
+                # Use openssl to extract the certificate metadata
+                res = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-subject", "-issuer", "-enddate"], capture_output=True, text=True, check=True)
+                lines = res.stdout.strip().split('\n')
+                
+                subject, issuer, enddate = "Unknown", "Unknown", "Unknown"
+                time_str = "Unknown"
+
+                for line in lines:
+                    if line.startswith("subject="):
+                        subject = line.split("=", 1)[1].strip()
+                    elif line.startswith("issuer="):
+                        issuer = line.split("=", 1)[1].strip()
+                    elif line.startswith("notAfter="):
+                        enddate = line.split("=", 1)[1].strip()
+                        
+                        # Parse the OpenSSL date (e.g., 'Mar  7 20:00:00 2026 GMT')
+                        try:
+                            clean_date = enddate.replace(" GMT", "")
+                            # Remove double spaces for clean parsing
+                            clean_date = " ".join(clean_date.split())
+                            to_date = datetime.strptime(clean_date, "%b %d %H:%M:%S %Y")
+                            now = datetime.utcnow()
+                            
+                            if now < to_date:
+                                rem = int((to_date - now).total_seconds())
+                                mins = rem // 60
+                                hours = mins // 60
+                                days = hours // 24
+                                if days > 0:
+                                    time_str = f"{days} days, {hours % 24}h {mins % 60}m"
+                                else:
+                                    time_str = f"{hours}h {mins % 60}m"
+                            else:
+                                time_str = "EXPIRED ⚠️"
+                        except Exception:
+                            time_str = enddate # Fallback if parsing fails
+
+                is_ca = "-ca.crt" in cert
+                badge = " (🏛️ CA Chain)" if is_ca else ""
+
+                print(f"\n📄 Certificate : {cert}{badge}")
+                print(f"🏷️  Subject     : {subject}")
+                print(f"🏛️  Issuer      : {issuer}")
+                print(f"⏳ Remaining   : {time_str}")
+                if "EXPIRED" in time_str or time_str == enddate:
+                    print(f"   (Valid Until: {enddate})")
+
+            except Exception as e:
+                print(f"⚠️ Could not parse {cert}: {e}")
+                
+        sys.exit(0)
+
+    # -------------------------------------------------------------------------
+    # 2. ENGINE (CA Management)
+    # -------------------------------------------------------------------------
+    elif cmd == "engine":
         action = args.action
         mount = getattr(args, 'mount', '').strip('/')
         
@@ -129,7 +206,7 @@ def main():
                 print(f"❌ Error deleting engine: {e}")
 
     # -------------------------------------------------------------------------
-    # 2. ROLE
+    # 3. ROLE
     # -------------------------------------------------------------------------
     elif cmd == "role":
         action = args.action
@@ -224,7 +301,7 @@ def main():
                 print(f"❌ Error deleting PKI role: {e}")
 
     # -------------------------------------------------------------------------
-    # 3. ISSUE (Requesting Certificates)
+    # 4. ISSUE (Requesting Certificates)
     # -------------------------------------------------------------------------
     elif cmd == "issue":
         mount = args.mount.strip('/')
