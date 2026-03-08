@@ -6,6 +6,7 @@ import argparse
 import sys
 import json
 import re
+import fnmatch
 from .core import HashiVault
 
 # =============================================================================
@@ -280,8 +281,7 @@ def list_roles(vault, engine_type, engine_name):
                 badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐", "ldap":"👥"}.get(m_type, "⚙️")
                 print(f"{badge} {m_type.upper()} Engine: {path}")
                 for r in roles: 
-                    # Format optimized for easy terminal double-click & copy
-                    print(f"  - {mount_basename} {r}")
+                    print(f"  ├─ {r}")
                 print("")
     except Exception as e:
         print(f"❌ Error fetching mounts: {e}")
@@ -309,13 +309,16 @@ def audit_policy(vault, policy_name, show_upstream=True):
         print("\n👥 UPSTREAM: Identities with this policy")
         scan_upstream_identities(vault, {policy_name})
 
-def audit_role(vault, role_name, target_engine_name=None):
+def audit_role(vault, role_name, target_engine_name=None, target_engine_type=None):
     """Reverse-Lookup: Starts with a role, finds policies that grant it, finds users who have policies."""
     client = vault._get_client()
-    if target_engine_name:
-        print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}' in '{target_engine_name}'?\n" + "="*70)
-    else:
-        print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}' across all engines?\n" + "="*70)
+    
+    desc_parts = []
+    if target_engine_type: desc_parts.append(f"type '{target_engine_type}'")
+    if target_engine_name: desc_parts.append(f"mount '{target_engine_name}'")
+    desc = " in " + " and ".join(desc_parts) if desc_parts else " across all engines"
+    
+    print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}'{desc}?\n" + "="*70)
     
     mounts = client.sys.list_mounted_secrets_engines()['data']
     found_engines = []
@@ -325,9 +328,16 @@ def audit_role(vault, role_name, target_engine_name=None):
     for path, info in mounts.items():
         m_type = info.get('type')
         clean_path = path.strip('/')
-        mount_basename = clean_path.split('/')[-1]
         
-        if target_engine_name and mount_basename != target_engine_name:
+        # Engine matching logic (handles standard 'gcp/my-project' structures)
+        mount_parts = clean_path.split('/')
+        mount_basename = mount_parts[-1]
+        mount_type_prefix = mount_parts[0] if len(mount_parts) > 1 else None
+
+        if target_engine_type and m_type != target_engine_type and mount_type_prefix != target_engine_type:
+            continue
+            
+        if target_engine_name and mount_basename != target_engine_name and clean_path != target_engine_name:
             continue
             
         try:
@@ -468,7 +478,7 @@ def get_args():
     p_role_list.add_argument("engine_name", nargs="?", default="", help="Filter by specific project/cluster mount")
     
     p_role_info = p_role_subs.add_parser("info", help="Reverse-audit a specific role")
-    p_role_info.add_argument("name_args", nargs="+", help="[engine_name] role_name (Paste directly from 'role list' output!)")
+    p_role_info.add_argument("name_args", nargs="+", help="Supports: [role], [mount] [role], or [type]/[mount]/[role]")
 
     # 3. ENTITY
     p_entity = subparsers.add_parser("entity", help="Audit Entity Access")
@@ -502,8 +512,12 @@ def main():
         if action == "list":
             list_policies(vault, args.category)
         elif action == "info":
-            print(f"\n🔎 AUDITING VAULT ACCESS PATH FOR POLICY: '{args.name}'\n" + "="*70)
-            audit_policy(vault, args.name)
+            name = getattr(args, 'name', '')
+            if not name:
+                print(f"❌ Error: 'name' is required for the 'info' action.", file=sys.stderr)
+                sys.exit(1)
+            print(f"\n🔎 AUDITING VAULT ACCESS PATH FOR POLICY: '{name}'\n" + "="*70)
+            audit_policy(vault, name)
 
     # -------------------------------------------------------------------------
     # 2. ROLE
@@ -512,13 +526,31 @@ def main():
         if action == "list":
             list_roles(vault, args.engine_type, args.engine_name)
         elif action == "info":
-            # Smart parsing: If user pastes "- proj1 my-role", the '-' gets dropped if they aren't careful, 
-            # so we just take the last element as role, and second-to-last as engine.
-            clean_args = [a for a in args.name_args if a != "-"]
-            if len(clean_args) == 1:
-                audit_role(vault, clean_args[0])
+            # 🧠 SMART PARSER: Flattens spaces and slashes so it works with any input format!
+            tokens = []
+            for arg_str in args.name_args:
+                tokens.extend(arg_str.split('/'))
+            tokens = [t for t in tokens if t] # Remove empty strings from trailing slashes
+            
+            eng_type, eng_name, r_name = None, None, None
+            
+            if len(tokens) >= 3:
+                # Format: gcp/ctlabs-0815/devops
+                eng_type = tokens[-3]
+                eng_name = tokens[-2]
+                r_name = tokens[-1]
+            elif len(tokens) == 2:
+                # Format: ctlabs-0815 devops   OR   ctlabs-0815/devops
+                eng_name = tokens[0]
+                r_name = tokens[1]
+            elif len(tokens) == 1:
+                # Format: devops
+                r_name = tokens[0]
             else:
-                audit_role(vault, clean_args[1], target_engine_name=clean_args[0])
+                print("❌ Error: Invalid role format provided.", file=sys.stderr)
+                sys.exit(1)
+                
+            audit_role(vault, r_name, target_engine_name=eng_name, target_engine_type=eng_type)
 
     # -------------------------------------------------------------------------
     # 3. ENTITY
@@ -536,7 +568,11 @@ def main():
             except Exception as e: print(f"❌ Error fetching entities: {e}", file=sys.stderr)
                 
         elif action == "info":
-            audit_identity(vault, args.name, is_group=False)
+            name = getattr(args, 'name', '')
+            if not name:
+                print("❌ Error: 'name' is required.", file=sys.stderr)
+                sys.exit(1)
+            audit_identity(vault, name, is_group=False)
 
     # -------------------------------------------------------------------------
     # 4. GROUP
@@ -554,7 +590,11 @@ def main():
             except Exception as e: print(f"❌ Error fetching groups: {e}", file=sys.stderr)
                 
         elif action == "info":
-            audit_identity(vault, args.name, is_group=True)
+            name = getattr(args, 'name', '')
+            if not name:
+                print("❌ Error: 'name' is required.", file=sys.stderr)
+                sys.exit(1)
+            audit_identity(vault, name, is_group=True)
 
 if __name__ == "__main__":
     main()
