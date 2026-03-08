@@ -51,6 +51,55 @@ def save_cached_server(cluster_name, server_url):
     except Exception as e:
         print(f"⚠️ Could not cache server URL: {e}", file=sys.stderr)
 
+def print_k8s_rules_table(rules_json_str):
+    """Parses raw K8s JSON rules and prints a beautifully formatted ASCII table."""
+    try:
+        rules = json.loads(rules_json_str)
+    except json.JSONDecodeError:
+        print("  ├─ Rules       : ⚠️ Invalid JSON format in Vault")
+        return
+        
+    if not rules:
+        print("  ├─ Rules       : None")
+        return
+        
+    print("  ├─ Rules       :")
+    
+    # 1. Extract the columns
+    rows = []
+    for r in rules:
+        resources = ", ".join(r.get("resources", ["<none>"]))
+        
+        # Clean up API Groups (an empty string in K8s means the 'core' API group)
+        api_groups_raw = r.get("apiGroups", ["<none>"])
+        api_groups_clean = [g if g != "" else '"" (core)' for g in api_groups_raw]
+        api_groups = ", ".join(api_groups_clean)
+        
+        verbs = ", ".join(r.get("verbs", ["<none>"]))
+        rows.append([resources, api_groups, verbs])
+        
+    # 2. Calculate dynamic column widths
+    w_res = max(len("Resources"), max((len(r[0]) for r in rows), default=0))
+    w_api = max(len("API Groups"), max((len(r[1]) for r in rows), default=0))
+    w_verbs = max(len("Verbs"), max((len(r[2]) for r in rows), default=0))
+    
+    table_width = w_res + w_api + w_verbs + 6 # Padding & separators
+    
+    GREEN = "\033[92m"
+    RESET = "\033[0m"
+    PREFIX = "  │  "
+    
+    # 3. Render the table inside the tree
+    print(f"{PREFIX}{'=' * table_width}")
+    print(f"{PREFIX}{'Resources'.ljust(w_res)} | {'API Groups'.ljust(w_api)} | {'Verbs'.ljust(w_verbs)}")
+    print(f"{PREFIX}{'-' * table_width}")
+    
+    for row in rows:
+        print(f"{PREFIX}{row[0].ljust(w_res)} | {row[1].ljust(w_api)} | {GREEN}{row[2].ljust(w_verbs)}{RESET}")
+        
+    print(f"{PREFIX}{'=' * table_width}")
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Kubernetes Secrets Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout")
@@ -455,6 +504,13 @@ type: kubernetes.io/service-account-token
                 print(f"  ├─ SA Name     : {data.get('service_account_name', 'Dynamic')}")
                 print(f"  ├─ Default TTL : {data.get('default_ttl', 'System Default')}s")
                 print(f"  ├─ Max TTL     : {data.get('max_ttl', 'System Default')}s")
+                
+                # 🌟 Render the new RBAC Rules Table!
+                rules_str = data.get("generated_role_rules")
+                if rules_str:
+                    print_k8s_rules_table(rules_str)
+                else:
+                    print("  ├─ Rules       : None (Uses pre-existing ServiceAccount/Role)")
             else:
                 print(f"❌ Role '{role_name}' not found.")
             
