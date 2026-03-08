@@ -263,11 +263,9 @@ def list_policies(vault, category):
         is_auth, is_access, is_secret = False, False, False
         
         for path in paths.keys():
-            # 🌟 SMART FIX: Strip leading slashes and extract base prefix without trailing wildcards
             clean_path = path.strip('/')
             if not clean_path: continue
             
-            # e.g., 'kvv2*' -> 'kvv2'
             prefix = clean_path.split('/')[0].strip('*+')
             
             # 1. Auth & Internals
@@ -296,6 +294,10 @@ def list_policies(vault, category):
 
 
 def list_roles(vault, engine_type, engine_name):
+    # 🌟 FIX: Map CLI shortcut 'k8s' to Vault's internal 'kubernetes' type
+    if engine_type == "k8s":
+        engine_type = "kubernetes"
+
     client = vault._get_client()
     print("🔍 Scanning mounts for active roles...\n")
     try:
@@ -355,6 +357,11 @@ def audit_policy(vault, policy_name, show_upstream=True):
 
 def audit_role(vault, role_name, target_engine_name=None, target_engine_type=None):
     """Reverse-Lookup: Starts with a role, finds policies that grant it, finds users who have policies."""
+    
+    # 🌟 FIX: Map CLI shortcut 'k8s' to Vault's internal 'kubernetes' type
+    if target_engine_type == "k8s":
+        target_engine_type = "kubernetes"
+
     client = vault._get_client()
     
     desc_parts = []
