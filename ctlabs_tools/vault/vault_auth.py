@@ -72,37 +72,54 @@ def print_policy_table(name, hcl_text):
         
     print("=" * table_width + "\n")
 
-def get_auth_mounts(client, engine_type, search_path=None):
-    """
-    Dynamically queries sys/auth to find mount paths for a specific engine type.
-    - If search_path == '/': Returns ALL mounts of that engine type.
-    - If search_path == 'prefix': Returns mounts starting with 'prefix/'.
-    - If search_path == None: Returns mounts starting exactly with 'engine_type/'.
-    """
+def get_auth_mounts(client, engine_type):
+    """Dynamically queries sys/auth to find all active mount paths for an engine type."""
     try:
         res = client.sys.list_auth_methods()
         mounts = []
         for path, info in res.get('data', {}).items():
             if info['type'] == engine_type:
-                clean_path = path.strip('/')
-                
-                if search_path == '/':
-                    mounts.append(clean_path)
-                elif search_path:
-                    clean_search = search_path.strip('/')
-                    if clean_path == clean_search or clean_path.startswith(clean_search + '/'):
-                        mounts.append(clean_path)
-                else:
-                    if clean_path == engine_type or clean_path.startswith(engine_type + '/'):
-                        mounts.append(clean_path)
-                        
-        if not mounts:
-            # Fallback if discovery fails to find anything
-            return [search_path.strip('/')] if search_path and search_path != '/' else [engine_type]
-            
-        return mounts
+                mounts.append(path.strip('/'))
+        return mounts if mounts else [engine_type]
     except Exception:
-        return [search_path.strip('/')] if search_path and search_path != '/' else [engine_type]
+        return [engine_type]
+
+def parse_target(name_args, default_root, action, is_config=False):
+    """
+    Smart token parser. Supports formats:
+    - role_name (Defaults to root mount)
+    - mount_name role_name
+    - mount_name/role_name
+    - default_root/mount_name/role_name
+    """
+    tokens = []
+    if name_args:
+        for arg in name_args:
+            tokens.extend([t for t in arg.split('/') if t])
+            
+    # Strip empty tokens
+    tokens = [t for t in tokens if t]
+    
+    # Strip the default root if the user provided it redundantly (e.g. 'approle/dev/my-role')
+    if tokens and tokens[0] == default_root:
+        tokens.pop(0)
+        
+    if action in ["list", "configure"] or is_config:
+        # If it's a list or config action, the entire path string represents the MOUNT
+        if not tokens:
+            return default_root, ""
+        else:
+            return f"{default_root}/{'/'.join(tokens)}", ""
+    else:
+        # If it's a create/read/delete action, the LAST token is the role name, everything before is the mount
+        if not tokens:
+            return default_root, ""
+        elif len(tokens) == 1:
+            return default_root, tokens[0]
+        else:
+            name = tokens[-1]
+            sub_mount = "/".join(tokens[:-1])
+            return f"{default_root}/{sub_mount}", name
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Authentication & Policy Manager")
@@ -112,54 +129,50 @@ def get_args():
     # 1. APPROLE
     p_approle = subparsers.add_parser("approle", help="Manage Machine Identities (AppRoles)")
     p_approle.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_approle.add_argument("name", nargs="?", default="")
-    p_approle.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
+    p_approle.add_argument("name_args", nargs="*", help="Supports: <role>, <mount> <role>, or <mount>/<role>")
     p_approle.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m)")
     p_approle.add_argument("--policies", help="Comma-separated list of policies")
 
     # 2. USER
     p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
     p_user.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_user.add_argument("name", nargs="?", default="")
-    p_user.add_argument("--type", choices=["userpass", "ldap"], help="Auth method type")
-    p_user.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
+    p_user.add_argument("name_args", nargs="*", help="Supports: <user>, <mount> <user>, or <mount>/<user>")
+    p_user.add_argument("--type", choices=["userpass", "ldap"], help="Auth method type (defaults to 'userpass' for create/read, 'all' for list)")
     p_user.add_argument("--password", help="Password (required for creating userpass users)")
     p_user.add_argument("--policies", help="Comma-separated list of policies")
 
     # 3. POLICY
     p_policy = subparsers.add_parser("policy", help="Manage Vault ACL Policies")
     p_policy.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_policy.add_argument("name", nargs="?", default="")
+    p_policy.add_argument("name_args", nargs="*", help="Name of the policy")
     p_policy.add_argument("--file", help="Path to an HCL file containing the policy rules")
 
     # 4. GROUP
     p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_group.add_argument("name", nargs="?", default="")
-    p_group.add_argument("--type", choices=["identity", "ldap", "okta"], help="Group type")
-    p_group.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
+    p_group.add_argument("name_args", nargs="*", help="Supports: <group>, <mount> <group>, or <mount>/<group>")
+    p_group.add_argument("--type", choices=["identity", "ldap", "okta"], help="Group type (defaults to 'identity')")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
-    p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group")
+    p_group.add_argument("--members", help="Comma-separated list of Entity Names to add (identity only)")
 
     # 5. ENTITY
     p_entity = subparsers.add_parser("entity", help="Manage Vault Identity Entities")
     p_entity.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "merge"])
-    p_entity.add_argument("name", nargs="?", default="")
+    p_entity.add_argument("name_args", nargs="*", help="Name of the entity (Source entity for merge)")
     p_entity.add_argument("--policies", help="Comma-separated list of policies to assign")
     p_entity.add_argument("--target", help="Destination entity name (Required for merge)")
 
     # 6. ALIAS
     p_alias = subparsers.add_parser("alias", help="Manage Identity Aliases")
     p_alias.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_alias.add_argument("alias_identifier", nargs="?", default="")
+    p_alias.add_argument("name_args", nargs="*", help="Alias Name (for create) or Alias ID (for read/update/delete)")
     p_alias.add_argument("--entity", help="Entity name (required for create/update)")
-    p_alias.add_argument("--mount", help="Auth mount path (required for create/update)")
+    p_alias.add_argument("--mount", help="Auth mount accessor or path")
 
     # 7. KUBERNETES AUTH
     p_k8s = subparsers.add_parser("k8s", help="Manage Kubernetes Auth Roles & Configuration")
     p_k8s.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"])
-    p_k8s.add_argument("name", nargs="?", default="")
-    p_k8s.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
+    p_k8s.add_argument("name_args", nargs="*", help="Supports: <role>, <cluster_mount> <role>, or <cluster_mount>/<role>")
     p_k8s.add_argument("--sa-names", help="Allowed K8s Service Accounts")
     p_k8s.add_argument("--sa-namespaces", help="Allowed K8s Namespaces")
     p_k8s.add_argument("--policies", help="Vault policies to grant")
@@ -170,13 +183,12 @@ def get_args():
     # 8. OIDC AUTH
     p_oidc = subparsers.add_parser("oidc", help="Manage OIDC Auth & Roles (SSO)")
     p_oidc.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure", "register"])
-    p_oidc.add_argument("name", nargs="?", default="")
-    p_oidc.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
-    p_oidc.add_argument("--client-id", help="OIDC Client ID")
-    p_oidc.add_argument("--client-secret", help="OIDC Client Secret")
-    p_oidc.add_argument("--default-role", default="default")
-    p_oidc.add_argument("--emails", help="Comma-separated allowed emails")
-    p_oidc.add_argument("--groups", help="Comma-separated allowed Google Groups")
+    p_oidc.add_argument("name_args", nargs="*", help="Supports: <role>, <mount> <role>. For 'register': <provider> (e.g. gcp, azure, okta)")
+    p_oidc.add_argument("--client-id", help="OIDC Client ID (for 'configure' action)")
+    p_oidc.add_argument("--client-secret", help="OIDC Client Secret (for 'configure')")
+    p_oidc.add_argument("--default-role", default="default", help="Default OIDC role (for 'configure')")
+    p_oidc.add_argument("--emails", help="Comma-separated list of allowed emails")
+    p_oidc.add_argument("--groups", help="Comma-separated list of allowed Google Groups")
     p_oidc.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_oidc.add_argument("--ttl", default="1h", help="Token TTL")
     p_oidc.add_argument("--gcp-project", help="GCP Project ID to use or create for the OAuth Client")
@@ -185,8 +197,7 @@ def get_args():
     # 9. GCP AUTH
     p_gcp = subparsers.add_parser("gcp", help="Manage GCP Auth Roles & Configuration")
     p_gcp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"])
-    p_gcp.add_argument("name", nargs="?", default="")
-    p_gcp.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
+    p_gcp.add_argument("name_args", nargs="*", help="Supports: <role>, <mount> <role>, or <mount>/<role>")
     p_gcp.add_argument("--sa-emails", help="Comma-separated allowed GCP Service Accounts")
     p_gcp.add_argument("--policies", help="Comma-separated list of Vault policies")
     p_gcp.add_argument("--ttl", default="1h", help="Token TTL")
@@ -201,27 +212,25 @@ def get_args():
 
     p_ldap_cfg = ldap_subs.add_parser("config", help="Manage LDAP Connection Config")
     p_ldap_cfg.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_ldap_cfg.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
-    p_ldap_cfg.add_argument("--url")
-    p_ldap_cfg.add_argument("--bind-dn")
-    p_ldap_cfg.add_argument("--bind-pass")
-    p_ldap_cfg.add_argument("--user-dn")
-    p_ldap_cfg.add_argument("--group-dn")
-    p_ldap_cfg.add_argument("--user-attr")
-    p_ldap_cfg.add_argument("--group-attr")
+    p_ldap_cfg.add_argument("name_args", nargs="*", help="Supports: <mount> (Overrides default 'ldap' mount)")
+    p_ldap_cfg.add_argument("--url", help="LDAP server URL (e.g., ldaps://ldap.example.com)")
+    p_ldap_cfg.add_argument("--bind-dn", help="Bind DN")
+    p_ldap_cfg.add_argument("--bind-pass", help="Bind Password")
+    p_ldap_cfg.add_argument("--user-dn", help="User search base DN")
+    p_ldap_cfg.add_argument("--group-dn", help="Group search base DN")
+    p_ldap_cfg.add_argument("--user-attr", help="User attribute (e.g., uid, sAMAccountName)")
+    p_ldap_cfg.add_argument("--group-attr", help="Group attribute (e.g., cn)")
 
     p_ldap_grp = ldap_subs.add_parser("group", help="Map LDAP Groups to Policies")
     p_ldap_grp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_ldap_grp.add_argument("name", nargs="?", default="")
-    p_ldap_grp.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
-    p_ldap_grp.add_argument("--policies")
+    p_ldap_grp.add_argument("name_args", nargs="*", help="Supports: <group_name>, <mount> <group_name>")
+    p_ldap_grp.add_argument("--policies", help="Comma-separated Vault policies")
 
     p_ldap_usr = ldap_subs.add_parser("user", help="Map specific LDAP Users to Policies")
     p_ldap_usr.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"])
-    p_ldap_usr.add_argument("name", nargs="?", default="")
-    p_ldap_usr.add_argument("--path", help="Overrides default mount path. Use '/' to list all.")
-    p_ldap_usr.add_argument("--policies")
-    p_ldap_usr.add_argument("--groups")
+    p_ldap_usr.add_argument("name_args", nargs="*", help="Supports: <user_name>, <mount> <user_name>")
+    p_ldap_usr.add_argument("--policies", help="Comma-separated Vault policies")
+    p_ldap_usr.add_argument("--groups", help="Comma-separated LDAP groups to implicitly attach")
 
     return parser.parse_args()
 
@@ -234,27 +243,16 @@ def main():
         sys.exit(1)
 
     cmd = args.command
-    
-    if cmd == "ldap":
-        action = args.action
-        name = getattr(args, 'name', '')
-    else:
-        action = args.action
-        name = getattr(args, 'name', '')
-
-    # Enforce 'name' requirement for commands that need it
-    if cmd not in ["alias", "ldap"] and action not in ["list", "configure", "register"] and not name:
-        if action == "merge" and getattr(args, 'target', None): pass
-        else:
-            print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
-            sys.exit(1)
+    action = args.action
 
     # -------------------------------------------------------------------------
     # 1. APPROLE MANAGEMENT
     # -------------------------------------------------------------------------
     if cmd == "approle":
+        mount, name = parse_target(args.name_args, "approle", action)
+        
         if action == "list":
-            mounts = get_auth_mounts(client, 'approle', getattr(args, 'path', None))
+            mounts = [mount] if args.name_args else get_auth_mounts(client, 'approle')
             found = False
             for m in mounts:
                 try:
@@ -264,40 +262,48 @@ def main():
                         for r in roles: print(f"  ├─ {r}")
                         found = True
                 except: pass
-            if not found: print(f"ℹ️ No AppRoles found{' across specified paths' if getattr(args, 'path', None) else ''}.")
+            if not found: print(f"ℹ️ No AppRoles found{' in specified mount' if args.name_args else ''}.")
                 
         elif action in ["create", "update"]:
-            path = args.path.strip('/') if getattr(args, 'path', None) else "approle"
+            if not name:
+                print("❌ Error: Role name is required.", file=sys.stderr)
+                sys.exit(1)
             policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
             try:
-                client.write(f"auth/{path}/role/{name}", token_policies=policies, token_ttl=args.ttl)
-                print(f"✅ AppRole '{name}' successfully created/updated in '{path}/'.")
+                client.write(f"auth/{mount}/role/{name}", token_policies=policies, token_ttl=args.ttl)
+                print(f"✅ AppRole '{name}' successfully created/updated in '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                 
         elif action == "read":
-            path = args.path.strip('/') if getattr(args, 'path', None) else "approle"
+            if not name:
+                print("❌ Error: Role name is required.", file=sys.stderr)
+                sys.exit(1)
             try:
-                role_id = client.read(f"auth/{path}/role/{name}/role-id")['data']['role_id']
-                secret_id = client.write(f"auth/{path}/role/{name}/secret-id")['data']['secret_id']
+                role_id = client.read(f"auth/{mount}/role/{name}/role-id")['data']['role_id']
+                secret_id = client.write(f"auth/{mount}/role/{name}/secret-id")['data']['secret_id']
                 print(json.dumps({"role_id": role_id, "secret_id": secret_id}, indent=2))
-            except Exception as e: print(f"⚠️ Could not generate credentials for AppRole '{name}' at '{path}/': {e}", file=sys.stderr)
+            except Exception as e: print(f"⚠️ Could not generate credentials for AppRole '{name}' at '{mount}/': {e}", file=sys.stderr)
             
         elif action == "info":
-            path = args.path.strip('/') if getattr(args, 'path', None) else "approle"
+            if not name:
+                print("❌ Error: Role name is required.", file=sys.stderr)
+                sys.exit(1)
             try:
-                details = client.read(f"auth/{path}/role/{name}")['data']
-                print(f"🤖 AppRole: {name} (Mount: {path}/)")
+                details = client.read(f"auth/{mount}/role/{name}")['data']
+                print(f"🤖 AppRole: {name} (Mount: {mount}/)")
                 policies = details.get('token_policies', [])
                 print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}")
                 print(f"  ├─ Bind Secret ID: {details.get('bind_secret_id', True)}")
-            except Exception: print(f"⚠️ AppRole '{name}' not found in '{path}/'.", file=sys.stderr)
+            except Exception: print(f"⚠️ AppRole '{name}' not found in '{mount}/'.", file=sys.stderr)
             
         elif action == "delete":
-            path = args.path.strip('/') if getattr(args, 'path', None) else "approle"
+            if not name:
+                print("❌ Error: Role name is required.", file=sys.stderr)
+                sys.exit(1)
             try:
-                client.delete(f"auth/{path}/role/{name}")
-                print(f"✅ Deleted AppRole '{name}' from '{path}/'.")
+                client.delete(f"auth/{mount}/role/{name}")
+                print(f"✅ Deleted AppRole '{name}' from '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
@@ -310,7 +316,8 @@ def main():
             methods_to_check = [auth_type] if auth_type else ["userpass", "ldap"]
             found_any = False
             for m_type in methods_to_check:
-                mounts = get_auth_mounts(client, m_type, getattr(args, 'path', None))
+                mount, _ = parse_target(args.name_args, m_type, action)
+                mounts = [mount] if args.name_args else get_auth_mounts(client, m_type)
                 for m in mounts:
                     try:
                         users = client.list(f"auth/{m}/users")['data']['keys']
@@ -323,8 +330,12 @@ def main():
                 
         else:
             auth_type = auth_type or "userpass"
-            path = args.path.strip('/') if getattr(args, 'path', None) else auth_type
+            mount, name = parse_target(args.name_args, auth_type, action)
             
+            if not name:
+                print("❌ Error: User name is required.", file=sys.stderr)
+                sys.exit(1)
+                
             if action in ["create", "update"]:
                 if auth_type == "userpass" and action == "create" and not args.password:
                     print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
@@ -335,34 +346,35 @@ def main():
                 if args.password: payload["password"] = args.password
                 
                 try:
-                    client.write(f"auth/{path}/users/{name}", **payload)
-                    print(f"✅ User '{name}' successfully created/updated in '{path}/'.")
+                    client.write(f"auth/{mount}/users/{name}", **payload)
+                    print(f"✅ User '{name}' successfully created/updated in '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                     
             elif action == "read":
                 try:
-                    details = client.read(f"auth/{path}/users/{name}")['data']
+                    details = client.read(f"auth/{mount}/users/{name}")['data']
                     print(json.dumps(details, indent=2))
-                except: print(f"⚠️ User '{name}' not found in '{path}/'.", file=sys.stderr)
+                except: print(f"⚠️ User '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
             elif action == "info":
                 try:
-                    details = client.read(f"auth/{path}/users/{name}")['data']
-                    print(f"👤 User: {name} (Mount: {path}/)")
+                    details = client.read(f"auth/{mount}/users/{name}")['data']
+                    print(f"👤 User: {name} (Mount: {mount}/)")
                     policies = details.get('token_policies', []) if auth_type == "userpass" else details.get('policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
-                except: print(f"⚠️ User '{name}' not found in '{path}/'.", file=sys.stderr)
+                except: print(f"⚠️ User '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
             elif action == "delete":
                 try:
-                    client.delete(f"auth/{path}/users/{name}")
-                    print(f"✅ Deleted user '{name}' from '{path}/'.")
+                    client.delete(f"auth/{mount}/users/{name}")
+                    print(f"✅ Deleted user '{name}' from '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
     # 3. POLICY MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "policy":
+        name = args.name_args[0] if args.name_args else ""
         if action == "list":
             try:
                 policies = client.sys.list_policies()['data']['keys']
@@ -370,8 +382,8 @@ def main():
                 for p in policies: print(f"  ├─ {p}")
             except: print("ℹ️ No policies found.")
         elif action in ["create", "update"]:
-            if not args.file:
-                print("❌ Error: --file <path_to_hcl> is required.", file=sys.stderr)
+            if not name or not args.file:
+                print("❌ Error: Policy name and --file <path_to_hcl> are required.", file=sys.stderr)
                 sys.exit(1)
             try:
                 with open(args.file, 'r') as f: rules = f.read()
@@ -379,6 +391,9 @@ def main():
                 print(f"✅ Policy '{name}' successfully created/updated.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
         elif action in ["read", "info"]:
+            if not name:
+                print("❌ Error: Policy name is required.", file=sys.stderr)
+                sys.exit(1)
             try:
                 res = client.read(f"sys/policies/acl/{name}")
                 if not res: res = client.read(f"sys/policy/{name}")
@@ -387,6 +402,9 @@ def main():
                 else: print(rules)
             except: print(f"⚠️ Policy '{name}' not found.", file=sys.stderr)
         elif action == "delete":
+            if not name:
+                print("❌ Error: Policy name is required.", file=sys.stderr)
+                sys.exit(1)
             try:
                 client.sys.delete_policy(name=name)
                 print(f"✅ Deleted policy '{name}'.")
@@ -399,22 +417,31 @@ def main():
         grp_type = getattr(args, 'type', None)
         
         if action == "list":
-            if name:
-                if grp_type and grp_type != "identity":
-                    print(f"ℹ️ Member listing is not supported for external '{grp_type}' groups.")
-                else:
-                    try:
-                        details = client.read(f"identity/group/name/{name}")['data']
-                        member_ids = details.get("member_entity_ids", [])
-                        if not member_ids: print(f"ℹ️ Group '{name}' has no members.")
-                        else:
-                            print(f"👥 Members of Identity Group '{name}':")
-                            for eid in member_ids:
-                                try:
-                                    e_data = client.read(f"identity/entity/id/{eid}")
-                                    print(f"  ├─ {e_data['data'].get('name', 'Unknown')} (ID: {eid})")
-                                except: print(f"  ├─ {eid} (Unknown Name)")
-                    except: print(f"⚠️ Group '{name}' not found.")
+            if grp_type and grp_type != "identity" and args.name_args:
+                # E.g. vault-auth group list oidc/dev --type oidc -> list roles in mount
+                mount, _ = parse_target(args.name_args, grp_type, action)
+                try:
+                    groups = client.list(f"auth/{mount}/groups")['data']['keys']
+                    if groups:
+                        print(f"🏢 Groups in '{mount}/':")
+                        for g in groups: print(f"  ├─ {g}")
+                    else: print(f"ℹ️ No groups found in '{mount}/'.")
+                except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
+            elif grp_type == "identity" and args.name_args:
+                # E.g. vault-auth group list my-identity-group -> list members
+                name = args.name_args[0]
+                try:
+                    details = client.read(f"identity/group/name/{name}")['data']
+                    member_ids = details.get("member_entity_ids", [])
+                    if not member_ids: print(f"ℹ️ Group '{name}' has no members.")
+                    else:
+                        print(f"👥 Members of Identity Group '{name}':")
+                        for eid in member_ids:
+                            try:
+                                e_data = client.read(f"identity/entity/id/{eid}")
+                                print(f"  ├─ {e_data['data'].get('name', 'Unknown')} (ID: {eid})")
+                            except: print(f"  ├─ {eid} (Unknown Name)")
+                except: print(f"⚠️ Group '{name}' not found.")
             else:
                 methods_to_check = [grp_type] if grp_type else ["identity", "ldap", "okta"]
                 found_any = False
@@ -428,7 +455,7 @@ def main():
                                 found_any = True
                         except: pass
                     else:
-                        mounts = get_auth_mounts(client, m_type, getattr(args, 'path', None))
+                        mounts = get_auth_mounts(client, m_type)
                         for m in mounts:
                             try:
                                 keys = client.list(f"auth/{m}/groups")['data']['keys']
@@ -441,10 +468,14 @@ def main():
                 
         else:
             grp_type = grp_type or "identity"
-            path = args.path.strip('/') if getattr(args, 'path', None) else grp_type
+            mount, name = parse_target(args.name_args, grp_type, action)
             
+            if grp_type == "identity":
+                # Identity doesn't use mounts, just flat name
+                name = "/".join(args.name_args) if args.name_args else ""
+                
             if not name:
-                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+                print(f"❌ Error: Group name is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
                 
             if action in ["create", "update"]:
@@ -467,20 +498,23 @@ def main():
                     except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                 else:
                     try:
-                        client.write(f"auth/{path}/groups/{name}", policies=policies)
-                        print(f"✅ External Group Mapping '{name}' successfully created/updated in '{path}/'.")
+                        client.write(f"auth/{mount}/groups/{name}", policies=policies)
+                        print(f"✅ External Group Mapping '{name}' successfully created/updated in '{mount}/'.")
                     except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                     
             elif action == "read":
                 try:
-                    details = client.read(f"identity/group/name/{name}")['data'] if grp_type == "identity" else client.read(f"auth/{path}/groups/{name}")['data']
+                    details = client.read(f"identity/group/name/{name}")['data'] if grp_type == "identity" else client.read(f"auth/{mount}/groups/{name}")['data']
                     print(json.dumps(details, indent=2))
                 except: print(f"⚠️ Group '{name}' not found.", file=sys.stderr)
                 
             elif action == "info":
                 try:
-                    details = client.read(f"identity/group/name/{name}")['data'] if grp_type == "identity" else client.read(f"auth/{path}/groups/{name}")['data']
-                    print(f"🏢 Group: {name} (Type: {grp_type})")
+                    details = client.read(f"identity/group/name/{name}")['data'] if grp_type == "identity" else client.read(f"auth/{mount}/groups/{name}")['data']
+                    if grp_type == "identity":
+                        print(f"🏢 Identity Group: {name}")
+                    else:
+                        print(f"🏢 External Group ({grp_type}): {name} (Mount: {mount}/)")
                     policies = details.get('policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 except: print(f"⚠️ Group '{name}' not found.", file=sys.stderr)
@@ -488,7 +522,7 @@ def main():
             elif action == "delete":
                 try:
                     if grp_type == "identity": client.delete(f"identity/group/name/{name}")
-                    else: client.delete(f"auth/{path}/groups/{name}")
+                    else: client.delete(f"auth/{mount}/groups/{name}")
                     print(f"✅ Deleted group '{name}'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
@@ -496,6 +530,7 @@ def main():
     # 5. ENTITY MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "entity":
+        name = "/".join(args.name_args) if args.name_args else ""
         if action == "list":
             try:
                 keys = client.list("identity/entity/name")['data']['keys']
@@ -505,7 +540,7 @@ def main():
                 
         else:
             if not name:
-                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
+                print(f"❌ Error: Entity name is required.", file=sys.stderr)
                 sys.exit(1)
             if action in ["create", "update"]:
                 policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
@@ -530,6 +565,9 @@ def main():
                     else: print(f"  ├─ Aliases: None")
                 except: print(f"⚠️ Entity '{name}' not found.", file=sys.stderr)
             elif action == "merge":
+                if not getattr(args, 'target', None):
+                    print("❌ Error: --target is required for merge.", file=sys.stderr)
+                    sys.exit(1)
                 try:
                     from_id = client.read(f"identity/entity/name/{name}")['data']['id']
                     to_id = client.read(f"identity/entity/name/{args.target}")['data']['id']
@@ -547,7 +585,7 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "alias":
         action = args.action
-        alias_arg = args.alias_identifier
+        alias_arg = args.name_args[0] if args.name_args else ""
         
         if action == "list":
             try:
@@ -591,7 +629,7 @@ def main():
     # 7. KUBERNETES MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "k8s":
-        path = args.path.strip('/') if getattr(args, 'path', None) else 'kubernetes'
+        mount, name = parse_target(args.name_args, "kubernetes", action)
         
         if action == "configure":
             if not args.host or not args.ca_cert:
@@ -599,13 +637,13 @@ def main():
                 sys.exit(1)
             try:
                 with open(args.ca_cert, 'r') as f: ca_content = f.read()
-                client.write(f"auth/{path}/config", kubernetes_host=args.host, kubernetes_ca_cert=ca_content)
-                print(f"✅ Kubernetes Auth Backend successfully linked to {args.host} at '{path}/'")
+                client.write(f"auth/{mount}/config", kubernetes_host=args.host, kubernetes_ca_cert=ca_content)
+                print(f"✅ Kubernetes Auth Backend successfully linked to {args.host} at '{mount}/'")
             except Exception as e: print(f"❌ Error configuring K8s Auth: {e}", file=sys.stderr)
             sys.exit(0)
             
         if action == "list":
-            mounts = get_auth_mounts(client, 'kubernetes', getattr(args, 'path', None))
+            mounts = [mount] if args.name_args else get_auth_mounts(client, 'kubernetes')
             found = False
             for m in mounts:
                 try:
@@ -618,55 +656,58 @@ def main():
             if not found: print(f"ℹ️ No Kubernetes roles found.")
                 
         elif action in ["create", "update"]:
-            if not args.sa_names or not args.sa_namespaces:
-                print("❌ Error: --sa-names and --sa-namespaces are required to create a Kubernetes role.", file=sys.stderr)
+            if not name or not args.sa_names or not args.sa_namespaces:
+                print("❌ Error: Role name, --sa-names, and --sa-namespaces are required.", file=sys.stderr)
                 sys.exit(1)
             policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
             sa_names = [s.strip() for s in args.sa_names.split(",")]
             sa_ns = [s.strip() for s in args.sa_namespaces.split(",")]
             try:
-                client.write(f"auth/{path}/role/{name}", bound_service_account_names=sa_names, bound_service_account_namespaces=sa_ns, token_policies=policies, token_ttl=args.ttl)
-                print(f"✅ Kubernetes role '{name}' successfully created/updated in '{path}/'.")
+                client.write(f"auth/{mount}/role/{name}", bound_service_account_names=sa_names, bound_service_account_namespaces=sa_ns, token_policies=policies, token_ttl=args.ttl)
+                print(f"✅ Kubernetes role '{name}' successfully created/updated in '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                 
         elif action == "read":
-            try: print(json.dumps(client.read(f"auth/{path}/role/{name}")['data'], indent=2))
-            except: print(f"⚠️ Kubernetes role '{name}' not found in '{path}/'.", file=sys.stderr)
+            if not name: sys.exit("❌ Error: Role name is required.")
+            try: print(json.dumps(client.read(f"auth/{mount}/role/{name}")['data'], indent=2))
+            except: print(f"⚠️ Kubernetes role '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
         elif action == "info":
+            if not name: sys.exit("❌ Error: Role name is required.")
             try:
-                details = client.read(f"auth/{path}/role/{name}")['data']
-                print(f"⚓ Kubernetes Role: {name} (Mount: {path}/)")
+                details = client.read(f"auth/{mount}/role/{name}")['data']
+                print(f"⚓ Kubernetes Role: {name} (Mount: {mount}/)")
                 print(f"  ├─ Service Accounts: {', '.join(details.get('bound_service_account_names', []))}")
                 print(f"  ├─ Namespaces: {', '.join(details.get('bound_service_account_namespaces', []))}")
                 policies = details.get('token_policies', [])
                 print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}s")
-            except: print(f"⚠️ Kubernetes role '{name}' not found in '{path}/'.", file=sys.stderr)
+            except: print(f"⚠️ Kubernetes role '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
         elif action == "delete":
+            if not name: sys.exit("❌ Error: Role name is required.")
             try:
-                client.delete(f"auth/{path}/role/{name}")
-                print(f"✅ Deleted Kubernetes role '{name}' from '{path}/'.")
+                client.delete(f"auth/{mount}/role/{name}")
+                print(f"✅ Deleted Kubernetes role '{name}' from '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
     # 8. OIDC / SSO MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "oidc":
-        path = args.path.strip('/') if getattr(args, 'path', None) else 'oidc'
+        mount, name = parse_target(args.name_args, "oidc", action)
         
         if action == "configure":
             if not args.client_id or not args.client_secret:
                 print("❌ Error: --client-id and --client-secret are required for configure.", file=sys.stderr)
                 sys.exit(1)
             try:
-                client.write(f"auth/{path}/config", oidc_client_id=args.client_id, oidc_client_secret=args.client_secret, default_role=args.default_role)
-                print(f"✅ OIDC Engine configured successfully at '{path}/'.")
+                client.write(f"auth/{mount}/config", oidc_client_id=args.client_id, oidc_client_secret=args.client_secret, default_role=args.default_role)
+                print(f"✅ OIDC Engine configured successfully at '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
         elif action == "list":
-            mounts = get_auth_mounts(client, 'oidc', getattr(args, 'path', None))
+            mounts = [mount] if args.name_args else get_auth_mounts(client, 'oidc')
             found = False
             for m in mounts:
                 try:
@@ -679,6 +720,7 @@ def main():
             if not found: print(f"ℹ️ No OIDC roles found.")
 
         elif action in ["create", "update"]:
+            if not name: sys.exit("❌ Error: Role name is required.")
             if not args.emails and not args.groups:
                 print("❌ Error: Must provide either --emails or --groups to bind to the role.", file=sys.stderr)
                 sys.exit(1)
@@ -687,33 +729,38 @@ def main():
             if args.groups: bound_claims["groups"] = [g.strip() for g in args.groups.split(",")]
             policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
             try:
-                client.write(f"auth/{path}/role/{name}", bound_claims=bound_claims, token_policies=policies, user_claim="sub", token_ttl=args.ttl)
-                print(f"✅ OIDC Role '{name}' successfully {action}d in '{path}/'.")
+                client.write(f"auth/{mount}/role/{name}", bound_claims=bound_claims, token_policies=policies, user_claim="sub", token_ttl=args.ttl)
+                print(f"✅ OIDC Role '{name}' successfully {action}d in '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
         elif action == "read":
-            try: print(json.dumps(client.read(f"auth/{path}/role/{name}")['data'], indent=2))
-            except: print(f"⚠️ OIDC role '{name}' not found in '{path}/'.", file=sys.stderr)
+            if not name: sys.exit("❌ Error: Role name is required.")
+            try: print(json.dumps(client.read(f"auth/{mount}/role/{name}")['data'], indent=2))
+            except: print(f"⚠️ OIDC role '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
         elif action == "info":
+            if not name: sys.exit("❌ Error: Role name is required.")
             try:
-                details = client.read(f"auth/{path}/role/{name}")['data']
-                print(f"🌐 OIDC Role: {name} (Mount: {path}/)")
+                details = client.read(f"auth/{mount}/role/{name}")['data']
+                print(f"🌐 OIDC Role: {name} (Mount: {mount}/)")
                 claims = details.get('bound_claims', {})
                 if claims:
                     print(f"  ├─ Bound Claims:")
                     for k, v in claims.items(): print(f"  │  ├─ {k}: {v}")
                 print(f"  ├─ Policies: {', '.join(details.get('token_policies', []))}")
-            except: print(f"⚠️ OIDC role '{name}' not found in '{path}/'.", file=sys.stderr)
+            except: print(f"⚠️ OIDC role '{name}' not found in '{mount}/'.", file=sys.stderr)
 
         elif action == "delete":
+            if not name: sys.exit("❌ Error: Role name is required.")
             try:
-                client.delete(f"auth/{path}/role/{name}")
-                print(f"✅ Deleted OIDC role '{name}' from '{path}/'.")
+                client.delete(f"auth/{mount}/role/{name}")
+                print(f"✅ Deleted OIDC role '{name}' from '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
     
         elif action == "register":
+            # For register, the 'name' is actually the provider (e.g. gcp, okta)
             provider = name.lower()
+            if not provider: sys.exit("❌ Error: Provider name is required (e.g. gcp, okta, azure).")
 
             if provider == "gcp":
                 if not args.gcp_project or not args.admin_email:
@@ -769,21 +816,17 @@ def main():
                 print(f"❌ Error: Unsupported OIDC provider '{provider}'.", file=sys.stderr)
                 sys.exit(1)
 
-            if not client_id or not client_secret:
-                print("❌ Aborting: Client ID and Secret are required.", file=sys.stderr)
-                sys.exit(1)
-
             print(f"\n🚀 Step 3: Configuring Vault OIDC Engine for {provider.upper()}...")
             try:
-                client.write(f"auth/{path}/config", oidc_discovery_url=discovery_url, oidc_client_id=client_id, oidc_client_secret=client_secret, default_role="default")
-                print(f"🎉 SUCCESS! Vault SSO is fully registered with {provider.upper()} at '{path}/'.")
+                client.write(f"auth/{mount}/config", oidc_discovery_url=discovery_url, oidc_client_id=client_id, oidc_client_secret=client_secret, default_role="default")
+                print(f"🎉 SUCCESS! Vault SSO is fully registered with {provider.upper()} at '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
     # 9. GCP AUTH MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "gcp":
-        path = args.path.strip('/') if getattr(args, 'path', None) else 'gcp'
+        mount, name = parse_target(args.name_args, "gcp", action)
         
         if action == "configure":
             creds_content = ""
@@ -817,12 +860,12 @@ def main():
                 sys.exit(1)
             
             try:
-                client.write(f"auth/{path}/config", credentials=creds_content)
-                print(f"✅ GCP Auth Backend successfully configured at '{path}/'.")
+                client.write(f"auth/{mount}/config", credentials=creds_content)
+                print(f"✅ GCP Auth Backend successfully configured at '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                 
         elif action == "list":
-            mounts = get_auth_mounts(client, 'gcp', getattr(args, 'path', None))
+            mounts = [mount] if args.name_args else get_auth_mounts(client, 'gcp')
             found = False
             for m in mounts:
                 try:
@@ -835,6 +878,7 @@ def main():
             if not found: print("ℹ️ No GCP auth roles found.")
                 
         else:
+            if not name: sys.exit("❌ Error: Role name is required.")
             if action in ["create", "update"]:
                 if not args.sa_emails:
                     print("❌ Error: --sa-emails is required to create a GCP auth role.", file=sys.stderr)
@@ -842,28 +886,28 @@ def main():
                 sa_emails = [s.strip() for s in args.sa_emails.split(",")]
                 policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
                 try:
-                    client.write(f"auth/{path}/role/{name}", type=args.type, bound_service_accounts=sa_emails, token_policies=policies, token_ttl=args.ttl)
-                    print(f"✅ GCP auth role '{name}' successfully created/updated in '{path}/'.")
+                    client.write(f"auth/{mount}/role/{name}", type=args.type, bound_service_accounts=sa_emails, token_policies=policies, token_ttl=args.ttl)
+                    print(f"✅ GCP auth role '{name}' successfully created/updated in '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                     
             elif action == "read":
-                try: print(json.dumps(client.read(f"auth/{path}/role/{name}")['data'], indent=2))
-                except: print(f"⚠️ GCP auth role '{name}' not found in '{path}/'.", file=sys.stderr)
+                try: print(json.dumps(client.read(f"auth/{mount}/role/{name}")['data'], indent=2))
+                except: print(f"⚠️ GCP auth role '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
             elif action == "info":
                 try:
-                    details = client.read(f"auth/{path}/role/{name}")['data']
-                    print(f"☁️ GCP Auth Role: {name} (Mount: {path}/)")
+                    details = client.read(f"auth/{mount}/role/{name}")['data']
+                    print(f"☁️ GCP Auth Role: {name} (Mount: {mount}/)")
                     print(f"  ├─ Type: {details.get('type', 'iam')}")
                     print(f"  ├─ Service Accounts: {', '.join(details.get('bound_service_accounts', []))}")
                     policies = details.get('token_policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
-                except: print(f"⚠️ GCP auth role '{name}' not found in '{path}/'.", file=sys.stderr)
+                except: print(f"⚠️ GCP auth role '{name}' not found in '{mount}/'.", file=sys.stderr)
                 
             elif action == "delete":
                 try:
-                    client.delete(f"auth/{path}/role/{name}")
-                    print(f"✅ Deleted GCP auth role '{name}' from '{path}/'.")
+                    client.delete(f"auth/{mount}/role/{name}")
+                    print(f"✅ Deleted GCP auth role '{name}' from '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------
@@ -872,7 +916,10 @@ def main():
     elif cmd == "ldap":
         ldap_cmd = args.ldap_cmd
         action = args.action
-        path = args.path.strip('/') if getattr(args, 'path', None) else 'ldap'
+        
+        # Determine if this is a config action (which doesn't have a role name)
+        is_config = (ldap_cmd == "config")
+        mount, name = parse_target(args.name_args, "ldap", action, is_config=is_config)
 
         if ldap_cmd in ["user", "group"]:
             if action not in ["list"] and not name:
@@ -881,9 +928,8 @@ def main():
 
         if ldap_cmd == "config":
             if action in ["list", "read", "info"]:
-                mounts = get_auth_mounts(client, 'ldap', getattr(args, 'path', None)) if action == "list" else [path]
+                mounts = [mount] if args.name_args else get_auth_mounts(client, 'ldap')
                 found = False
-                
                 if action == "list": print("🏛️  Active LDAP Auth Mounts:")
                 
                 for m in mounts:
@@ -910,7 +956,7 @@ def main():
                     except: 
                         if action == "list": print(f"  ├─ {m}/ (Access Denied / Unconfigured)")
                         
-                if not found and action != "list": print(f"❌ LDAP config not found at '{path}/'.", file=sys.stderr)
+                if not found and action != "list": print(f"❌ LDAP config not found at '{mount}/'.", file=sys.stderr)
                 if not found and action == "list": print("  ℹ️ No LDAP mounts found.")
 
             elif action in ["create", "update"]:
@@ -923,21 +969,21 @@ def main():
                 if getattr(args, 'user_attr', None): payload["userattr"] = args.user_attr
                 if getattr(args, 'group_attr', None): payload["groupattr"] = args.group_attr
                 try:
-                    client.write(f"auth/{path}/config", **payload)
-                    print(f"✅ LDAP Auth configuration successfully updated at '{path}/'.")
+                    client.write(f"auth/{mount}/config", **payload)
+                    print(f"✅ LDAP Auth configuration successfully updated at '{mount}/'.")
                 except Exception as e: print(f"❌ Error updating LDAP config: {e}", file=sys.stderr)
 
             elif action == "delete":
                 try:
-                    client.delete(f"auth/{path}/config")
-                    print(f"✅ LDAP Auth configuration deleted at '{path}/'.")
+                    client.delete(f"auth/{mount}/config")
+                    print(f"✅ LDAP Auth configuration deleted at '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
         elif ldap_cmd in ["group", "user"]:
             target = "groups" if ldap_cmd == "group" else "users"
             
             if action == "list":
-                mounts = get_auth_mounts(client, 'ldap', getattr(args, 'path', None))
+                mounts = [mount] if args.name_args else get_auth_mounts(client, 'ldap')
                 found = False
                 for m in mounts:
                     try:
@@ -951,20 +997,20 @@ def main():
                     
             elif action in ["read", "info"]:
                 try:
-                    res = client.read(f"auth/{path}/{target}/{name}")
+                    res = client.read(f"auth/{mount}/{target}/{name}")
                     if res and 'data' in res:
                         if action == "read":
                             print(json.dumps(res['data'], indent=2))
                         else:
                             d = res['data']
                             icon = "🏢" if ldap_cmd == "group" else "👤"
-                            print(f"{icon} LDAP {ldap_cmd.capitalize()} Mapping: {name} (Mount: {path}/)")
+                            print(f"{icon} LDAP {ldap_cmd.capitalize()} Mapping: {name} (Mount: {mount}/)")
                             pols = d.get('policies', [])
                             print(f"  ├─ Policies : {', '.join(pols) if pols else 'None'}")
                             if ldap_cmd == "user":
                                 grps = d.get('groups', [])
                                 print(f"  ├─ Groups   : {', '.join(grps) if grps else 'None'}")
-                    else: print(f"❌ Mapping not found in '{path}/'.", file=sys.stderr)
+                    else: print(f"❌ Mapping not found in '{mount}/'.", file=sys.stderr)
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                     
             elif action in ["create", "update"]:
@@ -974,14 +1020,14 @@ def main():
                 if ldap_cmd == "user" and getattr(args, "groups", None) is not None:
                     payload["groups"] = [g.strip() for g in args.groups.split(",") if g.strip()]
                 try:
-                    client.write(f"auth/{path}/{target}/{name}", **payload)
-                    print(f"✅ LDAP {ldap_cmd} '{name}' mapped successfully in '{path}/'.")
+                    client.write(f"auth/{mount}/{target}/{name}", **payload)
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapped successfully in '{mount}/'.")
                 except Exception as e: print(f"❌ Error updating mapping: {e}", file=sys.stderr)
                     
             elif action == "delete":
                 try:
-                    client.delete(f"auth/{path}/{target}/{name}")
-                    print(f"✅ LDAP {ldap_cmd} '{name}' mapping deleted from '{path}/'.")
+                    client.delete(f"auth/{mount}/{target}/{name}")
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapping deleted from '{mount}/'.")
                 except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
