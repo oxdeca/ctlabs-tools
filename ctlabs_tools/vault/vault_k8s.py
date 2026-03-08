@@ -51,26 +51,48 @@ def save_cached_server(cluster_name, server_url):
     except Exception as e:
         print(f"⚠️ Could not cache server URL: {e}", file=sys.stderr)
 
-def print_k8s_rules_table(rules_json_str):
-    """Parses raw K8s JSON rules and prints a beautifully formatted ASCII table."""
+def print_k8s_rules_table(rules_str):
+    """Parses raw K8s JSON/YAML rules and prints a beautifully formatted ASCII table."""
     try:
-        rules = json.loads(rules_json_str)
+        rules = json.loads(rules_str)
     except json.JSONDecodeError:
-        print("  ├─ Rules       : ⚠️ Invalid JSON format in Vault")
-        return
-        
+        try:
+            import yaml
+            rules = yaml.safe_load(rules_str)
+        except ImportError:
+            print("  ├─ Rules       : ⚠️ Stored as YAML, but 'pyyaml' module is not installed to parse it.")
+            return
+        except Exception:
+            print("  ├─ Rules       : ⚠️ Unrecognized rules format (not valid JSON or YAML).")
+            return
+            
     if not rules:
         print("  ├─ Rules       : None")
         return
         
+    # 🧠 SMART FIX: Handle dicts (e.g. {"rules": [...]}) and direct lists dynamically
+    if isinstance(rules, dict):
+        if "rules" in rules:
+            rules = rules["rules"]
+        elif "verbs" in rules: # Single rule passed as dict
+            rules = [rules]
+        else:
+            print("  ├─ Rules       : ⚠️ Unsupported structure (missing 'rules' array).")
+            return
+            
+    if not isinstance(rules, list):
+        print("  ├─ Rules       : ⚠️ Unsupported structure (expected list of rules).")
+        return
+
     print("  ├─ Rules       :")
     
     # 1. Extract the columns
     rows = []
     for r in rules:
+        if not isinstance(r, dict): continue
+        
         resources = ", ".join(r.get("resources", ["<none>"]))
         
-        # Clean up API Groups (an empty string in K8s means the 'core' API group)
         api_groups_raw = r.get("apiGroups", ["<none>"])
         api_groups_clean = [g if g != "" else '"" (core)' for g in api_groups_raw]
         api_groups = ", ".join(api_groups_clean)
@@ -78,6 +100,10 @@ def print_k8s_rules_table(rules_json_str):
         verbs = ", ".join(r.get("verbs", ["<none>"]))
         rows.append([resources, api_groups, verbs])
         
+    if not rows:
+        print("  │  ⚠️ No valid rules found in list.")
+        return
+
     # 2. Calculate dynamic column widths
     w_res = max(len("Resources"), max((len(r[0]) for r in rows), default=0))
     w_api = max(len("API Groups"), max((len(r[1]) for r in rows), default=0))
