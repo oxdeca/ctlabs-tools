@@ -161,7 +161,7 @@ def scan_upstream_identities(vault, target_policies):
                     print(f"  🏢 Identity Group : {name} (via {', '.join(intersect)})")
     except Exception: pass
 
-    # 2. Scan Entities
+    # 2. Scan Entities (Users)
     try:
         res = client.list("identity/entity/id")
         entity_ids = res.get('data', {}).get('keys', []) if res else []
@@ -173,7 +173,7 @@ def scan_upstream_identities(vault, target_policies):
                 if intersect:
                     found_any = True
                     name = e_data['data'].get('name', eid)
-                    print(f"  👤 Identity Entity: {name} (via {', '.join(intersect)})")
+                    print(f"  👤 User / Entity  : {name} (via {', '.join(intersect)})")
     except Exception: pass
     
     # 3. Scan AppRoles
@@ -191,7 +191,7 @@ def scan_upstream_identities(vault, target_policies):
     except Exception: pass
 
     if not found_any:
-        print("  ℹ️  No Groups, Entities, or AppRoles currently have this policy attached.")
+        print("  ℹ️  No Groups, Users, or AppRoles currently have this policy attached.")
 
 
 # =============================================================================
@@ -329,7 +329,6 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
         m_type = info.get('type')
         clean_path = path.strip('/')
         
-        # Engine matching logic (handles standard 'gcp/my-project' structures)
         mount_parts = clean_path.split('/')
         mount_basename = mount_parts[-1]
         mount_type_prefix = mount_parts[0] if len(mount_parts) > 1 else None
@@ -394,9 +393,10 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
     scan_upstream_identities(vault, matching_policies)
 
 def audit_identity(vault, target_name, is_group=False):
-    """Forward-Lookup: Resolves an entity or group, calculates inherited policies, shows access."""
+    """Forward-Lookup: Resolves an entity/user or group, calculates inherited policies, shows access."""
     client = vault._get_client()
-    print(f"\n🔎 FORWARD AUDIT: Access graph for {'Group' if is_group else 'Entity'} '{target_name}'\n" + "="*70)
+    id_type = "Group" if is_group else "User/Entity"
+    print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
     
     policies = set()
     
@@ -435,11 +435,11 @@ def audit_identity(vault, target_name, is_group=False):
                     except Exception: pass
             
         except Exception:
-            print(f"❌ Entity '{target_name}' not found.")
+            print(f"❌ User/Entity '{target_name}' not found.")
             return
 
     if not policies:
-        print("\n⚠️ No policies attached to this identity. Access is completely restricted.")
+        print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
         return
         
     print("\n" + "="*70)
@@ -462,21 +462,17 @@ def get_args():
     # 1. POLICY
     p_policy = subparsers.add_parser("policy", help="Audit ACL Policies")
     p_pol_subs = p_policy.add_subparsers(dest="action", required=True)
-    
     p_pol_list = p_pol_subs.add_parser("list", help="List policies")
-    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "all"], default="all", help="Filter by auth (login mapping) or access (external systems)")
-    
+    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "all"], default="all", help="Filter by auth or access")
     p_pol_info = p_pol_subs.add_parser("info", help="Audit a specific policy")
     p_pol_info.add_argument("name", help="Policy name")
 
     # 2. ROLE
     p_role = subparsers.add_parser("role", help="Audit External Roles")
     p_role_subs = p_role.add_subparsers(dest="action", required=True)
-    
     p_role_list = p_role_subs.add_parser("list", help="List active roles")
     p_role_list.add_argument("engine_type", nargs="?", choices=["gcp", "k8s", "pki", "ssh", "ldap", "all"], default="all", help="Filter by engine type")
-    p_role_list.add_argument("engine_name", nargs="?", default="", help="Filter by specific project/cluster mount")
-    
+    p_role_list.add_argument("engine_name", nargs="?", default="", help="Filter by specific mount name")
     p_role_info = p_role_subs.add_parser("info", help="Reverse-audit a specific role")
     p_role_info.add_argument("name_args", nargs="+", help="Supports: [role], [mount] [role], or [type]/[mount]/[role]")
 
@@ -487,7 +483,14 @@ def get_args():
     p_ent_info = p_ent_subs.add_parser("info", help="Audit specific entity")
     p_ent_info.add_argument("name", help="Entity name")
 
-    # 4. GROUP
+    # 4. USER (Alias for Entity)
+    p_user = subparsers.add_parser("user", help="Audit User Access (Alias for Entity)")
+    p_usr_subs = p_user.add_subparsers(dest="action", required=True)
+    p_usr_subs.add_parser("list", help="List users (entities)")
+    p_usr_info = p_usr_subs.add_parser("info", help="Audit specific user")
+    p_usr_info.add_argument("name", help="User name")
+
+    # 5. GROUP
     p_group = subparsers.add_parser("group", help="Audit Group Access")
     p_grp_subs = p_group.add_subparsers(dest="action", required=True)
     p_grp_subs.add_parser("list", help="List groups")
@@ -526,25 +529,21 @@ def main():
         if action == "list":
             list_roles(vault, args.engine_type, args.engine_name)
         elif action == "info":
-            # 🧠 SMART PARSER: Flattens spaces and slashes so it works with any input format!
             tokens = []
             for arg_str in args.name_args:
                 tokens.extend(arg_str.split('/'))
-            tokens = [t for t in tokens if t] # Remove empty strings from trailing slashes
+            tokens = [t for t in tokens if t]
             
             eng_type, eng_name, r_name = None, None, None
             
             if len(tokens) >= 3:
-                # Format: gcp/ctlabs-0815/devops
                 eng_type = tokens[-3]
                 eng_name = tokens[-2]
                 r_name = tokens[-1]
             elif len(tokens) == 2:
-                # Format: ctlabs-0815 devops   OR   ctlabs-0815/devops
                 eng_name = tokens[0]
                 r_name = tokens[1]
             elif len(tokens) == 1:
-                # Format: devops
                 r_name = tokens[0]
             else:
                 print("❌ Error: Invalid role format provided.", file=sys.stderr)
@@ -553,19 +552,20 @@ def main():
             audit_role(vault, r_name, target_engine_name=eng_name, target_engine_type=eng_type)
 
     # -------------------------------------------------------------------------
-    # 3. ENTITY
+    # 3 & 4. ENTITY & USER
     # -------------------------------------------------------------------------
-    elif cmd == "entity":
+    elif cmd in ["entity", "user"]:
+        label = "User / Entity" if cmd == "user" else "Identity Entity"
         if action == "list":
             client = vault._get_client()
             try:
                 res = client.list("identity/entity/name")
                 keys = res.get('data', {}).get('keys', []) if res else []
                 if keys:
-                    print("👤 Existing Identity Entities:")
+                    print(f"👤 Existing {label} Records:")
                     for k in keys: print(f"  ├─ {k}")
-                else: print("ℹ️ No entities found.")
-            except Exception as e: print(f"❌ Error fetching entities: {e}", file=sys.stderr)
+                else: print(f"ℹ️ No {label.lower()} records found.")
+            except Exception as e: print(f"❌ Error fetching records: {e}", file=sys.stderr)
                 
         elif action == "info":
             name = getattr(args, 'name', '')
@@ -575,7 +575,7 @@ def main():
             audit_identity(vault, name, is_group=False)
 
     # -------------------------------------------------------------------------
-    # 4. GROUP
+    # 5. GROUP
     # -------------------------------------------------------------------------
     elif cmd == "group":
         if action == "list":
