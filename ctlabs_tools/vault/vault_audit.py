@@ -10,7 +10,7 @@ import fnmatch
 from .core import HashiVault
 
 # =============================================================================
-# HELPER: Vault API Abstractions (Handling Modern vs Legacy Endpoints)
+# HELPER: Vault API Abstractions
 # =============================================================================
 def _get_policy_rules(client, policy_name):
     """Safely fetches a policy supporting both modern and legacy Vault API endpoints."""
@@ -116,68 +116,83 @@ def render_policy_table(name, paths):
     print("=" * table_width)
 
 def scan_engine_roles(vault, paths):
-    """Analyzes policy paths and fetches downstream external bindings."""
+    """Exhaustively analyzes policy paths against ALL mounted secret engines."""
     client = vault._get_client()
     found_any = False
 
+    try:
+        secret_mounts = client.sys.list_mounted_secrets_engines()['data']
+    except Exception:
+        secret_mounts = {}
+        
     for path in paths.keys():
-        # 1. GCP
-        gcp_match = re.match(r'^gcp/([^/]+)/(?:token|key)/([^/*]+)', path)
-        if gcp_match:
-            project, role = gcp_match.groups()
-            try:
-                data = client.read(f"gcp/{project}/roleset/{role}")
-                if data and 'data' in data:
-                    d = data['data']
-                    found_any = True
-                    print(f"\n  ☁️  GCP Roleset: {role} (Project: {project})")
-                    print(f"      ├─ SA Email : {d.get('service_account_email', 'Dynamic/Unknown')}")
-                    bindings = d.get('bindings', '')
-                    if isinstance(bindings, dict):
-                        print(f"      ├─ Bindings :")
-                        for uri, roles in bindings.items():
-                            display_uri = uri.split('googleapis.com/')[-1] if 'googleapis.com/' in uri else uri
-                            print(f"      │  ├─ {display_uri}")
-                            for r in roles: print(f"      │  │  ├─ {r}")
-                    elif bindings: print(f"      ├─ Bindings : Configured (Raw HCL)")
-                    else: print(f"      ├─ Bindings : None")
-            except Exception: pass
-
-        # 2. K8s
-        k8s_match = re.match(r'^k8s/([^/]+)/creds/([^/*]+)', path)
-        if k8s_match:
-            cluster, role = k8s_match.groups()
-            try:
-                data = client.read(f"k8s/{cluster}/roles/{role}")
-                if data and 'data' in data:
-                    d = data['data']
-                    found_any = True
-                    print(f"\n  ⚓ K8s Role: {role} (Cluster: {cluster})")
-                    print(f"      ├─ Type       : {d.get('kubernetes_role_type', 'Unknown')}")
-                    ns = d.get('allowed_kubernetes_namespaces', [])
-                    print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None'}")
-                    print(f"      ├─ SA Name    : {d.get('service_account_name', 'Dynamic')}")
-            except Exception: pass
+        for m_path, info in secret_mounts.items():
+            m_type = info.get('type')
+            m_clean = m_path.strip('/')
             
-        # 3. PKI
-        pki_match = re.match(r'^pki/([^/]+)/issue/([^/*]+)', path)
-        if pki_match:
-            ca_name, role = pki_match.groups()
-            try:
-                data = client.read(f"pki/{ca_name}/roles/{role}")
-                if data and 'data' in data:
-                    d = data['data']
-                    found_any = True
-                    print(f"\n  🏛️  PKI Role: {role} (CA: {ca_name})")
-                    print(f"      ├─ Domains : {', '.join(d.get('allowed_domains', []))}")
-                    print(f"      ├─ Max TTL : {d.get('max_ttl', 'System Default')}s")
-            except Exception: pass
+            # Check if the policy targets this specific mount
+            if not path.startswith(f"{m_clean}/"): continue
+            
+            # Extract what comes after the mount path
+            remainder = path[len(m_clean)+1:]
+            
+            if m_type == "gcp":
+                match = re.match(r'^(?:token|key)/([^/*]+)', remainder)
+                if match:
+                    role = match.group(1)
+                    try:
+                        data = client.read(f"{m_clean}/roleset/{role}")
+                        if data and 'data' in data:
+                            d = data['data']
+                            found_any = True
+                            print(f"\n  ☁️  GCP Roleset: {role} (Mount: {m_clean}/)")
+                            print(f"      ├─ SA Email : {d.get('service_account_email', 'Dynamic/Unknown')}")
+                            bindings = d.get('bindings', '')
+                            if isinstance(bindings, dict):
+                                print(f"      ├─ Bindings :")
+                                for uri, roles in bindings.items():
+                                    display_uri = uri.split('googleapis.com/')[-1] if 'googleapis.com/' in uri else uri
+                                    print(f"      │  ├─ {display_uri}")
+                                    for r in roles: print(f"      │  │  ├─ {r}")
+                            elif bindings: print(f"      ├─ Bindings : Configured (Raw HCL)")
+                            else: print(f"      ├─ Bindings : None")
+                    except: pass
+                    
+            elif m_type == "kubernetes":
+                match = re.match(r'^creds/([^/*]+)', remainder)
+                if match:
+                    role = match.group(1)
+                    try:
+                        data = client.read(f"{m_clean}/roles/{role}")
+                        if data and 'data' in data:
+                            d = data['data']
+                            found_any = True
+                            print(f"\n  ⚓ K8s Role: {role} (Mount: {m_clean}/)")
+                            print(f"      ├─ Type       : {d.get('kubernetes_role_type', 'Unknown')}")
+                            ns = d.get('allowed_kubernetes_namespaces', [])
+                            print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None'}")
+                            print(f"      ├─ SA Name    : {d.get('service_account_name', 'Dynamic')}")
+                    except: pass
+                    
+            elif m_type == "pki":
+                match = re.match(r'^issue/([^/*]+)', remainder)
+                if match:
+                    role = match.group(1)
+                    try:
+                        data = client.read(f"{m_clean}/roles/{role}")
+                        if data and 'data' in data:
+                            d = data['data']
+                            found_any = True
+                            print(f"\n  🏛️  PKI Role: {role} (Mount: {m_clean}/)")
+                            print(f"      ├─ Domains : {', '.join(d.get('allowed_domains', []))}")
+                            print(f"      ├─ Max TTL : {d.get('max_ttl', 'System Default')}s")
+                    except: pass
 
     if not found_any:
         print("  ℹ️  No specific external secrets engine roles strictly mapped in this policy.")
 
 def scan_upstream_identities(vault, target_policies):
-    """Scans the Identity and Auth engines to find who has specific policies attached."""
+    """Exhaustively scans the Identity and ALL Auth engines to find attached policies."""
     client = vault._get_client()
     found_any = False
     
@@ -211,47 +226,56 @@ def scan_upstream_identities(vault, target_policies):
                     print(f"  👤 Identity Entity: {name} (via {', '.join(intersect)})")
     except Exception: pass
     
-    # 3. Scan AppRoles
+    # 3. Exhaustive Dynamic Auth Method Scanning
     try:
-        res = client.list("auth/approle/role")
-        approles = res.get('data', {}).get('keys', []) if res else []
-        for role in approles:
-            ar_data = client.read(f"auth/approle/role/{role}")
-            if ar_data and 'data' in ar_data:
-                policies = set(ar_data['data'].get('token_policies', []))
-                intersect = policies.intersection(target_policies)
-                if intersect:
-                    found_any = True
-                    print(f"  🤖 AppRole Mount  : {role} (via {', '.join(intersect)})")
-    except Exception: pass
-
-    # 4. Scan LDAP Groups
-    try:
-        res = client.list("auth/ldap/groups")
-        ldap_groups = res.get('data', {}).get('keys', []) if res else []
-        for lg in ldap_groups:
-            lg_data = client.read(f"auth/ldap/groups/{lg}")
-            if lg_data and 'data' in lg_data:
-                policies = set(lg_data['data'].get('policies', []))
-                intersect = policies.intersection(target_policies)
-                if intersect:
-                    found_any = True
-                    print(f"  🔗 LDAP Group     : {lg} (via {', '.join(intersect)})")
-    except Exception: pass
-
-    # 5. Scan LDAP Users
-    try:
-        res = client.list("auth/ldap/users")
-        ldap_users = res.get('data', {}).get('keys', []) if res else []
-        for lu in ldap_users:
-            lu_data = client.read(f"auth/ldap/users/{lu}")
-            if lu_data and 'data' in lu_data:
-                policies = set(lu_data['data'].get('policies', []))
-                intersect = policies.intersection(target_policies)
-                if intersect:
-                    found_any = True
-                    print(f"  🧑‍💻 LDAP User      : {lu} (via {', '.join(intersect)})")
-    except Exception: pass
+        auth_mounts = client.sys.list_auth_methods().get('data', {})
+    except Exception:
+        auth_mounts = {}
+        
+    for m_path, info in auth_mounts.items():
+        m_type = info.get('type')
+        m_clean = m_path.strip('/')
+        
+        if m_type == "approle":
+            try:
+                res = client.list(f"auth/{m_clean}/role")
+                approles = res.get('data', {}).get('keys', []) if res else []
+                for role in approles:
+                    ar_data = client.read(f"auth/{m_clean}/role/{role}")
+                    if ar_data and 'data' in ar_data:
+                        policies = set(ar_data['data'].get('token_policies', []))
+                        intersect = policies.intersection(target_policies)
+                        if intersect:
+                            found_any = True
+                            print(f"  🤖 AppRole Mount  : {role} in '{m_clean}/' (via {', '.join(intersect)})")
+            except: pass
+            
+        elif m_type == "ldap":
+            try:
+                res = client.list(f"auth/{m_clean}/groups")
+                ldap_groups = res.get('data', {}).get('keys', []) if res else []
+                for lg in ldap_groups:
+                    lg_data = client.read(f"auth/{m_clean}/groups/{lg}")
+                    if lg_data and 'data' in lg_data:
+                        policies = set(lg_data['data'].get('policies', []))
+                        intersect = policies.intersection(target_policies)
+                        if intersect:
+                            found_any = True
+                            print(f"  🔗 LDAP Group     : {lg} in '{m_clean}/' (via {', '.join(intersect)})")
+            except: pass
+            
+            try:
+                res = client.list(f"auth/{m_clean}/users")
+                ldap_users = res.get('data', {}).get('keys', []) if res else []
+                for lu in ldap_users:
+                    lu_data = client.read(f"auth/{m_clean}/users/{lu}")
+                    if lu_data and 'data' in lu_data:
+                        policies = set(lu_data['data'].get('policies', []))
+                        intersect = policies.intersection(target_policies)
+                        if intersect:
+                            found_any = True
+                            print(f"  🧑‍💻 LDAP User      : {lu} in '{m_clean}/' (via {', '.join(intersect)})")
+            except: pass
 
     if not found_any:
         print("  ℹ️  No Identity Groups, Entities, AppRoles, or LDAP mappings currently have this policy attached.")
@@ -319,8 +343,7 @@ def list_policies(vault, category):
 
 
 def list_roles(vault, engine_type, engine_name):
-    if engine_type == "k8s":
-        engine_type = "kubernetes"
+    if engine_type == "k8s": engine_type = "kubernetes"
 
     client = vault._get_client()
     print("🔍 Scanning mounts for active roles...\n")
@@ -331,12 +354,9 @@ def list_roles(vault, engine_type, engine_name):
             m_type = info.get('type')
             clean_path = path.strip('/')
             
-            if engine_type != "all" and m_type != engine_type:
-                continue
-                
+            if engine_type != "all" and m_type != engine_type: continue
             mount_basename = clean_path.split('/')[-1]
-            if engine_name and mount_basename != engine_name:
-                continue
+            if engine_name and mount_basename != engine_name: continue
             
             roles = []
             try:
@@ -351,8 +371,7 @@ def list_roles(vault, engine_type, engine_name):
             if roles:
                 badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐"}.get(m_type, "⚙️")
                 print(f"{badge} {m_type.upper()} Engine: {path}")
-                for r in roles: 
-                    print(f"  ├─ {r}")
+                for r in roles: print(f"  ├─ {r}")
                 print("")
     except Exception as e:
         print(f"❌ Error fetching mounts: {e}")
@@ -369,16 +388,14 @@ def audit_policy(vault, policy_name, show_upstream=True):
     render_policy_table(policy_name, parsed_paths)
     
     print("\n⚙️  DOWNSTREAM: External Systems & Roles")
-    if parsed_paths:
-        scan_engine_roles(vault, parsed_paths)
+    if parsed_paths: scan_engine_roles(vault, parsed_paths)
         
     if show_upstream:
         print("\n👥 UPSTREAM: Identities with this policy")
         scan_upstream_identities(vault, {policy_name})
 
 def audit_role(vault, role_name, target_engine_name=None, target_engine_type=None):
-    if target_engine_type == "k8s":
-        target_engine_type = "kubernetes"
+    if target_engine_type == "k8s": target_engine_type = "kubernetes"
 
     client = vault._get_client()
     
@@ -402,11 +419,8 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
         mount_basename = mount_parts[-1]
         mount_type_prefix = mount_parts[0] if len(mount_parts) > 1 else None
 
-        if target_engine_type and m_type != target_engine_type and mount_type_prefix != target_engine_type:
-            continue
-            
-        if target_engine_name and mount_basename != target_engine_name and clean_path != target_engine_name:
-            continue
+        if target_engine_type and m_type != target_engine_type and mount_type_prefix != target_engine_type: continue
+        if target_engine_name and mount_basename != target_engine_name and clean_path != target_engine_name: continue
             
         try:
             if m_type == "gcp":
@@ -430,16 +444,13 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
         print(f"❌ Role '{role_name}' could not be found.")
         return
         
-    for eng_type, clean_path in found_engines:
-        print(f"✅ Found {eng_type} role in engine '{clean_path}/'")
+    for eng_type, clean_path in found_engines: print(f"✅ Found {eng_type} role in engine '{clean_path}/'")
     
     print("\n⏳ Scanning ALL Vault policies for matching capability grants...")
     matching_policies = set()
     
-    try:
-        all_policies = _get_policy_list(client)
-    except Exception:
-        all_policies = []
+    try: all_policies = _get_policy_list(client)
+    except: all_policies = []
     
     for p in all_policies:
         if p in ["root", "default"]: continue
@@ -528,30 +539,42 @@ def audit_ldap(vault, target_name, is_group=False):
     policies = set()
     target_path = "groups" if is_group else "users"
     
+    # Exhaustive LDAP search across all mounts
     try:
-        res = client.read(f"auth/ldap/{target_path}/{target_name}")
-        if not res or 'data' not in res: raise Exception("Not found")
+        am = client.sys.list_auth_methods().get('data', {})
+        mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'ldap']
+    except:
+        mounts = ['ldap']
         
-        direct_pol = res['data'].get('policies', [])
-        policies.update(direct_pol)
-        if direct_pol: print(f"📜 Direct Policies : {', '.join(direct_pol)}")
+    found_in_mount = None
+    
+    for m in mounts:
+        try:
+            res = client.read(f"auth/{m}/{target_path}/{target_name}")
+            if res and 'data' in res:
+                found_in_mount = m
+                direct_pol = res['data'].get('policies', [])
+                policies.update(direct_pol)
+                if direct_pol: print(f"📜 Direct Policies (in '{m}/') : {', '.join(direct_pol)}")
+                
+                if not is_group:
+                    mapped_groups = res['data'].get('groups', [])
+                    if mapped_groups:
+                        print(f"🔗 Implicit LDAP Groups (in '{m}/'):")
+                        for lg in mapped_groups:
+                            try:
+                                lg_data = client.read(f"auth/{m}/groups/{lg}")
+                                if lg_data and 'data' in lg_data:
+                                    lg_pols = lg_data['data'].get('policies', [])
+                                    policies.update(lg_pols)
+                                    print(f"  ├─ {lg} (Grants: {', '.join(lg_pols) if lg_pols else 'None'})")
+                                else:
+                                    print(f"  ├─ {lg} (No specific policies mapped)")
+                            except: pass
+        except: pass
         
-        if not is_group:
-            mapped_groups = res['data'].get('groups', [])
-            if mapped_groups:
-                print(f"🔗 Implicit LDAP Groups:")
-                for lg in mapped_groups:
-                    try:
-                        lg_data = client.read(f"auth/ldap/groups/{lg}")
-                        if lg_data and 'data' in lg_data:
-                            lg_pols = lg_data['data'].get('policies', [])
-                            policies.update(lg_pols)
-                            print(f"  ├─ {lg} (Grants: {', '.join(lg_pols) if lg_pols else 'None'})")
-                        else:
-                            print(f"  ├─ {lg} (No specific policies mapped)")
-                    except Exception: pass
-    except Exception:
-        print(f"❌ {id_type} '{target_name}' not found in Vault LDAP auth.")
+    if not found_in_mount:
+        print(f"❌ {id_type} '{target_name}' not found in any Active Directory/LDAP mapping.")
         return
 
     if not policies:
@@ -592,7 +615,7 @@ def get_args():
     p_role_info = p_role_subs.add_parser("info", help="Reverse-audit a specific role")
     p_role_info.add_argument("name_args", nargs="+")
 
-    # 3. ENTITY (Strictly Internal Vault Identities)
+    # 3. ENTITY
     p_entity = subparsers.add_parser("entity", help="Audit Vault Identity Access")
     p_ent_subs = p_entity.add_subparsers(dest="action", required=True)
     p_ent_subs.add_parser("list", help="List entities")
@@ -603,19 +626,19 @@ def get_args():
     p_user = subparsers.add_parser("user", help="Audit User Access")
     p_usr_subs = p_user.add_subparsers(dest="action", required=True)
     p_ul = p_usr_subs.add_parser("list", help="List users")
-    p_ul.add_argument("--type", choices=["identity", "ldap"], default="identity", help="User mapping type")
+    p_ul.add_argument("--type", choices=["identity", "ldap"], default="identity")
     p_ui = p_usr_subs.add_parser("info", help="Audit specific user")
     p_ui.add_argument("name", help="User name")
-    p_ui.add_argument("--type", choices=["identity", "ldap"], default="identity", help="User mapping type")
+    p_ui.add_argument("--type", choices=["identity", "ldap"], default="identity")
 
     # 5. GROUP (Supports Identity or LDAP type)
     p_group = subparsers.add_parser("group", help="Audit Group Access")
     p_grp_subs = p_group.add_subparsers(dest="action", required=True)
     p_gl = p_grp_subs.add_parser("list", help="List groups")
-    p_gl.add_argument("--type", choices=["identity", "ldap"], default="identity", help="Group mapping type")
+    p_gl.add_argument("--type", choices=["identity", "ldap"], default="identity")
     p_gi = p_grp_subs.add_parser("info", help="Audit specific group")
     p_gi.add_argument("name", help="Group name")
-    p_gi.add_argument("--type", choices=["identity", "ldap"], default="identity", help="Group mapping type")
+    p_gi.add_argument("--type", choices=["identity", "ldap"], default="identity")
 
     return parser.parse_args()
 
@@ -704,14 +727,23 @@ def main():
         elif args.type == "ldap":
             if action == "list":
                 client = vault._get_client()
+                # Exhaustive list for LDAP users across all mounts
                 try:
-                    res = client.list("auth/ldap/users")
-                    keys = res.get('data', {}).get('keys', []) if res else []
-                    if keys:
-                        print(f"🧑‍💻 Configured LDAP User Mappings:")
-                        for k in keys: print(f"  ├─ {k}")
-                    else: print(f"ℹ️ No LDAP user mappings found.")
-                except Exception as e: print(f"❌ Error fetching LDAP users: {e}", file=sys.stderr)
+                    am = client.sys.list_auth_methods().get('data', {})
+                    mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'ldap']
+                except: mounts = ['ldap']
+                
+                found = False
+                for m in mounts:
+                    try:
+                        keys = client.list(f"auth/{m}/users")['data']['keys']
+                        if keys:
+                            print(f"🧑‍💻 LDAP Users in '{m}/':")
+                            for k in keys: print(f"  ├─ {k}")
+                            found = True
+                    except: pass
+                if not found: print(f"ℹ️ No LDAP user mappings found.")
+                
             elif action == "info":
                 name = getattr(args, 'name', '')
                 if not name:
@@ -741,14 +773,23 @@ def main():
         elif args.type == "ldap":
             if action == "list":
                 client = vault._get_client()
+                # Exhaustive list for LDAP groups across all mounts
                 try:
-                    res = client.list("auth/ldap/groups")
-                    keys = res.get('data', {}).get('keys', []) if res else []
-                    if keys:
-                        print("🔗 Configured LDAP Group Mappings:")
-                        for k in keys: print(f"  ├─ {k}")
-                    else: print("ℹ️ No LDAP group mappings found.")
-                except Exception as e: print(f"❌ Error fetching LDAP groups: {e}", file=sys.stderr)
+                    am = client.sys.list_auth_methods().get('data', {})
+                    mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'ldap']
+                except: mounts = ['ldap']
+                
+                found = False
+                for m in mounts:
+                    try:
+                        keys = client.list(f"auth/{m}/groups")['data']['keys']
+                        if keys:
+                            print(f"🔗 LDAP Groups in '{m}/':")
+                            for k in keys: print(f"  ├─ {k}")
+                            found = True
+                    except: pass
+                if not found: print("ℹ️ No LDAP group mappings found.")
+                
             elif action == "info":
                 name = getattr(args, 'name', '')
                 if not name:
@@ -758,3 +799,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
