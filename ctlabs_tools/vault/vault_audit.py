@@ -475,10 +475,9 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
     print("\n👥 Identities inheriting these policies:")
     scan_upstream_identities(vault, matching_policies)
 
-def audit_identity(vault, target_name, is_group=False):
+def audit_identity(vault, target_name, is_group=False, silent_not_found=False):
     client = vault._get_client()
     id_type = "Group" if is_group else "User/Entity"
-    print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
     
     policies = set()
     
@@ -486,17 +485,20 @@ def audit_identity(vault, target_name, is_group=False):
         try:
             res = client.read(f"identity/group/name/{target_name}")
             if not res or 'data' not in res: raise Exception("Not found")
+            
+            print(f"\n🔎 FORWARD AUDIT: Access graph for Identity {id_type} '{target_name}'\n" + "="*70)
             policies.update(res['data'].get('policies', []))
             print(f"🏢 Group ID : {res['data']['id']}")
             print(f"📜 Policies : {', '.join(policies) if policies else 'None'}")
         except Exception:
-            print(f"❌ Group '{target_name}' not found.")
-            return
+            if not silent_not_found: print(f"❌ Identity Group '{target_name}' not found.")
+            return False
     else:
         try:
             res = client.read(f"identity/entity/name/{target_name}")
             if not res or 'data' not in res: raise Exception("Not found")
             
+            print(f"\n🔎 FORWARD AUDIT: Access graph for Identity {id_type} '{target_name}'\n" + "="*70)
             print(f"👤 Entity ID : {res['data']['id']}")
             
             direct_pol = res['data'].get('policies', [])
@@ -516,12 +518,12 @@ def audit_identity(vault, target_name, is_group=False):
                             print(f"  ├─ {g_name} (Grants: {', '.join(g_pols) if g_pols else 'None'})")
                     except Exception: pass
         except Exception:
-            print(f"❌ User/Entity '{target_name}' not found.")
-            return
+            if not silent_not_found: print(f"❌ Identity User/Entity '{target_name}' not found.")
+            return False
 
     if not policies:
         print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
-        return
+        return True
         
     print("\n" + "="*70)
     print("🔻 DOWNSTREAM ACCESS (Merged capabilities)")
@@ -530,11 +532,12 @@ def audit_identity(vault, target_name, is_group=False):
     for p in policies:
         if p in ["default", "root"]: continue
         audit_policy(vault, p, show_upstream=False)
+        
+    return True
 
-def audit_ldap(vault, target_name, is_group=False):
+def audit_ldap(vault, target_name, is_group=False, silent_not_found=False):
     client = vault._get_client()
     id_type = "LDAP Group" if is_group else "LDAP User"
-    print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
     
     policies = set()
     target_path = "groups" if is_group else "users"
@@ -552,6 +555,9 @@ def audit_ldap(vault, target_name, is_group=False):
         try:
             res = client.read(f"auth/{m}/{target_path}/{target_name}")
             if res and 'data' in res:
+                if not found_in_mount:
+                    print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
+                
                 found_in_mount = m
                 direct_pol = res['data'].get('policies', [])
                 policies.update(direct_pol)
@@ -574,12 +580,12 @@ def audit_ldap(vault, target_name, is_group=False):
         except: pass
         
     if not found_in_mount:
-        print(f"❌ {id_type} '{target_name}' not found in any Active Directory/LDAP mapping.")
-        return
+        if not silent_not_found: print(f"❌ {id_type} '{target_name}' not found in any Active Directory/LDAP mapping.")
+        return False
 
     if not policies:
         print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
-        return
+        return True
         
     print("\n" + "="*70)
     print("🔻 DOWNSTREAM ACCESS (Merged capabilities)")
@@ -588,6 +594,8 @@ def audit_ldap(vault, target_name, is_group=False):
     for p in policies:
         if p in ["default", "root"]: continue
         audit_policy(vault, p, show_upstream=False)
+        
+    return True
 
 # =============================================================================
 # CLI ROUTER
@@ -622,23 +630,23 @@ def get_args():
     p_ent_info = p_ent_subs.add_parser("info", help="Audit specific entity")
     p_ent_info.add_argument("name", help="Entity name")
 
-    # 4. USER (Supports Identity or LDAP type)
+    # 4. USER
     p_user = subparsers.add_parser("user", help="Audit User Access")
     p_usr_subs = p_user.add_subparsers(dest="action", required=True)
     p_ul = p_usr_subs.add_parser("list", help="List users")
-    p_ul.add_argument("--type", choices=["identity", "ldap"], default="identity")
+    p_ul.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
     p_ui = p_usr_subs.add_parser("info", help="Audit specific user")
     p_ui.add_argument("name", help="User name")
-    p_ui.add_argument("--type", choices=["identity", "ldap"], default="identity")
+    p_ui.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
 
-    # 5. GROUP (Supports Identity or LDAP type)
+    # 5. GROUP
     p_group = subparsers.add_parser("group", help="Audit Group Access")
     p_grp_subs = p_group.add_subparsers(dest="action", required=True)
     p_gl = p_grp_subs.add_parser("list", help="List groups")
-    p_gl.add_argument("--type", choices=["identity", "ldap"], default="identity")
+    p_gl.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
     p_gi = p_grp_subs.add_parser("info", help="Audit specific group")
     p_gi.add_argument("name", help="Group name")
-    p_gi.add_argument("--type", choices=["identity", "ldap"], default="identity")
+    p_gi.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
 
     return parser.parse_args()
 
@@ -706,97 +714,108 @@ def main():
             audit_identity(vault, name, is_group=False)
 
     elif cmd == "user":
-        if args.type == "identity":
-            if action == "list":
-                client = vault._get_client()
+        req_type = getattr(args, 'type', 'all')
+        
+        if action == "list":
+            client = vault._get_client()
+            if req_type in ["all", "identity"]:
                 try:
                     res = client.list("identity/entity/name")
                     keys = res.get('data', {}).get('keys', []) if res else []
                     if keys:
-                        print(f"👤 Existing Users / Entities:")
+                        print(f"👤 Existing Identity Users/Entities:")
                         for k in keys: print(f"  ├─ {k}")
-                    else: print(f"ℹ️ No identity entities found.")
-                except Exception as e: print(f"❌ Error fetching records: {e}", file=sys.stderr)
-            elif action == "info":
-                name = getattr(args, 'name', '')
-                if not name:
-                    print("❌ Error: 'name' is required.", file=sys.stderr)
-                    sys.exit(1)
-                audit_identity(vault, name, is_group=False)
+                    elif req_type == "identity": print(f"ℹ️ No identity users found.")
+                except Exception as e: print(f"❌ Error fetching identity users: {e}", file=sys.stderr)
                 
-        elif args.type == "ldap":
-            if action == "list":
-                client = vault._get_client()
-                # Exhaustive list for LDAP users across all mounts
+            if req_type in ["all", "ldap"]:
                 try:
                     am = client.sys.list_auth_methods().get('data', {})
                     mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'ldap']
                 except: mounts = ['ldap']
                 
-                found = False
+                found_ldap = False
                 for m in mounts:
                     try:
                         keys = client.list(f"auth/{m}/users")['data']['keys']
                         if keys:
-                            print(f"🧑‍💻 LDAP Users in '{m}/':")
+                            print(f"🧑‍💻 Configured LDAP User Mappings in '{m}/':")
                             for k in keys: print(f"  ├─ {k}")
-                            found = True
+                            found_ldap = True
                     except: pass
-                if not found: print(f"ℹ️ No LDAP user mappings found.")
+                if not found_ldap and req_type == "ldap": print(f"ℹ️ No LDAP user mappings found.")
                 
-            elif action == "info":
-                name = getattr(args, 'name', '')
-                if not name:
-                    print("❌ Error: 'name' is required.", file=sys.stderr)
-                    sys.exit(1)
-                audit_ldap(vault, name, is_group=False)
+        elif action == "info":
+            name = getattr(args, 'name', '')
+            if not name:
+                print("❌ Error: 'name' is required.", file=sys.stderr)
+                sys.exit(1)
+                
+            found = False
+            silent = (req_type == "all")
+            
+            if req_type in ["all", "identity"]:
+                if audit_identity(vault, name, is_group=False, silent_not_found=silent):
+                    found = True
+                    
+            if req_type in ["all", "ldap"]:
+                if audit_ldap(vault, name, is_group=False, silent_not_found=silent):
+                    found = True
+                    
+            if req_type == "all" and not found:
+                print(f"❌ User/Entity '{name}' not found in Identity or LDAP mapping.")
 
     elif cmd == "group":
-        if args.type == "identity":
-            if action == "list":
-                client = vault._get_client()
+        req_type = getattr(args, 'type', 'all')
+        
+        if action == "list":
+            client = vault._get_client()
+            if req_type in ["all", "identity"]:
                 try:
                     res = client.list("identity/group/name")
                     keys = res.get('data', {}).get('keys', []) if res else []
                     if keys:
                         print("🏢 Existing Identity Groups:")
                         for k in keys: print(f"  ├─ {k}")
-                    else: print("ℹ️ No groups found.")
-                except Exception as e: print(f"❌ Error fetching groups: {e}", file=sys.stderr)
-            elif action == "info":
-                name = getattr(args, 'name', '')
-                if not name:
-                    print("❌ Error: 'name' is required.", file=sys.stderr)
-                    sys.exit(1)
-                audit_identity(vault, name, is_group=True)
+                    elif req_type == "identity": print("ℹ️ No identity groups found.")
+                except Exception as e: print(f"❌ Error fetching identity groups: {e}", file=sys.stderr)
                 
-        elif args.type == "ldap":
-            if action == "list":
-                client = vault._get_client()
-                # Exhaustive list for LDAP groups across all mounts
+            if req_type in ["all", "ldap"]:
                 try:
                     am = client.sys.list_auth_methods().get('data', {})
                     mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'ldap']
                 except: mounts = ['ldap']
                 
-                found = False
+                found_ldap = False
                 for m in mounts:
                     try:
                         keys = client.list(f"auth/{m}/groups")['data']['keys']
                         if keys:
-                            print(f"🔗 LDAP Groups in '{m}/':")
+                            print(f"🔗 Configured LDAP Group Mappings in '{m}/':")
                             for k in keys: print(f"  ├─ {k}")
-                            found = True
+                            found_ldap = True
                     except: pass
-                if not found: print("ℹ️ No LDAP group mappings found.")
+                if not found_ldap and req_type == "ldap": print("ℹ️ No LDAP group mappings found.")
                 
-            elif action == "info":
-                name = getattr(args, 'name', '')
-                if not name:
-                    print("❌ Error: 'name' is required.", file=sys.stderr)
-                    sys.exit(1)
-                audit_ldap(vault, name, is_group=True)
+        elif action == "info":
+            name = getattr(args, 'name', '')
+            if not name:
+                print("❌ Error: 'name' is required.", file=sys.stderr)
+                sys.exit(1)
+                
+            found = False
+            silent = (req_type == "all")
+            
+            if req_type in ["all", "identity"]:
+                if audit_identity(vault, name, is_group=True, silent_not_found=silent):
+                    found = True
+                    
+            if req_type in ["all", "ldap"]:
+                if audit_ldap(vault, name, is_group=True, silent_not_found=silent):
+                    found = True
+                    
+            if req_type == "all" and not found:
+                print(f"❌ Group '{name}' not found in Identity or LDAP mapping.")
 
 if __name__ == "__main__":
     main()
-
