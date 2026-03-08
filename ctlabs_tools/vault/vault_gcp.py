@@ -24,6 +24,7 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
         except subprocess.CalledProcessError as e:
             stderr_text = e.stderr.lower()
             
+            # 🔥 SMART UX: Fail fast on authentication errors
             if "reauthentication failed" in stderr_text or "gcloud auth login" in stderr_text:
                 print(f"\n🔐 GCP Authentication Error: Your gcloud session has expired or is missing.", file=sys.stderr)
                 print(f"👉 Fix this by running: gcloud auth login", file=sys.stderr)
@@ -408,18 +409,30 @@ def main():
                 print(f"  ├─ Secret Type : {data.get('secret_type', 'access_token')}")
                 print(f"  ├─ Project     : {data.get('project', project)}")
                 
+                # 🌟 Added the SA Email output
+                sa_email = data.get('service_account_email', 'Dynamic/Unknown')
+                print(f"  ├─ SA Email    : {sa_email}")
+                
                 scopes = data.get('token_scopes', [])
                 if scopes:
                     print(f"  ├─ Scopes      : {', '.join(scopes)}")
                     
-                # 🧠 SMART UX: Robust bindings type checking
+                # 🌟 Safely format the bindings into a neat tree
                 bindings = data.get('bindings', '')
                 if bindings:
                     if isinstance(bindings, str):
                         lines = len(bindings.strip().split('\n'))
-                        print(f"  ├─ Bindings    : Configured ({lines} lines of HCL)")
-                    elif isinstance(bindings, list) or isinstance(bindings, dict):
-                        print(f"  ├─ Bindings    : Configured ({len(bindings)} items parsed)")
+                        print(f"  ├─ Bindings    : Configured ({lines} lines of raw HCL)")
+                    elif isinstance(bindings, dict):
+                        print(f"  ├─ Bindings    :")
+                        for uri, roles in bindings.items():
+                            # Clean up the URI to just show projects/foo or folders/bar
+                            display_uri = uri.split('googleapis.com/')[-1] if 'googleapis.com/' in uri else uri
+                            print(f"  │  ├─ {display_uri}")
+                            for role in roles:
+                                print(f"  │  │  ├─ {role}")
+                    elif isinstance(bindings, list):
+                        print(f"  ├─ Bindings    : Configured ({len(bindings)} items)")
                     else:
                         print(f"  ├─ Bindings    : Configured")
                 else:
