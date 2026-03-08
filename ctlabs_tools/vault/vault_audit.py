@@ -10,6 +10,43 @@ import fnmatch
 from .core import HashiVault
 
 # =============================================================================
+# HELPER: Vault API Abstractions (Handling Modern vs Legacy Endpoints)
+# =============================================================================
+def _get_policy_rules(client, policy_name):
+    """Safely fetches a policy supporting both modern and legacy Vault API endpoints."""
+    # 1. Try Modern Endpoint (sys/policies/acl)
+    try:
+        res = client.read(f"sys/policies/acl/{policy_name}")
+        if res and 'data' in res and 'policy' in res['data']:
+            return res['data']['policy']
+    except Exception: pass
+
+    # 2. Try Legacy Endpoint (sys/policy)
+    try:
+        res = client.read(f"sys/policy/{policy_name}")
+        if res and 'data' in res and 'rules' in res['data']:
+            return res['data']['rules']
+    except Exception: pass
+
+    return None
+
+def _get_policy_list(client):
+    """Safely fetches the list of policies from either modern or legacy endpoints."""
+    try:
+        res = client.list("sys/policies/acl")
+        if res and 'data' in res:
+            return res['data'].get('keys', [])
+    except Exception: pass
+
+    try:
+        res = client.sys.list_policies()
+        if res and 'data' in res:
+            return res['data'].get('keys', [])
+    except Exception: pass
+
+    raise Exception("Permission denied to both sys/policies/acl and sys/policy")
+
+# =============================================================================
 # HELPER: Path Matching & Parsing
 # =============================================================================
 def extract_policy_paths(hcl_text):
@@ -161,7 +198,7 @@ def scan_upstream_identities(vault, target_policies):
                     print(f"  🏢 Identity Group : {name} (via {', '.join(intersect)})")
     except Exception: pass
 
-    # 2. Scan Entities (Users)
+    # 2. Scan Entities
     try:
         res = client.list("identity/entity/id")
         entity_ids = res.get('data', {}).get('keys', []) if res else []
@@ -173,7 +210,7 @@ def scan_upstream_identities(vault, target_policies):
                 if intersect:
                     found_any = True
                     name = e_data['data'].get('name', eid)
-                    print(f"  👤 User / Entity  : {name} (via {', '.join(intersect)})")
+                    print(f"  👤 Identity Entity: {name} (via {', '.join(intersect)})")
     except Exception: pass
     
     # 3. Scan AppRoles
@@ -191,7 +228,7 @@ def scan_upstream_identities(vault, target_policies):
     except Exception: pass
 
     if not found_any:
-        print("  ℹ️  No Groups, Users, or AppRoles currently have this policy attached.")
+        print("  ℹ️  No Groups, Entities, or AppRoles currently have this policy attached.")
 
 
 # =============================================================================
@@ -201,7 +238,7 @@ def scan_upstream_identities(vault, target_policies):
 def list_policies(vault, category):
     client = vault._get_client()
     try:
-        policies = client.sys.list_policies()['data']['keys']
+        policies = _get_policy_list(client)
     except Exception as e:
         print(f"❌ Error fetching policies: {e}", file=sys.stderr)
         return
@@ -221,23 +258,22 @@ def list_policies(vault, category):
             if category == "auth": auth_pols.append(p)
             continue
             
-        try:
-            rules = client.read(f"sys/policy/{p}")['data']['rules']
-            paths = extract_policy_paths(rules)
+        rules_hcl = _get_policy_rules(client, p)
+        if not rules_hcl: continue
             
-            is_auth = False
-            is_access = False
-            
-            for path in paths.keys():
-                prefix = path.split('/')[0]
-                if prefix in ["sys", "auth", "identity"]:
-                    is_auth = True
-                else:
-                    is_access = True
-                    
-            if is_access: access_pols.append(p)
-            if is_auth: auth_pols.append(p)
-        except Exception: pass
+        paths = extract_policy_paths(rules_hcl)
+        is_auth = False
+        is_access = False
+        
+        for path in paths.keys():
+            prefix = path.split('/')[0]
+            if prefix in ["sys", "auth", "identity"]:
+                is_auth = True
+            else:
+                is_access = True
+                
+        if is_access: access_pols.append(p)
+        if is_auth: auth_pols.append(p)
         
     if category == "access":
         print("🌍 Access Policies (External Systems & Secrets):")
@@ -288,14 +324,10 @@ def list_roles(vault, engine_type, engine_name):
 
 def audit_policy(vault, policy_name, show_upstream=True):
     client = vault._get_client()
-    try:
-        res = client.read(f"sys/policy/{policy_name}")
-        if not res or 'data' not in res or 'rules' not in res['data']:
-            print(f"❌ Policy '{policy_name}' not found.", file=sys.stderr)
-            return
-        rules_hcl = res['data']['rules']
-    except Exception as e:
-        print(f"❌ Error fetching policy: {e}", file=sys.stderr)
+    rules_hcl = _get_policy_rules(client, policy_name)
+    
+    if not rules_hcl:
+        print(f"❌ Policy '{policy_name}' not found or lacks readable rules.", file=sys.stderr)
         return
         
     parsed_paths = extract_policy_paths(rules_hcl)
@@ -366,22 +398,25 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
     
     print("\n⏳ Scanning ALL Vault policies for matching capability grants...")
     matching_policies = set()
-    all_policies = client.sys.list_policies()['data']['keys']
+    
+    try:
+        all_policies = _get_policy_list(client)
+    except Exception:
+        all_policies = []
     
     for p in all_policies:
         if p in ["root", "default"]: continue
-        try:
-            rules = client.read(f"sys/policy/{p}")['data']['rules']
-            parsed_paths = extract_policy_paths(rules)
-            
-            for pol_path, caps in parsed_paths.items():
-                for t_path in target_paths:
-                    if vault_path_match(pol_path, t_path):
-                        if "deny" not in caps and any(c in caps for c in ["read", "update", "create"]):
-                            matching_policies.add(p)
-                            break
-        except Exception: pass
+        rules = _get_policy_rules(client, p)
+        if not rules: continue
         
+        parsed_paths = extract_policy_paths(rules)
+        for pol_path, caps in parsed_paths.items():
+            for t_path in target_paths:
+                if vault_path_match(pol_path, t_path):
+                    if "deny" not in caps and any(c in caps for c in ["read", "update", "create"]):
+                        matching_policies.add(p)
+                        break
+                        
     if not matching_policies:
         print("  ⚠️ No policies grant access to this role.")
         return
@@ -508,9 +543,6 @@ def main():
     cmd = args.command
     action = args.action
 
-    # -------------------------------------------------------------------------
-    # 1. POLICY
-    # -------------------------------------------------------------------------
     if cmd == "policy":
         if action == "list":
             list_policies(vault, args.category)
@@ -522,9 +554,6 @@ def main():
             print(f"\n🔎 AUDITING VAULT ACCESS PATH FOR POLICY: '{name}'\n" + "="*70)
             audit_policy(vault, name)
 
-    # -------------------------------------------------------------------------
-    # 2. ROLE
-    # -------------------------------------------------------------------------
     elif cmd == "role":
         if action == "list":
             list_roles(vault, args.engine_type, args.engine_name)
@@ -551,9 +580,6 @@ def main():
                 
             audit_role(vault, r_name, target_engine_name=eng_name, target_engine_type=eng_type)
 
-    # -------------------------------------------------------------------------
-    # 3 & 4. ENTITY & USER
-    # -------------------------------------------------------------------------
     elif cmd in ["entity", "user"]:
         label = "User / Entity" if cmd == "user" else "Identity Entity"
         if action == "list":
@@ -574,9 +600,6 @@ def main():
                 sys.exit(1)
             audit_identity(vault, name, is_group=False)
 
-    # -------------------------------------------------------------------------
-    # 5. GROUP
-    # -------------------------------------------------------------------------
     elif cmd == "group":
         if action == "list":
             client = vault._get_client()
@@ -598,3 +621,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
