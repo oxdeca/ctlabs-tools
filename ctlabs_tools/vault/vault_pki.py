@@ -374,6 +374,11 @@ def main():
             with open(ca_path, "w") as f:
                 for c in ca_chain: f.write(c + "\n")
                 
+            # 🔥 ENFORCE STRICT PERMISSIONS
+            os.chmod(cert_path, 0o644)
+            os.chmod(key_path, 0o600) # Private key is owner-only
+            os.chmod(ca_path, 0o644)
+                
             print(f"✅ Success! Certificate issued.")
             print(f"  ├─ Serial Number: {data.get('serial_number')}")
             print(f"  ├─ Private Key  : {key_path}")
@@ -407,7 +412,7 @@ def main():
         try:
             # 1. Create secure sandbox
             temp_dir = tempfile.mkdtemp(prefix="vault-pki-")
-            os.chmod(temp_dir, 0o700)
+            os.chmod(temp_dir, 0o700) # Sandbox is strictly locked down
             
             # 2. Issue short-lived cert
             print(f"🔒 Requesting ephemeral TLS Certificate for '{common_name}'...", file=sys.stderr)
@@ -426,6 +431,11 @@ def main():
             with open(key_path, "w") as f: f.write(data.get('private_key', ''))
             with open(ca_path, "w") as f:
                 for c in data.get('ca_chain', []): f.write(c + "\n")
+                
+            # 🔥 ENFORCE MAXIMUM PARANOIA PERMISSIONS
+            os.chmod(cert_path, 0o600)
+            os.chmod(key_path, 0o600)
+            os.chmod(ca_path, 0o600)
                 
             # 3. Inject standard environment variables
             env = os.environ.copy()
