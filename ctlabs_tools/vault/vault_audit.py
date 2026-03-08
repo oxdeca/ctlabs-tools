@@ -6,7 +6,6 @@ import argparse
 import sys
 import json
 import re
-import fnmatch
 from .core import HashiVault
 
 # =============================================================================
@@ -195,49 +194,97 @@ def scan_upstream_identities(vault, target_policies):
 
 
 # =============================================================================
-# COMMANDS
+# CORE AUDIT COMMANDS
 # =============================================================================
 
-def list_cluster_inventory(vault, item_type):
+def list_policies(vault, category):
     client = vault._get_client()
-    
-    if item_type == "policies":
+    try:
+        policies = client.sys.list_policies()['data']['keys']
+    except Exception as e:
+        print(f"❌ Error fetching policies: {e}", file=sys.stderr)
+        return
+        
+    if category == "all":
         print("📜 All Cluster Policies:")
-        try:
-            policies = client.sys.list_policies()['data']['keys']
-            for p in policies: print(f"  ├─ {p}")
-        except Exception as e:
-            print(f"❌ Error fetching policies: {e}")
+        for p in policies: print(f"  ├─ {p}")
+        return
+        
+    print(f"⏳ Categorizing {len(policies)} policies...")
+    sys.stdout.write("\033[F\033[K") # Clear the loading line
+    
+    auth_pols, access_pols = [], []
+    
+    for p in policies:
+        if p in ["root", "default"]: 
+            if category == "auth": auth_pols.append(p)
+            continue
             
-    elif item_type == "roles":
-        print("🔍 Scanning all mounts for active roles...\n")
         try:
-            mounts = client.sys.list_mounted_secrets_engines()['data']
+            rules = client.read(f"sys/policy/{p}")['data']['rules']
+            paths = extract_policy_paths(rules)
             
-            for path, info in mounts.items():
-                m_type = info.get('type')
-                clean_path = path.strip('/')
+            is_auth = False
+            is_access = False
+            
+            for path in paths.keys():
+                prefix = path.split('/')[0]
+                if prefix in ["sys", "auth", "identity"]:
+                    is_auth = True
+                else:
+                    is_access = True
+                    
+            if is_access: access_pols.append(p)
+            if is_auth: auth_pols.append(p)
+        except Exception: pass
+        
+    if category == "access":
+        print("🌍 Access Policies (External Systems & Secrets):")
+        for p in sorted(set(access_pols)): print(f"  ├─ {p}")
+    elif category == "auth":
+        print("🔐 Auth Policies (Vault Admins, Login & Identity Mapping):")
+        for p in sorted(set(auth_pols)): print(f"  ├─ {p}")
+
+
+def list_roles(vault, engine_type, engine_name):
+    client = vault._get_client()
+    print("🔍 Scanning mounts for active roles...\n")
+    try:
+        mounts = client.sys.list_mounted_secrets_engines()['data']
+        
+        for path, info in mounts.items():
+            m_type = info.get('type')
+            clean_path = path.strip('/')
+            
+            if engine_type != "all" and m_type != engine_type:
+                continue
                 
-                roles = []
-                try:
-                    if m_type == "gcp":
-                        res = client.list(f"{clean_path}/roleset")
-                        roles = res.get('data', {}).get('keys', []) if res else []
-                    elif m_type in ["kubernetes", "pki", "ssh"]:
-                        res = client.list(f"{clean_path}/roles")
-                        roles = res.get('data', {}).get('keys', []) if res else []
-                    elif m_type == "ldap":
-                        res = client.list(f"{clean_path}/role")
-                        roles = res.get('data', {}).get('keys', []) if res else []
-                except Exception: pass
-                
-                if roles:
-                    badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐", "ldap":"👥"}.get(m_type, "⚙️")
-                    print(f"{badge} {m_type.upper()} Engine: {path}")
-                    for r in roles: print(f"  ├─ {r}")
-                    print("")
-        except Exception as e:
-            print(f"❌ Error fetching mounts: {e}")
+            mount_basename = clean_path.split('/')[-1]
+            if engine_name and mount_basename != engine_name:
+                continue
+            
+            roles = []
+            try:
+                if m_type == "gcp":
+                    res = client.list(f"{clean_path}/roleset")
+                    roles = res.get('data', {}).get('keys', []) if res else []
+                elif m_type in ["kubernetes", "pki", "ssh"]:
+                    res = client.list(f"{clean_path}/roles")
+                    roles = res.get('data', {}).get('keys', []) if res else []
+                elif m_type == "ldap":
+                    res = client.list(f"{clean_path}/role")
+                    roles = res.get('data', {}).get('keys', []) if res else []
+            except Exception: pass
+            
+            if roles:
+                badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐", "ldap":"👥"}.get(m_type, "⚙️")
+                print(f"{badge} {m_type.upper()} Engine: {path}")
+                for r in roles: 
+                    # Format optimized for easy terminal double-click & copy
+                    print(f"  - {mount_basename} {r}")
+                print("")
+    except Exception as e:
+        print(f"❌ Error fetching mounts: {e}")
 
 def audit_policy(vault, policy_name, show_upstream=True):
     client = vault._get_client()
@@ -262,46 +309,52 @@ def audit_policy(vault, policy_name, show_upstream=True):
         print("\n👥 UPSTREAM: Identities with this policy")
         scan_upstream_identities(vault, {policy_name})
 
-def audit_role(vault, role_name):
+def audit_role(vault, role_name, target_engine_name=None):
     """Reverse-Lookup: Starts with a role, finds policies that grant it, finds users who have policies."""
     client = vault._get_client()
-    print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}'?\n" + "="*70)
+    if target_engine_name:
+        print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}' in '{target_engine_name}'?\n" + "="*70)
+    else:
+        print(f"\n🔎 REVERSE AUDIT: Who has access to role '{role_name}' across all engines?\n" + "="*70)
     
-    # 1. Find where this role lives
     mounts = client.sys.list_mounted_secrets_engines()['data']
-    found_engine = None
+    found_engines = []
     target_paths = []
     
-    print("⏳ Locating role across all cluster engines...")
+    print("⏳ Locating role across cluster engines...")
     for path, info in mounts.items():
         m_type = info.get('type')
         clean_path = path.strip('/')
+        mount_basename = clean_path.split('/')[-1]
         
+        if target_engine_name and mount_basename != target_engine_name:
+            continue
+            
         try:
             if m_type == "gcp":
                 res = client.list(f"{clean_path}/roleset")
                 if res and role_name in res.get('data', {}).get('keys', []):
-                    found_engine = ("GCP", clean_path)
-                    target_paths = [f"{clean_path}/token/{role_name}", f"{clean_path}/key/{role_name}"]
+                    found_engines.append(("GCP", clean_path))
+                    target_paths.extend([f"{clean_path}/token/{role_name}", f"{clean_path}/key/{role_name}"])
             elif m_type == "kubernetes":
                 res = client.list(f"{clean_path}/roles")
                 if res and role_name in res.get('data', {}).get('keys', []):
-                    found_engine = ("Kubernetes", clean_path)
-                    target_paths = [f"{clean_path}/creds/{role_name}"]
+                    found_engines.append(("Kubernetes", clean_path))
+                    target_paths.append(f"{clean_path}/creds/{role_name}")
             elif m_type == "pki":
                 res = client.list(f"{clean_path}/roles")
                 if res and role_name in res.get('data', {}).get('keys', []):
-                    found_engine = ("PKI", clean_path)
-                    target_paths = [f"{clean_path}/issue/{role_name}", f"{clean_path}/sign/{role_name}"]
+                    found_engines.append(("PKI", clean_path))
+                    target_paths.extend([f"{clean_path}/issue/{role_name}", f"{clean_path}/sign/{role_name}"])
         except Exception: pass
         
-    if not found_engine:
-        print(f"❌ Role '{role_name}' could not be found in any standard secrets engine.")
+    if not found_engines:
+        print(f"❌ Role '{role_name}' could not be found.")
         return
         
-    print(f"✅ Found {found_engine[0]} role in engine '{found_engine[1]}/'")
+    for eng_type, clean_path in found_engines:
+        print(f"✅ Found {eng_type} role in engine '{clean_path}/'")
     
-    # 2. Find policies granting access
     print("\n⏳ Scanning ALL Vault policies for matching capability grants...")
     matching_policies = set()
     all_policies = client.sys.list_policies()['data']['keys']
@@ -327,7 +380,6 @@ def audit_role(vault, role_name):
     print("📜 Policies granting access:")
     for mp in matching_policies: print(f"  ├─ {mp}")
         
-    # 3. Find identities holding those policies
     print("\n👥 Identities inheriting these policies:")
     scan_upstream_identities(vault, matching_policies)
 
@@ -388,6 +440,10 @@ def audit_identity(vault, target_name, is_group=False):
         if p in ["default", "root"]: continue
         audit_policy(vault, p, show_upstream=False)
 
+# =============================================================================
+# CLI ROUTER
+# =============================================================================
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Access Path Auditor")
     parser.add_argument("--timeout", type=int, default=60, help="API HTTP timeout")
@@ -395,23 +451,38 @@ def get_args():
 
     # 1. POLICY
     p_policy = subparsers.add_parser("policy", help="Audit ACL Policies")
-    p_policy.add_argument("action", choices=["list", "info"], help="Action to perform")
-    p_policy.add_argument("name", nargs="?", default="", help="Policy name (required for info)")
+    p_pol_subs = p_policy.add_subparsers(dest="action", required=True)
+    
+    p_pol_list = p_pol_subs.add_parser("list", help="List policies")
+    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "all"], default="all", help="Filter by auth (login mapping) or access (external systems)")
+    
+    p_pol_info = p_pol_subs.add_parser("info", help="Audit a specific policy")
+    p_pol_info.add_argument("name", help="Policy name")
 
     # 2. ROLE
     p_role = subparsers.add_parser("role", help="Audit External Roles")
-    p_role.add_argument("action", choices=["list", "info"], help="Action to perform")
-    p_role.add_argument("name", nargs="?", default="", help="Role name (required for info)")
+    p_role_subs = p_role.add_subparsers(dest="action", required=True)
+    
+    p_role_list = p_role_subs.add_parser("list", help="List active roles")
+    p_role_list.add_argument("engine_type", nargs="?", choices=["gcp", "k8s", "pki", "ssh", "ldap", "all"], default="all", help="Filter by engine type")
+    p_role_list.add_argument("engine_name", nargs="?", default="", help="Filter by specific project/cluster mount")
+    
+    p_role_info = p_role_subs.add_parser("info", help="Reverse-audit a specific role")
+    p_role_info.add_argument("name_args", nargs="+", help="[engine_name] role_name (Paste directly from 'role list' output!)")
 
     # 3. ENTITY
     p_entity = subparsers.add_parser("entity", help="Audit Entity Access")
-    p_entity.add_argument("action", choices=["list", "info"], help="Action to perform")
-    p_entity.add_argument("name", nargs="?", default="", help="Entity name (required for info)")
+    p_ent_subs = p_entity.add_subparsers(dest="action", required=True)
+    p_ent_subs.add_parser("list", help="List entities")
+    p_ent_info = p_ent_subs.add_parser("info", help="Audit specific entity")
+    p_ent_info.add_argument("name", help="Entity name")
 
     # 4. GROUP
     p_group = subparsers.add_parser("group", help="Audit Group Access")
-    p_group.add_argument("action", choices=["list", "info"], help="Action to perform")
-    p_group.add_argument("name", nargs="?", default="", help="Group name (required for info)")
+    p_grp_subs = p_group.add_subparsers(dest="action", required=True)
+    p_grp_subs.add_parser("list", help="List groups")
+    p_grp_info = p_grp_subs.add_parser("info", help="Audit specific group")
+    p_grp_info.add_argument("name", help="Group name")
 
     return parser.parse_args()
 
@@ -423,30 +494,31 @@ def main():
 
     cmd = args.command
     action = args.action
-    name = getattr(args, 'name', '')
-
-    if action == "info" and not name:
-        print(f"❌ Error: 'name' is required for the 'info' action.", file=sys.stderr)
-        sys.exit(1)
 
     # -------------------------------------------------------------------------
     # 1. POLICY
     # -------------------------------------------------------------------------
     if cmd == "policy":
         if action == "list":
-            list_cluster_inventory(vault, "policies")
+            list_policies(vault, args.category)
         elif action == "info":
-            print(f"\n🔎 AUDITING VAULT ACCESS PATH FOR POLICY: '{name}'\n" + "="*70)
-            audit_policy(vault, name)
+            print(f"\n🔎 AUDITING VAULT ACCESS PATH FOR POLICY: '{args.name}'\n" + "="*70)
+            audit_policy(vault, args.name)
 
     # -------------------------------------------------------------------------
     # 2. ROLE
     # -------------------------------------------------------------------------
     elif cmd == "role":
         if action == "list":
-            list_cluster_inventory(vault, "roles")
+            list_roles(vault, args.engine_type, args.engine_name)
         elif action == "info":
-            audit_role(vault, name)
+            # Smart parsing: If user pastes "- proj1 my-role", the '-' gets dropped if they aren't careful, 
+            # so we just take the last element as role, and second-to-last as engine.
+            clean_args = [a for a in args.name_args if a != "-"]
+            if len(clean_args) == 1:
+                audit_role(vault, clean_args[0])
+            else:
+                audit_role(vault, clean_args[1], target_engine_name=clean_args[0])
 
     # -------------------------------------------------------------------------
     # 3. ENTITY
@@ -460,13 +532,11 @@ def main():
                 if keys:
                     print("👤 Existing Identity Entities:")
                     for k in keys: print(f"  ├─ {k}")
-                else:
-                    print("ℹ️ No entities found.")
-            except Exception as e:
-                print(f"❌ Error fetching entities: {e}", file=sys.stderr)
+                else: print("ℹ️ No entities found.")
+            except Exception as e: print(f"❌ Error fetching entities: {e}", file=sys.stderr)
                 
         elif action == "info":
-            audit_identity(vault, name, is_group=False)
+            audit_identity(vault, args.name, is_group=False)
 
     # -------------------------------------------------------------------------
     # 4. GROUP
@@ -480,13 +550,11 @@ def main():
                 if keys:
                     print("🏢 Existing Identity Groups:")
                     for k in keys: print(f"  ├─ {k}")
-                else:
-                    print("ℹ️ No groups found.")
-            except Exception as e:
-                print(f"❌ Error fetching groups: {e}", file=sys.stderr)
+                else: print("ℹ️ No groups found.")
+            except Exception as e: print(f"❌ Error fetching groups: {e}", file=sys.stderr)
                 
         elif action == "info":
-            audit_identity(vault, name, is_group=True)
+            audit_identity(vault, args.name, is_group=True)
 
 if __name__ == "__main__":
     main()
