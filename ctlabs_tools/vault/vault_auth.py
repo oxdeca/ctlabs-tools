@@ -13,11 +13,9 @@ from .core import HashiVault
 
 def print_policy_table(name, hcl_text):
     """Parses raw Vault HCL and prints a color-coded permission table."""
-    # 1. Strip comments to prevent regex confusion
     hcl_clean = re.sub(r'(#|//).*', '', hcl_text)
     hcl_clean = re.sub(r'/\*.*?\*/', '', hcl_clean, flags=re.DOTALL)
     
-    # 2. Extract paths and capabilities
     paths = {}
     path_pattern = re.compile(r'path\s+"([^"]+)"\s*\{([^}]+)\}', re.MULTILINE)
     cap_pattern = re.compile(r'capabilities\s*=\s*\[(.*?)\]')
@@ -43,11 +41,9 @@ def print_policy_table(name, hcl_text):
         print("=" * 95 + "\n")
         return
 
-    # 3. Define columns and formatting
     all_caps = ["create", "read", "update", "patch", "delete", "list", "sudo", "deny"]
     max_path_len = max([len(p) for p in paths.keys()] + [25])
     
-    # Calculate the exact dynamic width of the table
     header = f"{'Path'.ljust(max_path_len)} | " + " | ".join([c.capitalize().center(6) for c in all_caps])
     table_width = len(header)
     
@@ -60,7 +56,6 @@ def print_policy_table(name, hcl_text):
     DIM = "\033[2m"
     RESET = "\033[0m"
     
-    # 4. Render Rows
     for path, caps in sorted(paths.items()):
         row = f"{path.ljust(max_path_len)} | "
         cap_strs = []
@@ -94,7 +89,7 @@ def get_args():
     p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
     p_user.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_user.add_argument("name", nargs="?", default="", help="Username")
-    p_user.add_argument("--method", choices=["userpass", "ldap"], help="Auth method (defaults to 'userpass' for create/read, 'all' for list)")
+    p_user.add_argument("--type", choices=["userpass", "ldap"], help="Auth method type (defaults to 'userpass' for create/read, 'all' for list)")
     p_user.add_argument("--password", help="Password (required for creating userpass users)")
     p_user.add_argument("--policies", help="Comma-separated list of policies")
 
@@ -108,9 +103,9 @@ def get_args():
     p_group = subparsers.add_parser("group", help="Manage Identity Groups or External Auth Groups")
     p_group.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_group.add_argument("name", nargs="?", default="", help="Name of the group")
-    p_group.add_argument("--method", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
+    p_group.add_argument("--type", choices=["identity", "ldap", "okta"], default="identity", help="Group type (default: identity. 'identity' is an internal Vault team)")
     p_group.add_argument("--policies", help="Comma-separated list of policies to assign to this group")
-    p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --method identity)")
+    p_group.add_argument("--members", help="Comma-separated list of Entity Names to add to the group (Only valid for --type identity)")
 
     # 5. ENTITY
     p_entity = subparsers.add_parser("entity", help="Manage Vault Identity Entities")
@@ -163,7 +158,7 @@ def get_args():
     p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup (default: vault-gcp-auth)")
     p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file (Alternative to --project)")
 
-    # 🌟 10. LDAP AUTH METHOD (Restored Nested Structure with Standard Actions)
+    # 10. LDAP AUTH METHOD
     p_ldap = subparsers.add_parser("ldap", help="Manage LDAP Auth Method")
     ldap_subs = p_ldap.add_subparsers(dest="ldap_cmd", required=True)
 
@@ -202,7 +197,6 @@ def main():
 
     cmd = args.command
     
-    # Nested parsing for LDAP
     if cmd == "ldap":
         action = args.action
         name = getattr(args, 'name', '')
@@ -210,10 +204,9 @@ def main():
         action = args.action
         name = getattr(args, 'name', '')
 
-    # Enforce 'name' requirement for commands that need it
     if cmd not in ["alias", "ldap"] and action not in ["list", "configure", "register"] and not name:
         if action == "merge" and getattr(args, 'target', None):
-            pass # Target is handled in entity merge logic
+            pass
         else:
             print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
             sys.exit(1)
@@ -258,10 +251,10 @@ def main():
     # 2. USER MANAGEMENT (Userpass & LDAP)
     # -------------------------------------------------------------------------
     elif cmd == "user":
-        method = getattr(args, 'method', None)
+        auth_type = getattr(args, 'type', None)
 
         if action == "list":
-            methods_to_check = [method] if method else ["userpass", "ldap"]
+            methods_to_check = [auth_type] if auth_type else ["userpass", "ldap"]
             found_any = False
             for m in methods_to_check:
                 users = vault.list_users(auth_type=m)
@@ -273,30 +266,30 @@ def main():
                 print(f"ℹ️ No users found.")
                 
         else:
-            method = method or "userpass"
+            auth_type = auth_type or "userpass"
             if action in ["create", "update"]:
-                if method == "userpass" and action == "create" and not args.password:
+                if auth_type == "userpass" and action == "create" and not args.password:
                     print("❌ Error: --password is required when creating a userpass user.", file=sys.stderr)
                     sys.exit(1)
-                if vault.create_user(name, password=args.password, policies=args.policies, auth_type=method):
-                    print(f"✅ User '{name}' ({method}) successfully created/updated.")
+                if vault.create_user(name, password=args.password, policies=args.policies, auth_type=auth_type):
+                    print(f"✅ User '{name}' ({auth_type}) successfully created/updated.")
                     
             elif action == "read":
-                details = vault.read_user(name, auth_type=method)
+                details = vault.read_user(name, auth_type=auth_type)
                 if details: print(json.dumps(details, indent=2))
-                else: print(f"⚠️ User '{name}' not found in '{method}'.")
+                else: print(f"⚠️ User '{name}' not found in '{auth_type}'.")
                 
             elif action == "info":
-                details = vault.read_user(name, auth_type=method)
+                details = vault.read_user(name, auth_type=auth_type)
                 if details:
-                    print(f"👤 User: {name} ({method})")
+                    print(f"👤 User: {name} ({auth_type})")
                     policies = details.get('token_policies', [])
                     print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
-                else: print(f"⚠️ User '{name}' not found in '{method}'.")
+                else: print(f"⚠️ User '{name}' not found in '{auth_type}'.")
                 
             elif action == "delete":
-                if vault.delete_user(name, auth_type=method):
-                    print(f"✅ Deleted user '{name}' ({method}).")
+                if vault.delete_user(name, auth_type=auth_type):
+                    print(f"✅ Deleted user '{name}' ({auth_type}).")
 
     # -------------------------------------------------------------------------
     # 3. POLICY MANAGEMENT
@@ -340,11 +333,11 @@ def main():
     # 4. GROUP MANAGEMENT (Identity & External)
     # -------------------------------------------------------------------------
     elif cmd == "group":
-        method = getattr(args, 'method', 'identity')
+        grp_type = getattr(args, 'type', 'identity')
         
         if action == "list":
             if name:
-                if method == "identity":
+                if grp_type == "identity":
                     details = vault.read_identity_group(name)
                     if details:
                         member_ids = details.get("member_entity_ids", [])
@@ -366,15 +359,15 @@ def main():
                     else:
                         print(f"⚠️ Group '{name}' not found.")
                 else:
-                    print(f"ℹ️ Member listing is not supported for external '{method}' groups.")
+                    print(f"ℹ️ Member listing is not supported for external '{grp_type}' groups.")
             
             else:
-                if method == "identity":
+                if grp_type == "identity":
                     groups = vault.list_identity_groups()
                     label = "Internal Vault Identity Groups"
                 else:
-                    groups = vault.list_groups(auth_type=method)
-                    label = f"External '{method}' Group Mappings"
+                    groups = vault.list_groups(auth_type=grp_type)
+                    label = f"External '{grp_type}' Group Mappings"
 
                 if groups:
                     print(f"🏢 Existing {label}:")
@@ -388,7 +381,7 @@ def main():
                 sys.exit(1)
                 
             if action in ["create", "update"]:
-                if method == "identity":
+                if grp_type == "identity":
                     entity_ids = []
                     missing_entities = []
                     
@@ -408,11 +401,11 @@ def main():
                     if vault.create_identity_group(name, policies=args.policies, member_entity_ids=entity_ids):
                         print(f"✅ Vault Identity Group '{name}' successfully created/updated.")
                 else:
-                    if vault.create_group(name, policies=args.policies, auth_type=method):
-                        print(f"✅ External Group Mapping '{name}' ({method}) successfully created/updated.")
+                    if vault.create_group(name, policies=args.policies, auth_type=grp_type):
+                        print(f"✅ External Group Mapping '{name}' ({grp_type}) successfully created/updated.")
                     
             elif action == "read":
-                if method == "identity":
+                if grp_type == "identity":
                     details = vault.read_identity_group(name)
                     if details:
                         member_ids = details.get("member_entity_ids", [])
@@ -430,13 +423,13 @@ def main():
                                     member_names.append(eid)
                             details["member_entity_names"] = member_names
                 else:
-                    details = vault.read_group(name, auth_type=method)
+                    details = vault.read_group(name, auth_type=grp_type)
                     
                 if details: print(json.dumps(details, indent=2))
-                else: print(f"⚠️ Group '{name}' not found for method '{method}'.")
+                else: print(f"⚠️ Group '{name}' not found for type '{grp_type}'.")
                 
             elif action == "info":
-                if method == "identity":
+                if grp_type == "identity":
                     details = vault.read_identity_group(name)
                     if details:
                         print(f"🏢 Identity Group: {name}")
@@ -462,21 +455,21 @@ def main():
                     else:
                         print(f"⚠️ Group '{name}' not found.")
                 else:
-                    details = vault.read_group(name, auth_type=method)
+                    details = vault.read_group(name, auth_type=grp_type)
                     if details:
-                        print(f"🏢 External Group ({method}): {name}")
+                        print(f"🏢 External Group ({grp_type}): {name}")
                         policies = details.get('policies', [])
                         print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                     else:
-                        print(f"⚠️ Group '{name}' not found for method '{method}'.")
+                        print(f"⚠️ Group '{name}' not found for type '{grp_type}'.")
                 
             elif action == "delete":
-                if method == "identity":
+                if grp_type == "identity":
                     if vault.delete_identity_group(name):
                         print(f"✅ Deleted Identity Group '{name}'.")
                 else:
-                    if vault.delete_group(name, auth_type=method):
-                        print(f"✅ Deleted external group mapping '{name}' ({method}).")
+                    if vault.delete_group(name, auth_type=grp_type):
+                        print(f"✅ Deleted external group mapping '{name}' ({grp_type}).")
 
     # -------------------------------------------------------------------------
     # 5. ENTITY MANAGEMENT
@@ -938,18 +931,13 @@ def main():
                     print(f"✅ Deleted GCP auth role '{name}'.")
 
     # -------------------------------------------------------------------------
-    # 10. LDAP AUTH MANAGEMENT
+    # 10. LDAP AUTH METHOD (Config only, Users/Groups map to normal types)
     # -------------------------------------------------------------------------
     elif cmd == "ldap":
         ldap_cmd = args.ldap_cmd
         action = args.action
         mount = "auth/ldap"
         client = vault._get_client()
-
-        if ldap_cmd in ["user", "group"]:
-            if action not in ["list"] and not name:
-                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
-                sys.exit(1)
 
         if ldap_cmd == "config":
             if action in ["read", "info", "list"]:
@@ -998,62 +986,9 @@ def main():
                     print("✅ LDAP Auth configuration deleted.")
                 except Exception as e:
                     print(f"❌ Error deleting LDAP config: {e}", file=sys.stderr)
-
-        elif ldap_cmd in ["group", "user"]:
-            target = "groups" if ldap_cmd == "group" else "users"
-            
-            if action == "list":
-                try:
-                    res = client.list(f"{mount}/{target}")
-                    keys = res.get('data', {}).get('keys', []) if res else []
-                    if keys:
-                        print(f"👥 Configured LDAP {target.capitalize()}:")
-                        for k in keys: print(f"  ├─ {k}")
-                    else:
-                        print(f"ℹ️ No LDAP {target} configured.")
-                except Exception as e:
-                    print(f"❌ Error: {e}", file=sys.stderr)
-                    
-            elif action in ["read", "info"]:
-                try:
-                    res = client.read(f"{mount}/{target}/{name}")
-                    if res and 'data' in res:
-                        if action == "read":
-                            print(json.dumps(res['data'], indent=2))
-                        else:
-                            d = res['data']
-                            icon = "🏢" if ldap_cmd == "group" else "👤"
-                            print(f"{icon} LDAP {ldap_cmd.capitalize()} Mapping: {name}")
-                            pols = d.get('policies', [])
-                            print(f"  ├─ Policies : {', '.join(pols) if pols else 'None'}")
-                            if ldap_cmd == "user":
-                                grps = d.get('groups', [])
-                                print(f"  ├─ Groups   : {', '.join(grps) if grps else 'None'}")
-                    else:
-                        print(f"❌ LDAP {ldap_cmd} '{name}' mapping not found.", file=sys.stderr)
-                except Exception as e:
-                    print(f"❌ Error: {e}", file=sys.stderr)
-                    
-            elif action in ["create", "update"]:
-                payload = {}
-                if getattr(args, "policies", None) is not None:
-                    payload["policies"] = [p.strip() for p in args.policies.split(",") if p.strip()]
-                if ldap_cmd == "user" and getattr(args, "groups", None) is not None:
-                    payload["groups"] = [g.strip() for g in args.groups.split(",") if g.strip()]
-                    
-                try:
-                    client.write(f"{mount}/{target}/{name}", **payload)
-                    print(f"✅ LDAP {ldap_cmd} '{name}' mapped successfully.")
-                except Exception as e:
-                    print(f"❌ Error updating mapping: {e}", file=sys.stderr)
-                    
-            elif action == "delete":
-                try:
-                    client.delete(f"{mount}/{target}/{name}")
-                    print(f"✅ LDAP {ldap_cmd} '{name}' mapping deleted.")
-                except Exception as e:
-                    print(f"❌ Error deleting mapping: {e}", file=sys.stderr)
+        
+        # User and Group mapping now redirects seamlessly to the main `user` and `group` commands below
+        # since we unified the API entirely around --type.
 
 if __name__ == "__main__":
     main()
-

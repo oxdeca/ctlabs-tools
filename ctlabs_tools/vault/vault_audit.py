@@ -177,11 +177,11 @@ def scan_engine_roles(vault, paths):
         print("  ℹ️  No specific external secrets engine roles strictly mapped in this policy.")
 
 def scan_upstream_identities(vault, target_policies):
-    """Scans the Identity engine to find who has specific policies attached."""
+    """Scans the Identity and Auth engines to find who has specific policies attached."""
     client = vault._get_client()
     found_any = False
     
-    # 1. Scan Groups
+    # 1. Scan Vault Identity Groups
     try:
         res = client.list("identity/group/id")
         group_ids = res.get('data', {}).get('keys', []) if res else []
@@ -196,7 +196,7 @@ def scan_upstream_identities(vault, target_policies):
                     print(f"  🏢 Identity Group : {name} (via {', '.join(intersect)})")
     except Exception: pass
 
-    # 2. Scan Entities
+    # 2. Scan Vault Identity Entities
     try:
         res = client.list("identity/entity/id")
         entity_ids = res.get('data', {}).get('keys', []) if res else []
@@ -225,8 +225,36 @@ def scan_upstream_identities(vault, target_policies):
                     print(f"  🤖 AppRole Mount  : {role} (via {', '.join(intersect)})")
     except Exception: pass
 
+    # 4. Scan LDAP Groups
+    try:
+        res = client.list("auth/ldap/groups")
+        ldap_groups = res.get('data', {}).get('keys', []) if res else []
+        for lg in ldap_groups:
+            lg_data = client.read(f"auth/ldap/groups/{lg}")
+            if lg_data and 'data' in lg_data:
+                policies = set(lg_data['data'].get('policies', []))
+                intersect = policies.intersection(target_policies)
+                if intersect:
+                    found_any = True
+                    print(f"  🔗 LDAP Group     : {lg} (via {', '.join(intersect)})")
+    except Exception: pass
+
+    # 5. Scan LDAP Users
+    try:
+        res = client.list("auth/ldap/users")
+        ldap_users = res.get('data', {}).get('keys', []) if res else []
+        for lu in ldap_users:
+            lu_data = client.read(f"auth/ldap/users/{lu}")
+            if lu_data and 'data' in lu_data:
+                policies = set(lu_data['data'].get('policies', []))
+                intersect = policies.intersection(target_policies)
+                if intersect:
+                    found_any = True
+                    print(f"  🧑‍💻 LDAP User      : {lu} (via {', '.join(intersect)})")
+    except Exception: pass
+
     if not found_any:
-        print("  ℹ️  No Groups, Entities, or AppRoles currently have this policy attached.")
+        print("  ℹ️  No Identity Groups, Entities, AppRoles, or LDAP mappings currently have this policy attached.")
 
 
 # =============================================================================
@@ -268,13 +296,10 @@ def list_policies(vault, category):
             
             prefix = clean_path.split('/')[0].strip('*+')
             
-            # 1. Auth & Internals
             if prefix in ["sys", "auth", "identity"]:
                 is_auth = True
-            # 2. Pure Static Secrets
             elif prefix in ["kv", "kvv2", "secret", "cubbyhole"]:
                 is_secret = True
-            # 3. Dynamic Access Brokers (GCP, K8s, PKI, SSH, DBs, etc.)
             else:
                 is_access = True
                 
@@ -294,7 +319,6 @@ def list_policies(vault, category):
 
 
 def list_roles(vault, engine_type, engine_name):
-    # 🌟 FIX: Map CLI shortcut 'k8s' to Vault's internal 'kubernetes' type
     if engine_type == "k8s":
         engine_type = "kubernetes"
 
@@ -322,13 +346,10 @@ def list_roles(vault, engine_type, engine_name):
                 elif m_type in ["kubernetes", "pki", "ssh"]:
                     res = client.list(f"{clean_path}/roles")
                     roles = res.get('data', {}).get('keys', []) if res else []
-                elif m_type == "ldap":
-                    res = client.list(f"{clean_path}/role")
-                    roles = res.get('data', {}).get('keys', []) if res else []
             except Exception: pass
             
             if roles:
-                badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐", "ldap":"👥"}.get(m_type, "⚙️")
+                badge = {"gcp":"☁️", "kubernetes":"⚓", "pki":"🏛️", "ssh":"🌐"}.get(m_type, "⚙️")
                 print(f"{badge} {m_type.upper()} Engine: {path}")
                 for r in roles: 
                     print(f"  ├─ {r}")
@@ -356,9 +377,6 @@ def audit_policy(vault, policy_name, show_upstream=True):
         scan_upstream_identities(vault, {policy_name})
 
 def audit_role(vault, role_name, target_engine_name=None, target_engine_type=None):
-    """Reverse-Lookup: Starts with a role, finds policies that grant it, finds users who have policies."""
-    
-    # 🌟 FIX: Map CLI shortcut 'k8s' to Vault's internal 'kubernetes' type
     if target_engine_type == "k8s":
         target_engine_type = "kubernetes"
 
@@ -447,7 +465,6 @@ def audit_role(vault, role_name, target_engine_name=None, target_engine_type=Non
     scan_upstream_identities(vault, matching_policies)
 
 def audit_identity(vault, target_name, is_group=False):
-    """Forward-Lookup: Resolves an entity/user or group, calculates inherited policies, shows access."""
     client = vault._get_client()
     id_type = "Group" if is_group else "User/Entity"
     print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
@@ -487,10 +504,55 @@ def audit_identity(vault, target_name, is_group=False):
                             policies.update(g_pols)
                             print(f"  ├─ {g_name} (Grants: {', '.join(g_pols) if g_pols else 'None'})")
                     except Exception: pass
-            
         except Exception:
             print(f"❌ User/Entity '{target_name}' not found.")
             return
+
+    if not policies:
+        print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
+        return
+        
+    print("\n" + "="*70)
+    print("🔻 DOWNSTREAM ACCESS (Merged capabilities)")
+    print("="*70)
+    
+    for p in policies:
+        if p in ["default", "root"]: continue
+        audit_policy(vault, p, show_upstream=False)
+
+def audit_ldap(vault, target_name, is_group=False):
+    client = vault._get_client()
+    id_type = "LDAP Group" if is_group else "LDAP User"
+    print(f"\n🔎 FORWARD AUDIT: Access graph for {id_type} '{target_name}'\n" + "="*70)
+    
+    policies = set()
+    target_path = "groups" if is_group else "users"
+    
+    try:
+        res = client.read(f"auth/ldap/{target_path}/{target_name}")
+        if not res or 'data' not in res: raise Exception("Not found")
+        
+        direct_pol = res['data'].get('policies', [])
+        policies.update(direct_pol)
+        if direct_pol: print(f"📜 Direct Policies : {', '.join(direct_pol)}")
+        
+        if not is_group:
+            mapped_groups = res['data'].get('groups', [])
+            if mapped_groups:
+                print(f"🔗 Implicit LDAP Groups:")
+                for lg in mapped_groups:
+                    try:
+                        lg_data = client.read(f"auth/ldap/groups/{lg}")
+                        if lg_data and 'data' in lg_data:
+                            lg_pols = lg_data['data'].get('policies', [])
+                            policies.update(lg_pols)
+                            print(f"  ├─ {lg} (Grants: {', '.join(lg_pols) if lg_pols else 'None'})")
+                        else:
+                            print(f"  ├─ {lg} (No specific policies mapped)")
+                    except Exception: pass
+    except Exception:
+        print(f"❌ {id_type} '{target_name}' not found in Vault LDAP auth.")
+        return
 
     if not policies:
         print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
@@ -517,7 +579,7 @@ def get_args():
     p_policy = subparsers.add_parser("policy", help="Audit ACL Policies")
     p_pol_subs = p_policy.add_subparsers(dest="action", required=True)
     p_pol_list = p_pol_subs.add_parser("list", help="List policies")
-    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "secrets", "all"], default="all", help="Filter by logical category")
+    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "secrets", "all"], default="all")
     p_pol_info = p_pol_subs.add_parser("info", help="Audit a specific policy")
     p_pol_info.add_argument("name", help="Policy name")
 
@@ -525,31 +587,35 @@ def get_args():
     p_role = subparsers.add_parser("role", help="Audit External Roles")
     p_role_subs = p_role.add_subparsers(dest="action", required=True)
     p_role_list = p_role_subs.add_parser("list", help="List active roles")
-    p_role_list.add_argument("engine_type", nargs="?", choices=["gcp", "k8s", "pki", "ssh", "ldap", "all"], default="all", help="Filter by engine type")
-    p_role_list.add_argument("engine_name", nargs="?", default="", help="Filter by specific mount name")
+    p_role_list.add_argument("engine_type", nargs="?", choices=["gcp", "k8s", "pki", "ssh", "ldap", "all"], default="all")
+    p_role_list.add_argument("engine_name", nargs="?", default="")
     p_role_info = p_role_subs.add_parser("info", help="Reverse-audit a specific role")
-    p_role_info.add_argument("name_args", nargs="+", help="Supports: [role], [mount] [role], or [type]/[mount]/[role]")
+    p_role_info.add_argument("name_args", nargs="+")
 
-    # 3. ENTITY
-    p_entity = subparsers.add_parser("entity", help="Audit Entity Access")
+    # 3. ENTITY (Strictly Internal Vault Identities)
+    p_entity = subparsers.add_parser("entity", help="Audit Vault Identity Access")
     p_ent_subs = p_entity.add_subparsers(dest="action", required=True)
     p_ent_subs.add_parser("list", help="List entities")
     p_ent_info = p_ent_subs.add_parser("info", help="Audit specific entity")
     p_ent_info.add_argument("name", help="Entity name")
 
-    # 4. USER (Alias for Entity)
-    p_user = subparsers.add_parser("user", help="Audit User Access (Alias for Entity)")
+    # 4. USER (Supports Identity or LDAP type)
+    p_user = subparsers.add_parser("user", help="Audit User Access")
     p_usr_subs = p_user.add_subparsers(dest="action", required=True)
-    p_usr_subs.add_parser("list", help="List users (entities)")
-    p_usr_info = p_usr_subs.add_parser("info", help="Audit specific user")
-    p_usr_info.add_argument("name", help="User name")
+    p_ul = p_usr_subs.add_parser("list", help="List users")
+    p_ul.add_argument("--type", choices=["identity", "ldap"], default="identity", help="User mapping type")
+    p_ui = p_usr_subs.add_parser("info", help="Audit specific user")
+    p_ui.add_argument("name", help="User name")
+    p_ui.add_argument("--type", choices=["identity", "ldap"], default="identity", help="User mapping type")
 
-    # 5. GROUP
+    # 5. GROUP (Supports Identity or LDAP type)
     p_group = subparsers.add_parser("group", help="Audit Group Access")
     p_grp_subs = p_group.add_subparsers(dest="action", required=True)
-    p_grp_subs.add_parser("list", help="List groups")
-    p_grp_info = p_grp_subs.add_parser("info", help="Audit specific group")
-    p_grp_info.add_argument("name", help="Group name")
+    p_gl = p_grp_subs.add_parser("list", help="List groups")
+    p_gl.add_argument("--type", choices=["identity", "ldap"], default="identity", help="Group mapping type")
+    p_gi = p_grp_subs.add_parser("info", help="Audit specific group")
+    p_gi.add_argument("name", help="Group name")
+    p_gi.add_argument("--type", choices=["identity", "ldap"], default="identity", help="Group mapping type")
 
     return parser.parse_args()
 
@@ -583,7 +649,6 @@ def main():
             tokens = [t for t in tokens if t]
             
             eng_type, eng_name, r_name = None, None, None
-            
             if len(tokens) >= 3:
                 eng_type = tokens[-3]
                 eng_name = tokens[-2]
@@ -596,20 +661,18 @@ def main():
             else:
                 print("❌ Error: Invalid role format provided.", file=sys.stderr)
                 sys.exit(1)
-                
             audit_role(vault, r_name, target_engine_name=eng_name, target_engine_type=eng_type)
 
-    elif cmd in ["entity", "user"]:
-        label = "User / Entity" if cmd == "user" else "Identity Entity"
+    elif cmd == "entity":
         if action == "list":
             client = vault._get_client()
             try:
                 res = client.list("identity/entity/name")
                 keys = res.get('data', {}).get('keys', []) if res else []
                 if keys:
-                    print(f"👤 Existing {label} Records:")
+                    print(f"👤 Existing Identity Entities:")
                     for k in keys: print(f"  ├─ {k}")
-                else: print(f"ℹ️ No {label.lower()} records found.")
+                else: print(f"ℹ️ No identity entities found.")
             except Exception as e: print(f"❌ Error fetching records: {e}", file=sys.stderr)
                 
         elif action == "info":
@@ -619,24 +682,79 @@ def main():
                 sys.exit(1)
             audit_identity(vault, name, is_group=False)
 
-    elif cmd == "group":
-        if action == "list":
-            client = vault._get_client()
-            try:
-                res = client.list("identity/group/name")
-                keys = res.get('data', {}).get('keys', []) if res else []
-                if keys:
-                    print("🏢 Existing Identity Groups:")
-                    for k in keys: print(f"  ├─ {k}")
-                else: print("ℹ️ No groups found.")
-            except Exception as e: print(f"❌ Error fetching groups: {e}", file=sys.stderr)
+    elif cmd == "user":
+        if args.type == "identity":
+            if action == "list":
+                client = vault._get_client()
+                try:
+                    res = client.list("identity/entity/name")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print(f"👤 Existing Users / Entities:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else: print(f"ℹ️ No identity entities found.")
+                except Exception as e: print(f"❌ Error fetching records: {e}", file=sys.stderr)
+            elif action == "info":
+                name = getattr(args, 'name', '')
+                if not name:
+                    print("❌ Error: 'name' is required.", file=sys.stderr)
+                    sys.exit(1)
+                audit_identity(vault, name, is_group=False)
                 
-        elif action == "info":
-            name = getattr(args, 'name', '')
-            if not name:
-                print("❌ Error: 'name' is required.", file=sys.stderr)
-                sys.exit(1)
-            audit_identity(vault, name, is_group=True)
+        elif args.type == "ldap":
+            if action == "list":
+                client = vault._get_client()
+                try:
+                    res = client.list("auth/ldap/users")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print(f"🧑‍💻 Configured LDAP User Mappings:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else: print(f"ℹ️ No LDAP user mappings found.")
+                except Exception as e: print(f"❌ Error fetching LDAP users: {e}", file=sys.stderr)
+            elif action == "info":
+                name = getattr(args, 'name', '')
+                if not name:
+                    print("❌ Error: 'name' is required.", file=sys.stderr)
+                    sys.exit(1)
+                audit_ldap(vault, name, is_group=False)
+
+    elif cmd == "group":
+        if args.type == "identity":
+            if action == "list":
+                client = vault._get_client()
+                try:
+                    res = client.list("identity/group/name")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print("🏢 Existing Identity Groups:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else: print("ℹ️ No groups found.")
+                except Exception as e: print(f"❌ Error fetching groups: {e}", file=sys.stderr)
+            elif action == "info":
+                name = getattr(args, 'name', '')
+                if not name:
+                    print("❌ Error: 'name' is required.", file=sys.stderr)
+                    sys.exit(1)
+                audit_identity(vault, name, is_group=True)
+                
+        elif args.type == "ldap":
+            if action == "list":
+                client = vault._get_client()
+                try:
+                    res = client.list("auth/ldap/groups")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print("🔗 Configured LDAP Group Mappings:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else: print("ℹ️ No LDAP group mappings found.")
+                except Exception as e: print(f"❌ Error fetching LDAP groups: {e}", file=sys.stderr)
+            elif action == "info":
+                name = getattr(args, 'name', '')
+                if not name:
+                    print("❌ Error: 'name' is required.", file=sys.stderr)
+                    sys.exit(1)
+                audit_ldap(vault, name, is_group=True)
 
 if __name__ == "__main__":
     main()
