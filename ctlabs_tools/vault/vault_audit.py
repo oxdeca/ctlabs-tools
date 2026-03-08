@@ -14,14 +14,12 @@ from .core import HashiVault
 # =============================================================================
 def _get_policy_rules(client, policy_name):
     """Safely fetches a policy supporting both modern and legacy Vault API endpoints."""
-    # 1. Try Modern Endpoint (sys/policies/acl)
     try:
         res = client.read(f"sys/policies/acl/{policy_name}")
         if res and 'data' in res and 'policy' in res['data']:
             return res['data']['policy']
     except Exception: pass
 
-    # 2. Try Legacy Endpoint (sys/policy)
     try:
         res = client.read(f"sys/policy/{policy_name}")
         if res and 'data' in res and 'rules' in res['data']:
@@ -251,7 +249,7 @@ def list_policies(vault, category):
     print(f"⏳ Categorizing {len(policies)} policies...")
     sys.stdout.write("\033[F\033[K") # Clear the loading line
     
-    auth_pols, access_pols = [], []
+    auth_pols, access_pols, secret_pols = [], [], []
     
     for p in policies:
         if p in ["root", "default"]: 
@@ -262,24 +260,32 @@ def list_policies(vault, category):
         if not rules_hcl: continue
             
         paths = extract_policy_paths(rules_hcl)
-        is_auth = False
-        is_access = False
+        is_auth, is_access, is_secret = False, False, False
         
         for path in paths.keys():
             prefix = path.split('/')[0]
+            # 1. Auth & Internals
             if prefix in ["sys", "auth", "identity"]:
                 is_auth = True
+            # 2. Pure Static Secrets
+            elif prefix in ["kv", "kvv2", "secret", "cubbyhole"]:
+                is_secret = True
+            # 3. Dynamic Access Brokers (GCP, K8s, PKI, SSH, DBs, etc.)
             else:
                 is_access = True
                 
-        if is_access: access_pols.append(p)
         if is_auth: auth_pols.append(p)
+        if is_secret: secret_pols.append(p)
+        if is_access: access_pols.append(p)
         
     if category == "access":
-        print("🌍 Access Policies (External Systems & Secrets):")
+        print("🌍 Access Policies (Dynamic Identity Brokers - GCP, K8s, SSH):")
         for p in sorted(set(access_pols)): print(f"  ├─ {p}")
+    elif category == "secrets":
+        print("🔐 Secrets Policies (Static Key-Value Storage):")
+        for p in sorted(set(secret_pols)): print(f"  ├─ {p}")
     elif category == "auth":
-        print("🔐 Auth Policies (Vault Admins, Login & Identity Mapping):")
+        print("🛡️  Auth Policies (Vault Admins, Login & Identity Mapping):")
         for p in sorted(set(auth_pols)): print(f"  ├─ {p}")
 
 
@@ -498,7 +504,7 @@ def get_args():
     p_policy = subparsers.add_parser("policy", help="Audit ACL Policies")
     p_pol_subs = p_policy.add_subparsers(dest="action", required=True)
     p_pol_list = p_pol_subs.add_parser("list", help="List policies")
-    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "all"], default="all", help="Filter by auth or access")
+    p_pol_list.add_argument("category", nargs="?", choices=["auth", "access", "secrets", "all"], default="all", help="Filter by logical category")
     p_pol_info = p_pol_subs.add_parser("info", help="Audit a specific policy")
     p_pol_info.add_argument("name", help="Policy name")
 
@@ -621,4 +627,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
