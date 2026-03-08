@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# File    : ctlabs-tools/vault/vault_k8s.py
+# File    : ctlabs-tools/ctlabs_tools/vault/vault_k8s.py
 # Purpose : Dedicated CLI for Kubernetes Secrets Engine (JIT K8s Access)
 # -----------------------------------------------------------------------------
 import argparse
@@ -51,7 +51,6 @@ def save_cached_server(cluster_name, server_url):
     except Exception as e:
         print(f"⚠️ Could not cache server URL: {e}", file=sys.stderr)
 
-
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Kubernetes Secrets Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout")
@@ -62,23 +61,20 @@ def get_args():
     p_exec.add_argument("cluster", help="The K8s cluster identifier (e.g., prod-cluster)")
     p_exec.add_argument("role", help="The Vault K8s Secret Role to assume")
     p_exec.add_argument("namespace", help="The K8s namespace to inject the token into")
-    p_exec.add_argument("--server", help="Override the K8s API server URL (e.g., for NAT/Port-forwarding)") # 🧠 NEW FLAG
+    p_exec.add_argument("--server", help="Override the K8s API server URL (e.g., for NAT/Port-forwarding)")
     p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     # 2. ENGINE (Bootstrap)
     p_engine = subparsers.add_parser("engine", help="Manage K8s Secrets Engines")
-    # 🌟 Added read, info, and update to the choices
     p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"], help="Action to perform")
     p_engine.add_argument("cluster", nargs="?", default="", help="Cluster identifier (mounts at k8s/<cluster>)")
     p_engine.add_argument("--sa-name", default="vault-k8s-master", help="Master Service Account name")
-    
-    # 🌟 Added flags for the update command
     p_engine.add_argument("--host", help="Update K8s API Host")
     p_engine.add_argument("--jwt", help="Update SA JWT Token")
 
     # 3. ROLE (Access Profiles)
     p_role = subparsers.add_parser("role", help="Manage K8s Secrets Roles")
-    p_role.add_argument("action", choices=["create", "update", "read", "delete", "list"], help="Action to perform")
+    p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
     p_role.add_argument("cluster", nargs="?", default="", help="Cluster identifier")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
     p_role.add_argument("--namespaces", default=None, help="Comma-separated allowed namespaces (Overrides YAML if provided)")
@@ -87,15 +83,11 @@ def get_args():
     # 4. INFO (Introspection)
     p_info = subparsers.add_parser("info", help="Introspect the active JIT Kubernetes token in your current shell")
 
-    # 5. Leases Management
+    # 5. LEASES (Management)
     p_leases = subparsers.add_parser("leases", help="Manage dynamic Kubernetes leases/tokens")
     leases_subs = p_leases.add_subparsers(dest="action", required=True)
-
-    # list
     p_leases_list = leases_subs.add_parser("list", help="List active leases (provide a cluster name, or leave blank for all)")
     p_leases_list.add_argument("cluster", nargs="?", help="The cluster name (optional)")
-
-    # revoke
     p_leases_revoke = leases_subs.add_parser("revoke", help="Revoke leases")
     p_leases_revoke.add_argument("cluster", help="The cluster name")
     p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
@@ -124,19 +116,15 @@ def main():
             print("❌ Error: No command provided to execute.", file=sys.stderr)
             sys.exit(1)
 
-        # 1. Fetch the Token
         print(f"🔍 Inspecting admin role '{args.role}'...", file=sys.stderr)
         role_config = vault.read_k8s_secret_role(args.role, mount_point)
         
         if not role_config:
-            print(f"❌ Error: Vault role '{args.role}' does not exist.", file=sys.stderr)
+            print(f"❌ Error: Vault role '{args.role}' does not exist in '{mount_point}/'.", file=sys.stderr)
             sys.exit(1)
 
-        # 🧠 SMART UX: The tool enforces the Admin's design automatically!
         is_cluster_role = (role_config.get("kubernetes_role_type") == "ClusterRole")
         allows_all_ns = ("*" in role_config.get("allowed_kubernetes_namespaces", []))
-        
-        # Vault ONLY allows ClusterRoleBindings if the admin authorized '*' namespaces
         auto_cluster_wide = is_cluster_role and allows_all_ns
 
         print(f"🔒 Fetching secure K8s token for role '{args.role}' in namespace '{args.namespace}'...", file=sys.stderr)
@@ -144,36 +132,27 @@ def main():
             role_name=args.role, 
             k8s_namespace=args.namespace, 
             mount_point=mount_point,
-            cluster_wide=auto_cluster_wide  # Automatically set based on the Vault Role!
+            cluster_wide=auto_cluster_wide 
         )
         if not token: sys.exit(1)
 
-        # 2. 🧠 SMART OVERRIDE: Check CLI -> Check Env -> Check Cache -> Check Vault
         kube_host = None
         env_var_name = f"VAULT_K8S_SERVER_{args.cluster.upper().replace('-', '_')}"
         
         if args.server:
-            # 1. CLI Flag provided (Format it and save it for next time!)
             kube_host = args.server
             if not kube_host.startswith("http"):
                 kube_host = f"https://{kube_host}"
-                
             print(f"💾 Caching server override for future use: {kube_host}", file=sys.stderr)
             save_cached_server(args.cluster, kube_host)
-            
         else:
-            # 2. Try Environment Variable (e.g., VAULT_K8S_SERVER_PROD_CLUSTER)
             kube_host = os.environ.get(env_var_name)
             if kube_host:
                 print(f"🌐 Using server from environment variable ({env_var_name}): {kube_host}", file=sys.stderr)
-                
-            # 3. Try Local Cache
             if not kube_host:
                 kube_host = get_cached_server(args.cluster)
                 if kube_host:
                     print(f"🌐 Using cached server override: {kube_host}", file=sys.stderr)
-
-            # 4. Fallback to Vault's internal config
             if not kube_host:
                 kube_host = vault.get_k8s_engine_host(mount_point=mount_point)
                 
@@ -181,7 +160,6 @@ def main():
             print(f"❌ Error: Could not determine K8s API host from Vault engine '{mount_point}'.", file=sys.stderr)
             sys.exit(1)
 
-        # 3. Inject into kubectl
         if command_list[0] == "kubectl":
             command_list.insert(1, f"--server={kube_host}")
             command_list.insert(2, f"--token={token}")
@@ -192,7 +170,6 @@ def main():
             os.environ["KUBERNETES_MASTER"] = kube_host
             os.environ["KUBERNETES_NAMESPACE"] = args.namespace
 
-        # 🧠 SECURITY: Redact the token from the console output to prevent credential leakage
         display_cmd = []
         for arg in command_list:
             if arg.startswith("--token="):
@@ -202,7 +179,6 @@ def main():
                 
         print(f"🚀 Executing: {' '.join(display_cmd)}\n" + "-"*40, file=sys.stderr)
         
-        # 🧠 SMART BASH INJECTION: Auto-configure the 'kc' alias if the user requests a bash shell
         if command_list == ["bash"]:
             import tempfile
             rc_content = f"""
@@ -221,13 +197,12 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
             
             try:
                 exit_code = subprocess.run(command_list, env=os.environ).returncode
-                os.remove(rc_path) # Clean up the temp file when they exit
+                os.remove(rc_path) 
                 sys.exit(exit_code)
             except Exception as e:
                 print(f"❌ Error starting shell: {e}", file=sys.stderr)
                 sys.exit(1)
         else:
-            # Execute normal non-bash commands silently
             try:
                 sys.exit(subprocess.run(command_list, env=os.environ).returncode)
             except FileNotFoundError:
@@ -241,14 +216,14 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
         action = args.action
 
         if action == "list":
-            # 🧠 SMART UX: Decide if we are looking at one engine or all of them
             if args.cluster:
                 mounts = [f"k8s/{args.cluster}"]
                 print(f"🔍 Searching for active leases in '{mounts[0]}/'...")
             else:
                 print("🔍 Searching for active leases across ALL K8s engines...")
                 raw_engines = vault.list_engines(backend_type="kubernetes")
-                mounts = [m.rstrip('/') for m in (raw_engines or [])]
+                mounts = [m.rstrip('/') for m in (raw_engines or []) if m.startswith("k8s/")]
+                
             if not mounts:
                 print("✅ No Kubernetes engines found.")
             else:
@@ -268,7 +243,7 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
                     print("✅ No active K8s leases found.")
                         
         elif action == "revoke":
-            mount_point = f"k8s/{args.cluster}"  # 🌟 ADD THIS LINE
+            mount_point = f"k8s/{args.cluster}"
             
             if getattr(args, "id", None):
                 print(f"🗑️ Revoking specific lease '{args.id}'...")
@@ -281,7 +256,6 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
             else:
                 print("⚠️ You must provide either a specific '--id <lease_id>' or use '--force' to wipe the cluster.")
 
-
     # -------------------------------------------------------------------------
     # 2. ENGINE MANAGEMENT
     # -------------------------------------------------------------------------
@@ -293,7 +267,8 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
             engines = vault.list_engines(backend_type="kubernetes")
             if engines:
                 print("🌐 Active K8s Secrets Engines:")
-                for e in engines: print(f"  ├─ {e}")
+                for e in engines: 
+                    if e.startswith("k8s/"): print(f"  ├─ {e}")
             else:
                 print("ℹ️ No K8s Secrets Engines mounted.")
             sys.exit(0)
@@ -309,16 +284,12 @@ echo "⏳ Type 'vault-k8s info' to check token TTL, or 'exit' to close."
 
         if action == "create":
             print(f"🚀 Initializing Zero-Touch K8s Engine at '{mount_point}/'...")
-
-            # 🌉 NEW: Auto-Detect and Consume GKE Bridge Credentials
             kube_dir = os.path.expanduser("~/.kube")
             temp_kube_file = os.path.join(kube_dir, f"config-gke-{cluster}")
             used_temp_kubeconfig = False
             
             if os.path.exists(temp_kube_file):
                 print(f"🌉 Detected temporary GKE kubeconfig! Routing kubectl through the bridge...", file=sys.stderr)
-                # Inject it into the local script environment. 
-                # This safely scopes it ONLY to the subprocesses run by this script!
                 os.environ["KUBECONFIG"] = temp_kube_file
                 used_temp_kubeconfig = True
 
@@ -345,7 +316,7 @@ type: kubernetes.io/service-account-token
                 sys.exit(1)
             
             print(f"  ├─ Fetching Cluster Credentials...")
-            time.sleep(2) # Allow K8s controller time to populate token
+            time.sleep(2)
             
             b64_token = run_kubectl(["kubectl", "get", "secret", secret_name, "-n", sa_namespace, "-o", "jsonpath={.data.token}"], capture=True)
             b64_ca = run_kubectl(["kubectl", "get", "secret", secret_name, "-n", sa_namespace, "-o", "jsonpath={.data.ca\.crt}"], capture=True)
@@ -356,7 +327,6 @@ type: kubernetes.io/service-account-token
                 sys.exit(1)
                 
             jwt_token = base64.b64decode(b64_token).decode('utf-8')
-
             try:
                 ca_pem = base64.b64decode(b64_ca).decode('utf-8')
             except Exception as e:
@@ -367,7 +337,6 @@ type: kubernetes.io/service-account-token
             if vault.setup_k8s_secrets_engine(mount_point=mount_point, host=kube_host, ca_cert=ca_pem, jwt=jwt_token):
                 print(f"🎉 Kubernetes Secrets Engine ready at '{mount_point}/'!")
 
-            # 🧹 NEW: Burn the bridge after successful setup
             if used_temp_kubeconfig:
                 print(f"🔥 Burning the bridge: Destroying temporary kubeconfig...")
                 try:
@@ -380,7 +349,6 @@ type: kubernetes.io/service-account-token
             
         elif action == "delete":
             print(f"🧹 Tearing down engine at '{mount_point}/'...")
-            # 🌟 FIX: Only print success and cleanup K8s if the Vault teardown actually succeeds!
             if vault.teardown_k8s_secrets_engine(mount_point=mount_point):
                 print(f"  ├─ Cleaning up K8s resources...")
                 run_kubectl(["kubectl", "delete", "serviceaccount", sa_name, "-n", sa_namespace], ignore_errors=True, quiet=True)
@@ -390,40 +358,43 @@ type: kubernetes.io/service-account-token
             else:
                 print("❌ Engine teardown aborted due to errors.")
 
-        elif action in ["read", "info"]:
-            print(f"🔍 Reading K8s Engine Config for '{mount_point}/'...")
+        elif action == "read":
             config = vault.read_k8s_engine_config(mount_point=mount_point)
             if config:
-                # Mask the JWT so it doesn't spill onto the screen by default
                 if "service_account_jwt" in config and config["service_account_jwt"]:
                     config["service_account_jwt"] = "*** REDACTED ***"
                 print(json.dumps(config, indent=2))
             else:
-                print("❌ Config not found or engine not configured.")
+                print(f"❌ Config not found at '{mount_point}/'.")
+                
+        elif action == "info":
+            config = vault.read_k8s_engine_config(mount_point=mount_point)
+            if config:
+                print(f"🏛️  K8s Engine: {mount_point}/")
+                print(f"  ├─ API Host    : {config.get('kubernetes_host', 'Unknown')}")
+                has_ca = bool(config.get('kubernetes_ca_cert'))
+                print(f"  ├─ CA Cert     : {'Configured ✅' if has_ca else 'Missing ⚠️'}")
+                has_jwt = bool(config.get('service_account_jwt'))
+                print(f"  ├─ Master JWT  : {'Configured ✅ (*** REDACTED ***)' if has_jwt else 'Missing ⚠️'}")
+            else:
+                print(f"❌ Config not found at '{mount_point}/'.")
                 
         elif action == "update":
             print(f"⚙️ Updating K8s Engine Config for '{mount_point}/'...")
-            
             jwt_token = args.jwt
             kube_host = args.host
 
-            # 🧠 SMART UX: If no flags provided, auto-fetch the fresh token!
             if not jwt_token and not kube_host:
                 print(f"🔄 Auto-fetching fresh credentials from current kubectl context...")
-                
-                # Fetch the token from the existing secret
                 b64_token = run_kubectl(["kubectl", "get", "secret", secret_name, "-n", sa_namespace, "-o", "jsonpath={.data.token}"], capture=True, ignore_errors=True)
-                
                 if not b64_token:
                     print(f"❌ Failed to retrieve token. Does the '{sa_name}' service account still exist in the cluster?", file=sys.stderr)
                     sys.exit(1)
-                    
                 jwt_token = base64.b64decode(b64_token).decode('utf-8')
                 print("✅ Successfully extracted fresh JWT from the cluster.")
 
             if vault.update_k8s_engine_config(mount_point, host=kube_host, jwt=jwt_token):
                 print("🎉 Successfully updated K8s Engine Config in Vault!")
-
 
     # -------------------------------------------------------------------------
     # 3. ROLE MANAGEMENT
@@ -433,14 +404,13 @@ type: kubernetes.io/service-account-token
         cluster = args.cluster
         role_name = args.role_name
         
-        # 🌟 NEW: If action is list, do the smart loop!
         if action == "list":
             if cluster:
                 engines_to_check = [f"k8s/{cluster}"]
             else:
                 print("🔍 Searching across all active K8s engines...")
                 engines = vault.list_engines(backend_type="kubernetes") or []
-                engines_to_check = [e.strip('/') for e in engines]
+                engines_to_check = [e.strip('/') for e in engines if e.startswith("k8s/")]
 
             if not engines_to_check:
                 print("ℹ️ No Kubernetes secrets engines currently mounted.")
@@ -459,14 +429,12 @@ type: kubernetes.io/service-account-token
                 print("\nℹ️ No roles found.")
             sys.exit(0)
 
-        # 🧠 Enforce cluster name for all OTHER role actions (create, update, read, delete)
         if not cluster:
             print("❌ Error: Cluster identifier required (e.g., vault-k8s role read prod-cluster my-role).", file=sys.stderr)
             sys.exit(1)
 
         mount_point = f"k8s/{cluster}"
         
-        # Enforce role_name for everything EXCEPT list
         if not role_name:
             print("❌ Error: Role name is required for this action.", file=sys.stderr)
             sys.exit(1)
@@ -474,10 +442,25 @@ type: kubernetes.io/service-account-token
         if action == "read":
             data = vault.read_k8s_secret_role(name=role_name, mount_point=mount_point)
             if data: print(json.dumps(data, indent=2))
+            else: print(f"❌ Role '{role_name}' not found.")
+            
+        elif action == "info":
+            data = vault.read_k8s_secret_role(name=role_name, mount_point=mount_point)
+            if data:
+                print(f"👥 K8s Role: {role_name}")
+                print(f"  ├─ Engine      : {mount_point}/")
+                print(f"  ├─ Type        : {data.get('kubernetes_role_type', 'Unknown')}")
+                ns = data.get('allowed_kubernetes_namespaces', [])
+                print(f"  ├─ Namespaces  : {', '.join(ns) if ns else 'None'}")
+                print(f"  ├─ SA Name     : {data.get('service_account_name', 'Dynamic')}")
+                print(f"  ├─ Default TTL : {data.get('default_ttl', 'System Default')}s")
+                print(f"  ├─ Max TTL     : {data.get('max_ttl', 'System Default')}s")
+            else:
+                print(f"❌ Role '{role_name}' not found.")
             
         elif action == "delete":
             if vault.delete_k8s_secret_role(name=role_name, mount_point=mount_point):
-                print(f"✅ Deleted K8s role '{role_name}'.")
+                print(f"✅ Deleted K8s role '{role_name}' from '{mount_point}/'.")
             
         elif action in ["create", "update"]:
             if not args.rules:
@@ -508,7 +491,7 @@ type: kubernetes.io/service-account-token
                 print(f"❌ Error reading rules file: {e}", file=sys.stderr)
                 sys.exit(1)
                 
-            print(f"🚀 Creating K8s Role '{role_name}'...")
+            print(f"🚀 Creating K8s Role '{role_name}' in '{mount_point}/'...")
             if vault.create_k8s_secret_role(name=role_name, mount_point=mount_point, allowed_namespaces=args.namespaces, rules_payload=rules_payload):
                 print(f"✅ K8s Secret Role '{role_name}' successfully created/updated.")
 
@@ -524,22 +507,16 @@ type: kubernetes.io/service-account-token
             sys.exit(1)
             
         try:
-            # A JWT is three parts separated by dots: header.payload.signature
-            # We only care about the payload (the middle part)
             payload_b64 = token.split('.')[1]
-            
-            # Python's base64 requires correct padding to decode properly
             payload_b64 += '=' * (-len(payload_b64) % 4)
             payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
             payload = json.loads(payload_json)
             
-            # Extract the native Kubernetes claims
             sa_data = payload.get("kubernetes.io", {}).get("serviceaccount", {})
             sa_name = sa_data.get("name", "Unknown")
             namespace = payload.get("kubernetes.io", {}).get("namespace", "Unknown")
             exp_time = payload.get("exp", 0)
             
-            # Calculate time remaining
             now = int(time.time())
             time_remaining = exp_time - now
             
@@ -558,7 +535,6 @@ type: kubernetes.io/service-account-token
         except Exception as e:
             print(f"❌ Error reading token format: {e}", file=sys.stderr)
             sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
