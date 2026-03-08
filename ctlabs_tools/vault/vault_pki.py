@@ -8,6 +8,8 @@ import os
 import json
 import glob
 import subprocess
+import tempfile
+import shutil
 from datetime import datetime
 from .core import HashiVault
 
@@ -18,7 +20,7 @@ def get_args():
 
     # 1. INFO (Global)
     p_info = subparsers.add_parser("info", help="Introspect locally issued TLS certificates")
-    p_info.add_argument("--dir", default="./certs", help="Directory containing the certificates (default: ./certs)")
+    p_info.add_argument("--dir", default="~/.certs", help="Directory containing the certificates (default: ~/.certs)")
 
     # 2. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage PKI Secrets Engines")
@@ -42,7 +44,15 @@ def get_args():
     p_issue.add_argument("role_name", help="PKI Role Name")
     p_issue.add_argument("common_name", help="The CN for the certificate (e.g., api.ctlabs.internal)")
     p_issue.add_argument("--ttl", default="24h", help="TTL for this specific cert")
-    p_issue.add_argument("--out-dir", default="./certs", help="Directory to save the certificate files")
+    p_issue.add_argument("--out-dir", default="~/.certs", help="Directory to save the certificate files (default: ~/.certs)")
+
+    # 5. EXEC (Ephemeral Injection)
+    p_exec = subparsers.add_parser("exec", help="Issue an ephemeral TLS cert, inject env vars, and run a command")
+    p_exec.add_argument("mount", help="Mount point (e.g., pki)")
+    p_exec.add_argument("role_name", help="PKI Role Name")
+    p_exec.add_argument("common_name", help="The CN for the certificate (e.g., client.ctlabs.internal)")
+    p_exec.add_argument("--ttl", default="5m", help="TTL for this ephemeral cert (default 5m)")
+    p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     return parser.parse_args()
 
@@ -58,9 +68,9 @@ def main():
     # 1. INFO (Global Introspection)
     # -------------------------------------------------------------------------
     if cmd == "info":
-        cert_dir = args.dir
+        cert_dir = os.path.expanduser(args.dir)
         if not os.path.exists(cert_dir) or not os.path.isdir(cert_dir):
-            print(f"❌ Directory '{cert_dir}' not found.", file=sys.stderr)
+            print(f"❌ Directory '{cert_dir}' not found. No certificates have been issued here yet.", file=sys.stderr)
             sys.exit(1)
 
         cert_paths = glob.glob(os.path.join(cert_dir, "*.crt")) + glob.glob(os.path.join(cert_dir, "*.pem"))
@@ -72,7 +82,6 @@ def main():
         print(f"🔍 Introspecting Local TLS Certificates in '{cert_dir}'...")
         for cert in cert_paths:
             try:
-                # Use openssl to extract the certificate metadata
                 res = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-subject", "-issuer", "-enddate"], capture_output=True, text=True, check=True)
                 lines = res.stdout.strip().split('\n')
                 
@@ -86,11 +95,8 @@ def main():
                         issuer = line.split("=", 1)[1].strip()
                     elif line.startswith("notAfter="):
                         enddate = line.split("=", 1)[1].strip()
-                        
-                        # Parse the OpenSSL date (e.g., 'Mar  7 20:00:00 2026 GMT')
                         try:
                             clean_date = enddate.replace(" GMT", "")
-                            # Remove double spaces for clean parsing
                             clean_date = " ".join(clean_date.split())
                             to_date = datetime.strptime(clean_date, "%b %d %H:%M:%S %Y")
                             now = datetime.utcnow()
@@ -107,7 +113,7 @@ def main():
                             else:
                                 time_str = "EXPIRED ⚠️"
                         except Exception:
-                            time_str = enddate # Fallback if parsing fails
+                            time_str = enddate 
 
                 is_ca = "-ca.crt" in cert
                 badge = " (🏛️ CA Chain)" if is_ca else ""
@@ -156,7 +162,6 @@ def main():
                 print(f"🔒 Generating Internal Root CA for '{args.common_name}'...")
                 client.write(f"{mount}/root/generate/internal", common_name=args.common_name, ttl=args.ttl)
                 
-                # Configure URLs automatically
                 issuer_url = f"{client.url}/v1/{mount}/ca"
                 crl_url = f"{client.url}/v1/{mount}/crl"
                 client.write(f"{mount}/config/urls", issuing_certificates=[issuer_url], crl_distribution_points=[crl_url])
@@ -176,19 +181,43 @@ def main():
                 
         elif action == "info":
             try:
-                # Get the actual CA Certificate text
                 res = client.read(f"{mount}/cert/ca")
                 if res and 'data' in res and 'certificate' in res['data']:
                     cert_body = res['data']['certificate']
                     print(f"🏛️ PKI CA Engine: {mount}/")
-                    # Quick parsing for human readability
-                    cert_lines = cert_body.strip().split('\n')
-                    print(f"  ├─ Certificate : {cert_lines[0]} ... ({len(cert_lines)-2} lines) ... {cert_lines[-1]}")
                     
-                    # Fetch config to show max TTL
-                    config_res = client.sys.read_mount_configuration(path=mount)
-                    if config_res and 'data' in config_res:
-                        print(f"  ├─ Max TTL     : {config_res['data'].get('max_lease_ttl', 'Unknown')}s")
+                    # Parse the raw cert text in-memory with OpenSSL
+                    subject, enddate, sans = "Unknown", "Unknown", "None"
+                    try:
+                        ossl_res = subprocess.run(
+                            ["openssl", "x509", "-noout", "-subject", "-enddate", "-ext", "subjectAltName"],
+                            input=cert_body, text=True, capture_output=True
+                        )
+                        lines = ossl_res.stdout.strip().split('\n')
+                        parsing_sans = False
+                        
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith("subject="): subject = line.split("=", 1)[1].strip()
+                            elif line.startswith("notAfter="): enddate = line.split("=", 1)[1].strip()
+                            elif line == "X509v3 Subject Alternative Name:": parsing_sans = True
+                            elif parsing_sans and line:
+                                sans = line
+                                parsing_sans = False
+                    except Exception:
+                        pass # Silently fail back to defaults if openssl fails
+                    
+                    print(f"  ├─ Subject : {subject}")
+                    print(f"  ├─ SANs    : {sans}")
+                    print(f"  ├─ Validity: {enddate}")
+                    
+                    # Fetch config to show max TTL limits
+                    try:
+                        config_res = client.sys.read_mount_configuration(path=mount)
+                        if config_res and 'data' in config_res:
+                            print(f"  ├─ Max TTL : {config_res['data'].get('max_lease_ttl', 'Unknown')}s")
+                    except Exception:
+                        pass
                 else:
                     print(f"❌ No active CA certificate found at '{mount}/'. (Has a root/intermediate been generated?)")
             except Exception as e:
@@ -307,6 +336,7 @@ def main():
         mount = args.mount.strip('/')
         role_name = args.role_name
         common_name = args.common_name
+        out_dir = os.path.expanduser(args.out_dir)
         
         client = vault._get_client()
         print(f"🔒 Requesting TLS Certificate for '{common_name}' from {mount}/{role_name}...")
@@ -322,13 +352,12 @@ def main():
             priv_key = data.get('private_key')
             ca_chain = data.get('ca_chain', [])
             
-            # Write to files
-            os.makedirs(args.out_dir, exist_ok=True)
+            os.makedirs(out_dir, exist_ok=True)
             safe_cn = common_name.replace("*", "star")
             
-            cert_path = os.path.join(args.out_dir, f"{safe_cn}.crt")
-            key_path = os.path.join(args.out_dir, f"{safe_cn}.key")
-            ca_path = os.path.join(args.out_dir, f"{safe_cn}-ca.crt")
+            cert_path = os.path.join(out_dir, f"{safe_cn}.crt")
+            key_path = os.path.join(out_dir, f"{safe_cn}.key")
+            ca_path = os.path.join(out_dir, f"{safe_cn}-ca.crt")
             
             with open(cert_path, "w") as f: f.write(cert)
             with open(key_path, "w") as f: f.write(priv_key)
@@ -344,6 +373,71 @@ def main():
         except Exception as e:
             print(f"❌ Error issuing certificate: {e}")
             sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # 5. EXEC (Ephemeral Mutual TLS)
+    # -------------------------------------------------------------------------
+    elif cmd == "exec":
+        mount = args.mount.strip('/')
+        role_name = args.role_name
+        common_name = args.common_name
+        
+        command_list = args.exec_cmd
+        if command_list and command_list[0] == "--":
+            command_list = command_list[1:]
+            
+        if not command_list:
+            print("❌ Error: No command provided to execute.", file=sys.stderr)
+            sys.exit(1)
+
+        client = vault._get_client()
+        temp_dir = None
+        exit_code = 1
+
+        try:
+            # 1. Create secure sandbox
+            temp_dir = tempfile.mkdtemp(prefix="vault-pki-")
+            os.chmod(temp_dir, 0o700)
+            
+            # 2. Issue short-lived cert
+            print(f"🔒 Requesting ephemeral TLS Certificate for '{common_name}'...", file=sys.stderr)
+            res = client.write(f"{mount}/issue/{role_name}", common_name=common_name, ttl=args.ttl)
+            if not res or 'data' not in res:
+                print("❌ Failed to issue certificate: No data returned from Vault.", file=sys.stderr)
+                sys.exit(1)
+                
+            data = res['data']
+            safe_cn = common_name.replace("*", "star")
+            cert_path = os.path.join(temp_dir, f"{safe_cn}.crt")
+            key_path = os.path.join(temp_dir, f"{safe_cn}.key")
+            ca_path = os.path.join(temp_dir, f"{safe_cn}-ca.crt")
+            
+            with open(cert_path, "w") as f: f.write(data.get('certificate', ''))
+            with open(key_path, "w") as f: f.write(data.get('private_key', ''))
+            with open(ca_path, "w") as f:
+                for c in data.get('ca_chain', []): f.write(c + "\n")
+                
+            # 3. Inject standard environment variables
+            env = os.environ.copy()
+            env["VAULT_PKI_CERT"] = cert_path
+            env["VAULT_PKI_KEY"] = key_path
+            env["VAULT_PKI_CA"] = ca_path
+            
+            print(f"🚀 Injecting certificates into environment and running command...\n" + "-"*40, file=sys.stderr)
+            
+            # 4. Execute command
+            exit_code = subprocess.run(command_list, env=env).returncode
+
+        except Exception as e:
+            print(f"❌ Error during exec: {e}", file=sys.stderr)
+            
+        finally:
+            # 5. Destroy the evidence
+            if temp_dir and os.path.exists(temp_dir):
+                print(f"\n🧹 Shredding ephemeral TLS certificates...", file=sys.stderr)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+            sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
