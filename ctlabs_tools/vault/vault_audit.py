@@ -263,7 +263,13 @@ def list_policies(vault, category):
         is_auth, is_access, is_secret = False, False, False
         
         for path in paths.keys():
-            prefix = path.split('/')[0]
+            # 🌟 SMART FIX: Strip leading slashes and extract base prefix without trailing wildcards
+            clean_path = path.strip('/')
+            if not clean_path: continue
+            
+            # e.g., 'kvv2*' -> 'kvv2'
+            prefix = clean_path.split('/')[0].strip('*+')
+            
             # 1. Auth & Internals
             if prefix in ["sys", "auth", "identity"]:
                 is_auth = True
