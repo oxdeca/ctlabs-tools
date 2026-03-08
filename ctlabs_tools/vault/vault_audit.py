@@ -170,7 +170,7 @@ def scan_engine_roles(vault, paths):
                             print(f"\n  ⚓ K8s Role: {role} (Mount: {m_clean}/)")
                             print(f"      ├─ Type       : {d.get('kubernetes_role_type', 'Unknown')}")
                             ns = d.get('allowed_kubernetes_namespaces', [])
-                            print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None')}")
+                            print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None'}")
                             print(f"      ├─ SA Name    : {d.get('service_account_name', 'Dynamic')}")
                     except: pass
                     
