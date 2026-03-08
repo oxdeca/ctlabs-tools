@@ -163,22 +163,33 @@ def get_args():
     p_gcp.add_argument("--sa-name", default="vault-gcp-auth", help="Service Account name for Zero-Touch setup (default: vault-gcp-auth)")
     p_gcp.add_argument("--credentials", help="Path to an existing GCP credentials JSON file (Alternative to --project)")
 
-    # 10. LDAP AUTH METHOD (Flattened Interface)
-    p_ldap = subparsers.add_parser("ldap", help="Manage LDAP Auth Configuration & Mappings")
-    p_ldap.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"], help="Action to perform")
-    p_ldap.add_argument("name", nargs="?", default="", help="Name of the LDAP mapping (Required for all except list/configure/read config)")
-    p_ldap.add_argument("--type", choices=["group", "user"], default="group", help="Mapping type (group or user, default: group)")
-    p_ldap.add_argument("--policies", help="Comma-separated Vault policies to grant")
-    p_ldap.add_argument("--groups", help="Comma-separated LDAP groups to implicitly attach (for user mapping)")
-    
-    # LDAP Config Args
-    p_ldap.add_argument("--url", help="LDAP server URL (e.g., ldaps://ldap.example.com) (for 'configure')")
-    p_ldap.add_argument("--bind-dn", help="Bind DN (for 'configure')")
-    p_ldap.add_argument("--bind-pass", help="Bind Password (for 'configure')")
-    p_ldap.add_argument("--user-dn", help="User search base DN (for 'configure')")
-    p_ldap.add_argument("--group-dn", help="Group search base DN (for 'configure')")
-    p_ldap.add_argument("--user-attr", help="User attribute (e.g., uid, sAMAccountName) (for 'configure')")
-    p_ldap.add_argument("--group-attr", help="Group attribute (e.g., cn) (for 'configure')")
+    # 🌟 10. LDAP AUTH METHOD (Restored Nested Structure with Standard Actions)
+    p_ldap = subparsers.add_parser("ldap", help="Manage LDAP Auth Method")
+    ldap_subs = p_ldap.add_subparsers(dest="ldap_cmd", required=True)
+
+    # 10a. LDAP Config
+    p_ldap_cfg = ldap_subs.add_parser("config", help="Manage LDAP Connection Config")
+    p_ldap_cfg.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_cfg.add_argument("--url", help="LDAP server URL (e.g., ldaps://ldap.example.com)")
+    p_ldap_cfg.add_argument("--bind-dn", help="Bind DN")
+    p_ldap_cfg.add_argument("--bind-pass", help="Bind Password")
+    p_ldap_cfg.add_argument("--user-dn", help="User search base DN")
+    p_ldap_cfg.add_argument("--group-dn", help="Group search base DN")
+    p_ldap_cfg.add_argument("--user-attr", help="User attribute (e.g., uid, sAMAccountName)")
+    p_ldap_cfg.add_argument("--group-attr", help="Group attribute (e.g., cn)")
+
+    # 10b. LDAP Group Mapping
+    p_ldap_grp = ldap_subs.add_parser("group", help="Map LDAP Groups to Policies")
+    p_ldap_grp.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_grp.add_argument("name", nargs="?", default="", help="LDAP Group Name")
+    p_ldap_grp.add_argument("--policies", help="Comma-separated Vault policies")
+
+    # 10c. LDAP User Mapping
+    p_ldap_usr = ldap_subs.add_parser("user", help="Map specific LDAP Users to Policies")
+    p_ldap_usr.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_ldap_usr.add_argument("name", nargs="?", default="", help="LDAP User Name")
+    p_ldap_usr.add_argument("--policies", help="Comma-separated Vault policies")
+    p_ldap_usr.add_argument("--groups", help="Comma-separated LDAP groups to implicitly attach")
 
     return parser.parse_args()
 
@@ -190,15 +201,19 @@ def main():
         sys.exit(1)
 
     cmd = args.command
-    action = args.action
-    name = getattr(args, 'name', '')
+    
+    # Nested parsing for LDAP
+    if cmd == "ldap":
+        action = args.action
+        name = getattr(args, 'name', '')
+    else:
+        action = args.action
+        name = getattr(args, 'name', '')
 
     # Enforce 'name' requirement for commands that need it
-    if cmd != "alias" and action not in ["list", "configure", "register"] and not name:
+    if cmd not in ["alias", "ldap"] and action not in ["list", "configure", "register"] and not name:
         if action == "merge" and getattr(args, 'target', None):
             pass # Target is handled in entity merge logic
-        elif cmd == "ldap" and action in ["read", "info"]:
-            pass # Allow empty name to read/info the LDAP config
         else:
             print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
             sys.exit(1)
@@ -923,48 +938,21 @@ def main():
                     print(f"✅ Deleted GCP auth role '{name}'.")
 
     # -------------------------------------------------------------------------
-    # 10. LDAP AUTH METHOD
+    # 10. LDAP AUTH MANAGEMENT
     # -------------------------------------------------------------------------
     elif cmd == "ldap":
+        ldap_cmd = args.ldap_cmd
+        action = args.action
         mount = "auth/ldap"
         client = vault._get_client()
 
-        if action == "configure":
-            payload = {}
-            if getattr(args, 'url', None): payload["url"] = args.url
-            if getattr(args, 'bind_dn', None): payload["binddn"] = args.bind_dn
-            if getattr(args, 'bind_pass', None): payload["bindpass"] = args.bind_pass
-            if getattr(args, 'user_dn', None): payload["userdn"] = args.user_dn
-            if getattr(args, 'group_dn', None): payload["groupdn"] = args.group_dn
-            if getattr(args, 'user_attr', None): payload["userattr"] = args.user_attr
-            if getattr(args, 'group_attr', None): payload["groupattr"] = args.group_attr
-            
-            if not payload:
-                print("⚠️ No parameters provided for configure. Provide at least one (e.g. --url).", file=sys.stderr)
+        if ldap_cmd in ["user", "group"]:
+            if action not in ["list"] and not name:
+                print(f"❌ Error: 'name' is required for the '{action}' action.", file=sys.stderr)
                 sys.exit(1)
-                
-            try:
-                client.write(f"{mount}/config", **payload)
-                print("✅ LDAP Auth configuration successfully updated.")
-            except Exception as e:
-                print(f"❌ Error updating LDAP config: {e}", file=sys.stderr)
 
-        elif action == "list":
-            target = "groups" if args.type == "group" else "users"
-            try:
-                res = client.list(f"{mount}/{target}")
-                keys = res.get('data', {}).get('keys', []) if res else []
-                if keys:
-                    print(f"👥 Configured LDAP {target.capitalize()}:")
-                    for k in keys: print(f"  ├─ {k}")
-                else:
-                    print(f"ℹ️ No LDAP {target} configured.")
-            except Exception as e:
-                print(f"❌ Error: {e}", file=sys.stderr)
-
-        elif action in ["read", "info"]:
-            if not name:
-                # Without a name, read the global LDAP configuration
+        if ldap_cmd == "config":
+            if action in ["read", "info", "list"]:
                 try:
                     res = client.read(f"{mount}/config")
                     if res and 'data' in res:
@@ -983,9 +971,50 @@ def main():
                         print("❌ LDAP config not found. Is the LDAP auth engine enabled?", file=sys.stderr)
                 except Exception as e:
                     print(f"❌ Error reading LDAP config: {e}", file=sys.stderr)
-            else:
-                # With a name, read the user or group mapping
-                target = "groups" if args.type == "group" else "users"
+
+            elif action in ["create", "update"]:
+                payload = {}
+                if getattr(args, 'url', None): payload["url"] = args.url
+                if getattr(args, 'bind_dn', None): payload["binddn"] = args.bind_dn
+                if getattr(args, 'bind_pass', None): payload["bindpass"] = args.bind_pass
+                if getattr(args, 'user_dn', None): payload["userdn"] = args.user_dn
+                if getattr(args, 'group_dn', None): payload["groupdn"] = args.group_dn
+                if getattr(args, 'user_attr', None): payload["userattr"] = args.user_attr
+                if getattr(args, 'group_attr', None): payload["groupattr"] = args.group_attr
+                
+                if not payload:
+                    print("⚠️ No parameters provided for update. Provide at least one (e.g. --url).", file=sys.stderr)
+                    sys.exit(1)
+                    
+                try:
+                    client.write(f"{mount}/config", **payload)
+                    print("✅ LDAP Auth configuration successfully updated.")
+                except Exception as e:
+                    print(f"❌ Error updating LDAP config: {e}", file=sys.stderr)
+
+            elif action == "delete":
+                try:
+                    client.delete(f"{mount}/config")
+                    print("✅ LDAP Auth configuration deleted.")
+                except Exception as e:
+                    print(f"❌ Error deleting LDAP config: {e}", file=sys.stderr)
+
+        elif ldap_cmd in ["group", "user"]:
+            target = "groups" if ldap_cmd == "group" else "users"
+            
+            if action == "list":
+                try:
+                    res = client.list(f"{mount}/{target}")
+                    keys = res.get('data', {}).get('keys', []) if res else []
+                    if keys:
+                        print(f"👥 Configured LDAP {target.capitalize()}:")
+                        for k in keys: print(f"  ├─ {k}")
+                    else:
+                        print(f"ℹ️ No LDAP {target} configured.")
+                except Exception as e:
+                    print(f"❌ Error: {e}", file=sys.stderr)
+                    
+            elif action in ["read", "info"]:
                 try:
                     res = client.read(f"{mount}/{target}/{name}")
                     if res and 'data' in res:
@@ -993,39 +1022,38 @@ def main():
                             print(json.dumps(res['data'], indent=2))
                         else:
                             d = res['data']
-                            icon = "🏢" if args.type == "group" else "👤"
-                            print(f"{icon} LDAP {args.type.capitalize()} Mapping: {name}")
+                            icon = "🏢" if ldap_cmd == "group" else "👤"
+                            print(f"{icon} LDAP {ldap_cmd.capitalize()} Mapping: {name}")
                             pols = d.get('policies', [])
                             print(f"  ├─ Policies : {', '.join(pols) if pols else 'None'}")
-                            if args.type == "user":
+                            if ldap_cmd == "user":
                                 grps = d.get('groups', [])
                                 print(f"  ├─ Groups   : {', '.join(grps) if grps else 'None'}")
                     else:
-                        print(f"❌ LDAP {args.type} '{name}' mapping not found.", file=sys.stderr)
+                        print(f"❌ LDAP {ldap_cmd} '{name}' mapping not found.", file=sys.stderr)
                 except Exception as e:
                     print(f"❌ Error: {e}", file=sys.stderr)
-
-        elif action in ["create", "update"]:
-            target = "groups" if args.type == "group" else "users"
-            payload = {}
-            if getattr(args, "policies", None) is not None:
-                payload["policies"] = [p.strip() for p in args.policies.split(",") if p.strip()]
-            if args.type == "user" and getattr(args, "groups", None) is not None:
-                payload["groups"] = [g.strip() for g in args.groups.split(",") if g.strip()]
-                
-            try:
-                client.write(f"{mount}/{target}/{name}", **payload)
-                print(f"✅ LDAP {args.type} '{name}' mapped successfully.")
-            except Exception as e:
-                print(f"❌ Error updating mapping: {e}", file=sys.stderr)
-
-        elif action == "delete":
-            target = "groups" if args.type == "group" else "users"
-            try:
-                client.delete(f"{mount}/{target}/{name}")
-                print(f"✅ LDAP {args.type} '{name}' mapping deleted.")
-            except Exception as e:
-                print(f"❌ Error deleting mapping: {e}", file=sys.stderr)
+                    
+            elif action in ["create", "update"]:
+                payload = {}
+                if getattr(args, "policies", None) is not None:
+                    payload["policies"] = [p.strip() for p in args.policies.split(",") if p.strip()]
+                if ldap_cmd == "user" and getattr(args, "groups", None) is not None:
+                    payload["groups"] = [g.strip() for g in args.groups.split(",") if g.strip()]
+                    
+                try:
+                    client.write(f"{mount}/{target}/{name}", **payload)
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapped successfully.")
+                except Exception as e:
+                    print(f"❌ Error updating mapping: {e}", file=sys.stderr)
+                    
+            elif action == "delete":
+                try:
+                    client.delete(f"{mount}/{target}/{name}")
+                    print(f"✅ LDAP {ldap_cmd} '{name}' mapping deleted.")
+                except Exception as e:
+                    print(f"❌ Error deleting mapping: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
+
