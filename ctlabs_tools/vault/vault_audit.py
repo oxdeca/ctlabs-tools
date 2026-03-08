@@ -277,8 +277,22 @@ def scan_upstream_identities(vault, target_policies):
                             print(f"  🧑‍💻 LDAP User      : {lu} in '{m_clean}/' (via {', '.join(intersect)})")
             except: pass
 
+        elif m_type == "userpass":
+            try:
+                res = client.list(f"auth/{m_clean}/users")
+                userpass_users = res.get('data', {}).get('keys', []) if res else []
+                for uu in userpass_users:
+                    uu_data = client.read(f"auth/{m_clean}/users/{uu}")
+                    if uu_data and 'data' in uu_data:
+                        policies = set(uu_data['data'].get('token_policies', []))
+                        intersect = policies.intersection(target_policies)
+                        if intersect:
+                            found_any = True
+                            print(f"  🔑 Userpass User  : {uu} in '{m_clean}/' (via {', '.join(intersect)})")
+            except: pass
+
     if not found_any:
-        print("  ℹ️  No Identity Groups, Entities, AppRoles, or LDAP mappings currently have this policy attached.")
+        print("  ℹ️  No Identity Groups, Entities, AppRoles, Userpass, or LDAP mappings currently have this policy attached.")
 
 
 # =============================================================================
@@ -597,6 +611,50 @@ def audit_ldap(vault, target_name, is_group=False, silent_not_found=False):
         
     return True
 
+def audit_userpass(vault, target_name, silent_not_found=False):
+    client = vault._get_client()
+    policies = set()
+    
+    # Exhaustive Userpass search across all mounts
+    try:
+        am = client.sys.list_auth_methods().get('data', {})
+        mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'userpass']
+    except:
+        mounts = ['userpass']
+        
+    found_in_mount = None
+    
+    for m in mounts:
+        try:
+            res = client.read(f"auth/{m}/users/{target_name}")
+            if res and 'data' in res:
+                if not found_in_mount:
+                    print(f"\n🔎 FORWARD AUDIT: Access graph for Userpass User '{target_name}'\n" + "="*70)
+                
+                found_in_mount = m
+                direct_pol = res['data'].get('token_policies', [])
+                policies.update(direct_pol)
+                if direct_pol: print(f"📜 Direct Policies (in '{m}/') : {', '.join(direct_pol)}")
+        except: pass
+        
+    if not found_in_mount:
+        if not silent_not_found: print(f"❌ Userpass User '{target_name}' not found.")
+        return False
+
+    if not policies:
+        print(f"\n⚠️ No policies attached to this userpass user. Access is completely restricted.")
+        return True
+        
+    print("\n" + "="*70)
+    print("🔻 DOWNSTREAM ACCESS (Merged capabilities)")
+    print("="*70)
+    
+    for p in policies:
+        if p in ["default", "root"]: continue
+        audit_policy(vault, p, show_upstream=False)
+        
+    return True
+
 # =============================================================================
 # CLI ROUTER
 # =============================================================================
@@ -634,10 +692,10 @@ def get_args():
     p_user = subparsers.add_parser("user", help="Audit User Access")
     p_usr_subs = p_user.add_subparsers(dest="action", required=True)
     p_ul = p_usr_subs.add_parser("list", help="List users")
-    p_ul.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
+    p_ul.add_argument("--type", choices=["identity", "ldap", "userpass", "all"], default="all")
     p_ui = p_usr_subs.add_parser("info", help="Audit specific user")
     p_ui.add_argument("name", help="User name")
-    p_ui.add_argument("--type", choices=["identity", "ldap", "all"], default="all")
+    p_ui.add_argument("--type", choices=["identity", "ldap", "userpass", "all"], default="all")
 
     # 5. GROUP
     p_group = subparsers.add_parser("group", help="Audit Group Access")
@@ -718,6 +776,8 @@ def main():
         
         if action == "list":
             client = vault._get_client()
+            
+            # Identity Users
             if req_type in ["all", "identity"]:
                 try:
                     res = client.list("identity/entity/name")
@@ -728,6 +788,7 @@ def main():
                     elif req_type == "identity": print(f"ℹ️ No identity users found.")
                 except Exception as e: print(f"❌ Error fetching identity users: {e}", file=sys.stderr)
                 
+            # LDAP Users
             if req_type in ["all", "ldap"]:
                 try:
                     am = client.sys.list_auth_methods().get('data', {})
@@ -744,6 +805,24 @@ def main():
                             found_ldap = True
                     except: pass
                 if not found_ldap and req_type == "ldap": print(f"ℹ️ No LDAP user mappings found.")
+
+            # Userpass Users
+            if req_type in ["all", "userpass"]:
+                try:
+                    am = client.sys.list_auth_methods().get('data', {})
+                    mounts = [p.strip('/') for p, i in am.items() if i.get('type') == 'userpass']
+                except: mounts = ['userpass']
+                
+                found_up = False
+                for m in mounts:
+                    try:
+                        keys = client.list(f"auth/{m}/users")['data']['keys']
+                        if keys:
+                            print(f"🔑 Configured Userpass Users in '{m}/':")
+                            for k in keys: print(f"  ├─ {k}")
+                            found_up = True
+                    except: pass
+                if not found_up and req_type == "userpass": print(f"ℹ️ No userpass users found.")
                 
         elif action == "info":
             name = getattr(args, 'name', '')
@@ -761,15 +840,21 @@ def main():
             if req_type in ["all", "ldap"]:
                 if audit_ldap(vault, name, is_group=False, silent_not_found=silent):
                     found = True
+
+            if req_type in ["all", "userpass"]:
+                if audit_userpass(vault, name, silent_not_found=silent):
+                    found = True
                     
             if req_type == "all" and not found:
-                print(f"❌ User/Entity '{name}' not found in Identity or LDAP mapping.")
+                print(f"❌ User/Entity '{name}' not found in Identity, LDAP, or Userpass mappings.")
 
     elif cmd == "group":
         req_type = getattr(args, 'type', 'all')
         
         if action == "list":
             client = vault._get_client()
+            
+            # Identity Groups
             if req_type in ["all", "identity"]:
                 try:
                     res = client.list("identity/group/name")
@@ -780,6 +865,7 @@ def main():
                     elif req_type == "identity": print("ℹ️ No identity groups found.")
                 except Exception as e: print(f"❌ Error fetching identity groups: {e}", file=sys.stderr)
                 
+            # LDAP Groups
             if req_type in ["all", "ldap"]:
                 try:
                     am = client.sys.list_auth_methods().get('data', {})
