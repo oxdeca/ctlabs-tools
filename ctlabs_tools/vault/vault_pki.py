@@ -25,14 +25,14 @@ def get_args():
     # 2. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage PKI Secrets Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_engine.add_argument("mount", nargs="?", default="", help="Mount point (e.g., pki, pki_int)")
+    p_engine.add_argument("ca_name", nargs="?", default="", help="CA name (e.g., root-ca, auto-mounted at pki/root-ca)")
     p_engine.add_argument("--common-name", default="CTLabs Internal Root CA", help="Common Name for a new Root CA")
     p_engine.add_argument("--ttl", default="87600h", help="Max TTL for the CA (default 10 years)")
 
     # 3. ROLE
     p_role = subparsers.add_parser("role", help="Manage PKI Roles (Allowed Domains)")
     p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_role.add_argument("mount", nargs="?", default="", help="Mount point")
+    p_role.add_argument("ca_name", nargs="?", default="", help="CA name")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the PKI role")
     p_role.add_argument("--allowed-domains", help="Comma-separated allowed domains (e.g., ctlabs.internal)")
     p_role.add_argument("--allow-subdomains", action="store_true", help="Allow issuing certs for subdomains")
@@ -40,7 +40,7 @@ def get_args():
 
     # 4. ISSUE
     p_issue = subparsers.add_parser("issue", help="Issue a TLS Certificate")
-    p_issue.add_argument("mount", help="Mount point (e.g., pki)")
+    p_issue.add_argument("ca_name", help="CA name (e.g., root-ca)")
     p_issue.add_argument("role_name", help="PKI Role Name")
     p_issue.add_argument("common_name", help="The CN for the certificate (e.g., api.ctlabs.internal)")
     p_issue.add_argument("--ttl", default="24h", help="TTL for this specific cert")
@@ -48,7 +48,7 @@ def get_args():
 
     # 5. EXEC (Ephemeral Injection)
     p_exec = subparsers.add_parser("exec", help="Issue an ephemeral TLS cert, inject env vars, and run a command")
-    p_exec.add_argument("mount", help="Mount point (e.g., pki)")
+    p_exec.add_argument("ca_name", help="CA name (e.g., root-ca)")
     p_exec.add_argument("role_name", help="PKI Role Name")
     p_exec.add_argument("common_name", help="The CN for the certificate (e.g., client.ctlabs.internal)")
     p_exec.add_argument("--ttl", default="5m", help="TTL for this ephemeral cert (default 5m)")
@@ -70,13 +70,11 @@ def main():
     if cmd == "info":
         cert_paths = []
         
-        # 1. Check Standard Permanent Directory
         cert_dir = os.path.expanduser(args.dir)
         if os.path.exists(cert_dir) and os.path.isdir(cert_dir):
             cert_paths.extend(glob.glob(os.path.join(cert_dir, "*.crt")))
             cert_paths.extend(glob.glob(os.path.join(cert_dir, "*.pem")))
             
-        # 2. Check Ephemeral Sandbox Directories
         temp_dir = tempfile.gettempdir()
         ephemeral_certs = glob.glob(os.path.join(temp_dir, "vault-pki-*", "*.crt")) + glob.glob(os.path.join(temp_dir, "vault-pki-*", "*.pem"))
         cert_paths.extend(ephemeral_certs)
@@ -147,19 +145,22 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "engine":
         action = args.action
-        mount = getattr(args, 'mount', '').strip('/')
+        ca_name = getattr(args, 'ca_name', '').strip('/')
+        mount = f"pki/{ca_name}" if ca_name else ""
         
         if action == "list":
             engines = vault.list_engines(backend_type="pki")
             if engines:
                 print("🌐 Active PKI Certificate Authorities:")
-                for e in engines: print(f"  ├─ {e}")
+                for e in engines: 
+                    # Only show engines properly mounted under our standard
+                    if e.startswith("pki/"): print(f"  ├─ {e}")
             else:
                 print("ℹ️ No PKI Engines mounted.")
             sys.exit(0)
             
-        if not mount:
-            print("❌ Error: Mount point is required.", file=sys.stderr)
+        if not ca_name:
+            print("❌ Error: CA name is required.", file=sys.stderr)
             sys.exit(1)
             
         client = vault._get_client()
@@ -249,7 +250,8 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "role":
         action = args.action
-        mount = getattr(args, 'mount', '').strip('/')
+        ca_name = getattr(args, 'ca_name', '').strip('/')
+        mount = f"pki/{ca_name}" if ca_name else ""
         role_name = getattr(args, 'role_name', '')
         
         if action == "list":
@@ -258,7 +260,7 @@ def main():
             else:
                 print("🔍 Searching across all active PKI engines...")
                 engines = vault.list_engines(backend_type="pki") or []
-                engines_to_check = [e.strip('/') for e in engines]
+                engines_to_check = [e.strip('/') for e in engines if e.startswith("pki/")]
 
             if not engines_to_check:
                 print("ℹ️ No PKI Engines currently mounted.")
@@ -280,8 +282,8 @@ def main():
             if not found_any: print("\nℹ️ No PKI roles found.")
             sys.exit(0)
             
-        if not mount or not role_name:
-            print("❌ Error: mount and role_name are required.", file=sys.stderr)
+        if not ca_name or not role_name:
+            print("❌ Error: ca_name and role_name are required.", file=sys.stderr)
             sys.exit(1)
             
         client = vault._get_client()
@@ -291,7 +293,7 @@ def main():
                 print("❌ Error: --allowed-domains is required to create a PKI role.", file=sys.stderr)
                 sys.exit(1)
                 
-            print(f"🚀 {action.capitalize()}ing PKI Role '{role_name}'...")
+            print(f"🚀 {action.capitalize()}ing PKI Role '{role_name}' in '{mount}/'...")
             try:
                 domains = [d.strip() for d in args.allowed_domains.split(",")]
                 client.write(
@@ -335,7 +337,7 @@ def main():
         elif action == "delete":
             try:
                 client.delete(f"{mount}/roles/{role_name}")
-                print(f"✅ Deleted PKI role '{role_name}'.")
+                print(f"✅ Deleted PKI role '{role_name}' from '{mount}/'.")
             except Exception as e:
                 print(f"❌ Error deleting PKI role: {e}")
 
@@ -343,7 +345,9 @@ def main():
     # 4. ISSUE (Requesting Certificates)
     # -------------------------------------------------------------------------
     elif cmd == "issue":
-        mount = args.mount.strip('/')
+        ca_name = args.ca_name.strip('/')
+        mount = f"pki/{ca_name}"
+        
         role_name = args.role_name
         common_name = args.common_name
         out_dir = os.path.expanduser(args.out_dir)
@@ -374,9 +378,8 @@ def main():
             with open(ca_path, "w") as f:
                 for c in ca_chain: f.write(c + "\n")
                 
-            # 🔥 ENFORCE STRICT PERMISSIONS
             os.chmod(cert_path, 0o644)
-            os.chmod(key_path, 0o600) # Private key is owner-only
+            os.chmod(key_path, 0o600)
             os.chmod(ca_path, 0o644)
                 
             print(f"✅ Success! Certificate issued.")
@@ -393,7 +396,9 @@ def main():
     # 5. EXEC (Ephemeral Mutual TLS)
     # -------------------------------------------------------------------------
     elif cmd == "exec":
-        mount = args.mount.strip('/')
+        ca_name = args.ca_name.strip('/')
+        mount = f"pki/{ca_name}"
+        
         role_name = args.role_name
         common_name = args.common_name
         
@@ -410,12 +415,10 @@ def main():
         exit_code = 1
 
         try:
-            # 1. Create secure sandbox
             temp_dir = tempfile.mkdtemp(prefix="vault-pki-")
-            os.chmod(temp_dir, 0o700) # Sandbox is strictly locked down
+            os.chmod(temp_dir, 0o700) 
             
-            # 2. Issue short-lived cert
-            print(f"🔒 Requesting ephemeral TLS Certificate for '{common_name}'...", file=sys.stderr)
+            print(f"🔒 Requesting ephemeral TLS Certificate for '{common_name}' from '{mount}/'...", file=sys.stderr)
             res = client.write(f"{mount}/issue/{role_name}", common_name=common_name, ttl=args.ttl)
             if not res or 'data' not in res:
                 print("❌ Failed to issue certificate: No data returned from Vault.", file=sys.stderr)
@@ -432,31 +435,25 @@ def main():
             with open(ca_path, "w") as f:
                 for c in data.get('ca_chain', []): f.write(c + "\n")
                 
-            # 🔥 ENFORCE MAXIMUM PARANOIA PERMISSIONS
             os.chmod(cert_path, 0o600)
             os.chmod(key_path, 0o600)
             os.chmod(ca_path, 0o600)
                 
-            # 3. Inject standard environment variables
             env = os.environ.copy()
             env["VAULT_PKI_CERT"] = cert_path
             env["VAULT_PKI_KEY"] = key_path
             env["VAULT_PKI_CA"] = ca_path
             
             print(f"🚀 Injecting certificates into environment and running command...\n" + "-"*40, file=sys.stderr)
-            
-            # 4. Execute command
             exit_code = subprocess.run(command_list, env=env).returncode
 
         except Exception as e:
             print(f"❌ Error during exec: {e}", file=sys.stderr)
             
         finally:
-            # 5. Destroy the evidence
             if temp_dir and os.path.exists(temp_dir):
                 print(f"\n🧹 Shredding ephemeral TLS certificates...", file=sys.stderr)
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                
             sys.exit(exit_code)
 
 if __name__ == "__main__":

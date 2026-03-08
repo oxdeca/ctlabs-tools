@@ -109,7 +109,7 @@ def get_args():
 
     # 2. EXEC
     p_exec = subparsers.add_parser("exec", help="Sign your SSH key and connect to a host")
-    p_exec.add_argument("engine", help="Mount point (e.g., ssh)")
+    p_exec.add_argument("name", help="Engine name (e.g., ca-dev, auto-mounted at ssh/ca-dev)")
     p_exec.add_argument("role", help="Vault SSH Role")
     p_exec.add_argument("target_host", help="The SSH host to connect to (e.g., db-prod)")
     p_exec.add_argument("--key", help="Explicit path to public key (overrides ~/.ssh/config)")
@@ -119,13 +119,13 @@ def get_args():
     # 3. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage SSH CA Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_engine.add_argument("mount", nargs="?", default="", help="Mount point")
+    p_engine.add_argument("name", nargs="?", default="", help="Engine name (e.g., ca-dev)")
     p_engine.add_argument("--private-key", help="Path to a pre-generated private key to import (e.g., ./vault_ca_key)")
 
     # 4. ROLE
     p_role = subparsers.add_parser("role", help="Manage SSH Roles (Principals & Access)")
     p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_role.add_argument("mount", nargs="?", default="", help="Mount point")
+    p_role.add_argument("engine_name", nargs="?", default="", help="Engine name")
     p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
     p_role.add_argument("--default-user", default="ubuntu", help="Default SSH principal")
     p_role.add_argument("--allowed-users", default="ubuntu,root", help="Comma-separated allowed principals")
@@ -207,7 +207,9 @@ def main():
     # 2. EXEC
     # -------------------------------------------------------------------------
     elif cmd == "exec":
-        mount = args.engine.strip('/')
+        name = args.name.strip('/')
+        mount = f"ssh/{name}"
+        
         target_host = args.target_host
         command_list = args.exec_cmd
         if command_list and command_list[0] == "--": command_list = command_list[1:]
@@ -299,18 +301,21 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "engine":
         action = args.action
-        mount = args.mount.strip('/')
+        name = getattr(args, 'name', '').strip('/')
+        mount = f"ssh/{name}" if name else ""
         
         if action == "list":
             engines = vault.list_engines(backend_type="ssh")
             if engines:
                 print("🌐 Active SSH CA Engines:")
-                for e in engines: print(f"  ├─ {e}")
+                for e in engines: 
+                    # Only show engines properly mounted under our standard
+                    if e.startswith("ssh/"): print(f"  ├─ {e}")
             else: print("ℹ️ No SSH CA Engines mounted.")
             sys.exit(0)
             
-        if not mount:
-            print("❌ Error: Mount point is required.", file=sys.stderr)
+        if not name:
+            print("❌ Error: Engine name is required.", file=sys.stderr)
             sys.exit(1)
             
         elif action == "create":
@@ -358,8 +363,9 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "role":
         action = args.action
-        mount = args.mount.strip('/')
-        role_name = args.role_name
+        engine_name = getattr(args, 'engine_name', '').strip('/')
+        mount = f"ssh/{engine_name}" if engine_name else ""
+        role_name = getattr(args, 'role_name', '')
         
         if action == "list":
             if mount:
@@ -367,7 +373,7 @@ def main():
             else:
                 print("🔍 Searching across all active SSH engines...")
                 engines = vault.list_engines(backend_type="ssh") or []
-                engines_to_check = [e.strip('/') for e in engines]
+                engines_to_check = [e.strip('/') for e in engines if e.startswith("ssh/")]
 
             if not engines_to_check:
                 print("ℹ️ No SSH CA Engines currently mounted.")
@@ -389,8 +395,8 @@ def main():
             if not found_any: print("\nℹ️ No SSH roles found.")
             sys.exit(0)
             
-        if not mount:
-            print("❌ Error: Mount point is required (e.g., vault-ssh role read ssh my-role).", file=sys.stderr)
+        if not engine_name:
+            print("❌ Error: Engine name is required.", file=sys.stderr)
             sys.exit(1)
             
         if not role_name:
@@ -398,7 +404,7 @@ def main():
             sys.exit(1)
             
         if action in ["create", "update"]:
-            print(f"🚀 {action.capitalize()}ing SSH Role '{role_name}'...")
+            print(f"🚀 {action.capitalize()}ing SSH Role '{role_name}' in '{mount}/'...")
             if vault.create_ssh_role(role_name, mount, args.default_user, args.allowed_users, args.ttl):
                 print(f"✅ SSH Role '{role_name}' successfully configured.")
                 
@@ -435,7 +441,7 @@ def main():
             client = vault._get_client()
             try:
                 client.delete(f"{mount}/roles/{role_name}")
-                print(f"✅ Deleted SSH role '{role_name}'.")
+                print(f"✅ Deleted SSH role '{role_name}' from '{mount}/'.")
             except Exception as e:
                 print(f"❌ Error deleting SSH role: {e}")
 
