@@ -68,18 +68,24 @@ def main():
     # 1. INFO (Global Introspection)
     # -------------------------------------------------------------------------
     if cmd == "info":
+        cert_paths = []
+        
+        # 1. Check Standard Permanent Directory
         cert_dir = os.path.expanduser(args.dir)
-        if not os.path.exists(cert_dir) or not os.path.isdir(cert_dir):
-            print(f"❌ Directory '{cert_dir}' not found. No certificates have been issued here yet.", file=sys.stderr)
-            sys.exit(1)
-
-        cert_paths = glob.glob(os.path.join(cert_dir, "*.crt")) + glob.glob(os.path.join(cert_dir, "*.pem"))
+        if os.path.exists(cert_dir) and os.path.isdir(cert_dir):
+            cert_paths.extend(glob.glob(os.path.join(cert_dir, "*.crt")))
+            cert_paths.extend(glob.glob(os.path.join(cert_dir, "*.pem")))
+            
+        # 2. Check Ephemeral Sandbox Directories
+        temp_dir = tempfile.gettempdir()
+        ephemeral_certs = glob.glob(os.path.join(temp_dir, "vault-pki-*", "*.crt")) + glob.glob(os.path.join(temp_dir, "vault-pki-*", "*.pem"))
+        cert_paths.extend(ephemeral_certs)
         
         if not cert_paths:
-            print(f"❌ No certificates (*.crt, *.pem) found in '{cert_dir}'.", file=sys.stderr)
+            print(f"❌ No active TLS certificates found in '{cert_dir}' or in temporary sandboxes.", file=sys.stderr)
             sys.exit(1)
 
-        print(f"🔍 Introspecting Local TLS Certificates in '{cert_dir}'...")
+        print("🔍 Introspecting Active TLS Certificates...")
         for cert in cert_paths:
             try:
                 res = subprocess.run(["openssl", "x509", "-in", cert, "-noout", "-subject", "-issuer", "-enddate"], capture_output=True, text=True, check=True)
@@ -116,9 +122,15 @@ def main():
                             time_str = enddate 
 
                 is_ca = "-ca.crt" in cert
-                badge = " (🏛️ CA Chain)" if is_ca else ""
+                is_ephemeral = "vault-pki-" in cert
+                
+                badges = []
+                if is_ca: badges.append("🏛️ CA Chain")
+                if is_ephemeral: badges.append("👻 Ephemeral Sandbox")
+                
+                badge_str = f" ({', '.join(badges)})" if badges else ""
 
-                print(f"\n📄 Certificate : {cert}{badge}")
+                print(f"\n📄 Certificate : {cert}{badge_str}")
                 print(f"🏷️  Subject     : {subject}")
                 print(f"🏛️  Issuer      : {issuer}")
                 print(f"⏳ Remaining   : {time_str}")
@@ -186,7 +198,6 @@ def main():
                     cert_body = res['data']['certificate']
                     print(f"🏛️ PKI CA Engine: {mount}/")
                     
-                    # Parse the raw cert text in-memory with OpenSSL
                     subject, enddate, sans = "Unknown", "Unknown", "None"
                     try:
                         ossl_res = subprocess.run(
@@ -205,13 +216,12 @@ def main():
                                 sans = line
                                 parsing_sans = False
                     except Exception:
-                        pass # Silently fail back to defaults if openssl fails
+                        pass
                     
                     print(f"  ├─ Subject : {subject}")
                     print(f"  ├─ SANs    : {sans}")
                     print(f"  ├─ Validity: {enddate}")
                     
-                    # Fetch config to show max TTL limits
                     try:
                         config_res = client.sys.read_mount_configuration(path=mount)
                         if config_res and 'data' in config_res:
