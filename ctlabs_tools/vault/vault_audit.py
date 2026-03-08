@@ -170,7 +170,7 @@ def scan_engine_roles(vault, paths):
                             print(f"\n  ⚓ K8s Role: {role} (Mount: {m_clean}/)")
                             print(f"      ├─ Type       : {d.get('kubernetes_role_type', 'Unknown')}")
                             ns = d.get('allowed_kubernetes_namespaces', [])
-                            print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None'}")
+                            print(f"      ├─ Namespaces : {', '.join(ns) if ns else 'None')}")
                             print(f"      ├─ SA Name    : {d.get('service_account_name', 'Dynamic')}")
                     except: pass
                     
@@ -515,6 +515,15 @@ def audit_identity(vault, target_name, is_group=False, silent_not_found=False):
             print(f"\n🔎 FORWARD AUDIT: Access graph for Identity {id_type} '{target_name}'\n" + "="*70)
             print(f"👤 Entity ID : {res['data']['id']}")
             
+            # Explicitly capture and show Aliases attached to this entity
+            aliases = res['data'].get('aliases', [])
+            if aliases:
+                print(f"🔗 Bound Aliases (Identity Mappings):")
+                for a in aliases:
+                    a_name = a.get('name', 'Unknown')
+                    mnt = a.get('mount_path', 'Unknown')
+                    print(f"  ├─ {a_name} (Mount: {mnt})")
+            
             direct_pol = res['data'].get('policies', [])
             policies.update(direct_pol)
             if direct_pol: print(f"📜 Direct Policies : {', '.join(direct_pol)}")
@@ -598,7 +607,8 @@ def audit_ldap(vault, target_name, is_group=False, silent_not_found=False):
         return False
 
     if not policies:
-        print(f"\n⚠️ No policies attached to this {id_type.lower()}. Access is completely restricted.")
+        print(f"\n⚠️ No policies attached directly to this {id_type.lower()}.")
+        if not is_group: print(f"ℹ️ (Tip: If this LDAP user is aliased to an Identity Entity, check the Identity graph above for inherited permissions.)")
         return True
         
     print("\n" + "="*70)
@@ -642,7 +652,8 @@ def audit_userpass(vault, target_name, silent_not_found=False):
         return False
 
     if not policies:
-        print(f"\n⚠️ No policies attached to this userpass user. Access is completely restricted.")
+        print(f"\n⚠️ No policies attached directly to this userpass user.")
+        print(f"ℹ️ (Tip: If this userpass user is aliased to an Identity Entity, check the Identity graph above for inherited permissions.)")
         return True
         
     print("\n" + "="*70)
