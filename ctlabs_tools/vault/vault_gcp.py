@@ -24,7 +24,6 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
         except subprocess.CalledProcessError as e:
             stderr_text = e.stderr.lower()
             
-            # 🔥 SMART UX: Fail fast on authentication errors
             if "reauthentication failed" in stderr_text or "gcloud auth login" in stderr_text:
                 print(f"\n🔐 GCP Authentication Error: Your gcloud session has expired or is missing.", file=sys.stderr)
                 print(f"👉 Fix this by running: gcloud auth login", file=sys.stderr)
@@ -178,7 +177,6 @@ def main():
 
             found_any = False
             for m in engines_to_check:
-                # GCP leases live under either 'token/' or 'key/' depending on the roleset type
                 for token_type in ["token/", "key/"]:
                     rolesets = vault.list_leases(f"{m}/{token_type}")
                     if rolesets:
@@ -209,7 +207,7 @@ def main():
                 print("⚠️ You must provide either '--id <lease_id>' or use '--force' to wipe the engine.")
 
     # -------------------------------------------------------------------------
-    # 4. BOOTSTRAP (Folder/Project Scoped Identity Broker)
+    # 4. BOOTSTRAP
     # -------------------------------------------------------------------------
     elif cmd == "bootstrap":
         project = args.project
@@ -255,7 +253,7 @@ def main():
             sys.exit(1)
 
     # -------------------------------------------------------------------------
-    # 5. CLEANUP (Teardown Scoped Identity Broker)
+    # 5. CLEANUP
     # -------------------------------------------------------------------------
     elif cmd == "cleanup":
         project = args.project
@@ -414,10 +412,16 @@ def main():
                 if scopes:
                     print(f"  ├─ Scopes      : {', '.join(scopes)}")
                     
+                # 🧠 SMART UX: Robust bindings type checking
                 bindings = data.get('bindings', '')
                 if bindings:
-                    lines = len(bindings.strip().split('\n'))
-                    print(f"  ├─ Bindings    : Configured ({lines} lines of HCL)")
+                    if isinstance(bindings, str):
+                        lines = len(bindings.strip().split('\n'))
+                        print(f"  ├─ Bindings    : Configured ({lines} lines of HCL)")
+                    elif isinstance(bindings, list) or isinstance(bindings, dict):
+                        print(f"  ├─ Bindings    : Configured ({len(bindings)} items parsed)")
+                    else:
+                        print(f"  ├─ Bindings    : Configured")
                 else:
                     print(f"  ├─ Bindings    : None")
             else:
