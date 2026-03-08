@@ -1,46 +1,41 @@
 # -----------------------------------------------------------------------------
 # File    : ctlabs-tools/ctlabs_tools/vault/vault_pki.py
-# Purpose : Dedicated CLI for Vault PKI (TLS Certificates)
+# Purpose : Dedicated CLI for Vault PKI Certificate Authority & TLS issuance
 # -----------------------------------------------------------------------------
 import argparse
 import sys
 import os
-import subprocess
 import json
-import tempfile
-import shutil
 from .core import HashiVault
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault PKI Certificate Authority Manager")
-    parser.add_argument("--timeout", type=int, default=30, help="API HTTP timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=60, help="API HTTP timeout")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # 1. INFO
-    p_info = subparsers.add_parser("info", help="Introspect current PKI environment")
+    # 1. ENGINE
+    p_engine = subparsers.add_parser("engine", help="Manage PKI Secrets Engines")
+    p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_engine.add_argument("mount", nargs="?", default="", help="Mount point (e.g., pki, pki_int)")
+    p_engine.add_argument("--common-name", default="CTLabs Internal Root CA", help="Common Name for a new Root CA")
+    p_engine.add_argument("--ttl", default="87600h", help="Max TTL for the CA (default 10 years)")
 
-    # 2. EXEC
-    p_exec = subparsers.add_parser("exec", help="Issue a dynamic TLS cert and drop into a shell")
-    p_exec.add_argument("engine", help="Mount point (e.g., pki)")
-    p_exec.add_argument("role", help="Vault PKI Role")
-    p_exec.add_argument("common_name", help="The domain to issue the cert for (e.g., api.ctlabs.local)")
-    p_exec.add_argument("--ttl", default="4h", help="Requested TTL for the certificate")
-    p_exec.add_argument("exec_cmd", nargs='*', help="Optional command to run remotely (prefix with '--')")
-
-    # 3. ENGINE
-    p_engine = subparsers.add_parser("engine", help="Manage PKI CA Engines")
-    p_engine.add_argument("action", choices=["create", "delete", "list", "read"], help="Action to perform")
-    p_engine.add_argument("mount", nargs="?", default="pki", help="Mount point")
-    p_engine.add_argument("--common-name", default="CTLabs Internal Root CA", help="Root CA Name (for creation)")
-    p_engine.add_argument("--max-ttl", default="87600h", help="Max TTL for the CA (default 10 years)")
-
-    # 4. ROLE
+    # 2. ROLE
     p_role = subparsers.add_parser("role", help="Manage PKI Roles (Allowed Domains)")
-    p_role.add_argument("action", choices=["create", "delete", "list", "read"], help="Action to perform")
-    p_role.add_argument("mount", nargs="?", default="pki", help="Mount point")
-    p_role.add_argument("role_name", nargs="?", default="", help="Name of the role")
-    p_role.add_argument("--allowed-domains", help="Comma-separated allowed domains (e.g., ctlabs.local)")
-    p_role.add_argument("--ttl", default="72h", help="Max TTL for issued certificates")
+    p_role.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
+    p_role.add_argument("mount", nargs="?", default="", help="Mount point")
+    p_role.add_argument("role_name", nargs="?", default="", help="Name of the PKI role")
+    p_role.add_argument("--allowed-domains", help="Comma-separated allowed domains (e.g., ctlabs.internal)")
+    p_role.add_argument("--allow-subdomains", action="store_true", help="Allow issuing certs for subdomains")
+    p_role.add_argument("--ttl", default="720h", help="Max TTL for issued certificates")
+
+    # 3. ISSUE
+    p_issue = subparsers.add_parser("issue", help="Issue a TLS Certificate")
+    p_issue.add_argument("mount", help="Mount point (e.g., pki)")
+    p_issue.add_argument("role_name", help="PKI Role Name")
+    p_issue.add_argument("common_name", help="The CN for the certificate (e.g., api.ctlabs.internal)")
+    p_issue.add_argument("--ttl", default="24h", help="TTL for this specific cert")
+    p_issue.add_argument("--out-dir", default="./certs", help="Directory to save the certificate files")
 
     return parser.parse_args()
 
@@ -53,162 +48,225 @@ def main():
     cmd = args.command
     
     # -------------------------------------------------------------------------
-    # 1. INFO
+    # 1. ENGINE (CA Management)
     # -------------------------------------------------------------------------
-    if cmd == "info":
-        cert = os.environ.get("TLS_CERT")
-        if cert and os.path.exists(cert):
-            print("🔍 Active JIT PKI Session:")
-            print(f"📄 Cert: {os.environ.get('TLS_CERT')}")
-            print(f"🔑 Key : {os.environ.get('TLS_KEY')}")
-            print(f"🛡️  CA  : {os.environ.get('TLS_CA')}")
-            sys.exit(0)
-        else:
-            print("ℹ️ No active JIT PKI session found.")
-            sys.exit(1)
-
-    # -------------------------------------------------------------------------
-    # 2. EXEC
-    # -------------------------------------------------------------------------
-    elif cmd == "exec":
-        mount = args.engine.strip('/')
+    if cmd == "engine":
+        action = args.action
+        mount = getattr(args, 'mount', '').strip('/')
         
-        print(f"🔒 Requesting dynamic TLS certificate for '{args.common_name}'...", file=sys.stderr)
-        cert_data = vault.issue_certificate(args.role, mount, args.common_name, ttl=args.ttl)
-        if not cert_data: sys.exit(1)
-        
-        # Create a secure temporary directory
-        temp_dir = tempfile.mkdtemp(prefix="vault-pki-")
-        os.chmod(temp_dir, 0o700)
-        
-        cert_path = os.path.join(temp_dir, "tls.crt")
-        key_path = os.path.join(temp_dir, "tls.key")
-        ca_path = os.path.join(temp_dir, "ca.crt")
-        
-        # Write the certificates
-        with open(cert_path, "w") as f: f.write(cert_data['certificate'])
-        with open(key_path, "w") as f: f.write(cert_data['private_key'])
-        with open(ca_path, "w") as f: f.write(cert_data['issuing_ca'])
-        
-        # Secure the private key
-        os.chmod(key_path, 0o600)
-        
-        # Inject into environment
-        os.environ["TLS_CERT"] = cert_path
-        os.environ["TLS_KEY"] = key_path
-        os.environ["TLS_CA"] = ca_path
-        
-        command_list = args.exec_cmd
-        if command_list and command_list[0] == "--": command_list = command_list[1:]
-        
-        print(f"✅ Certificates generated and stored securely in memory/tempfs.", file=sys.stderr)
-        
-        try:
-            if command_list == ["bash"] or not command_list:
-                # Interactive Subshell
-                rc_content = f"""
-if [ -f ~/.bashrc ]; then source ~/.bashrc; fi
-export PS1="\\[\\e[36m\\][PKI JIT: {args.common_name}]\\[\\e[m\\] \\w \\$ "
-echo "🔒 Vault JIT PKI Session Active!"
-echo "👉 The following environment variables have been injected:"
-echo "   \\$TLS_CERT = {cert_path}"
-echo "   \\$TLS_KEY  = {key_path}"
-echo "   \\$TLS_CA   = {ca_path}"
-echo "⏳ Type 'exit' to close the session and securely shred the keys."
-"""
-                fd, rc_path = tempfile.mkstemp(suffix=".bashrc")
-                with os.fdopen(fd, 'w') as f: f.write(rc_content)
-                
-                try:
-                    exit_code = subprocess.run(["bash", "--rcfile", rc_path], env=os.environ).returncode
-                finally:
-                    os.remove(rc_path)
-            else:
-                # Direct Command Execution
-                print(f"🚀 Executing command...\n" + "-"*40, file=sys.stderr)
-                exit_code = subprocess.run(command_list, env=os.environ).returncode
-                
-        finally:
-            # 🧹 SECURITY: ALWAYS wipe the private keys when the script exits
-            print(f"\n🧹 Shredding temporary TLS certificates...", file=sys.stderr)
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            sys.exit(exit_code)
-
-    # -------------------------------------------------------------------------
-    # 3. ENGINE
-    # -------------------------------------------------------------------------
-    elif cmd == "engine":
-        mount = args.mount.strip('/')
-        
-        if args.action == "list":
+        if action == "list":
             engines = vault.list_engines(backend_type="pki")
             if engines:
-                print("🌐 Active PKI CA Engines:")
+                print("🌐 Active PKI Certificate Authorities:")
                 for e in engines: print(f"  ├─ {e}")
             else:
-                print("ℹ️ No PKI CA Engines mounted.")
+                print("ℹ️ No PKI Engines mounted.")
             sys.exit(0)
             
-        elif args.action == "create":
-            print(f"🚀 Configuring PKI Root CA at '{mount}/'...")
-            if vault.setup_pki_engine(mount, common_name=args.common_name, max_ttl=args.max_ttl):
-                print(f"🎉 PKI Root CA created at '{mount}/' (CN: {args.common_name})")
-                
-        elif args.action == "read":
-            client = vault._get_client()
+        if not mount:
+            print("❌ Error: Mount point is required.", file=sys.stderr)
+            sys.exit(1)
+            
+        client = vault._get_client()
+
+        if action == "create":
+            print(f"🚀 Configuring PKI Engine at '{mount}/'...")
             try:
-                res = client.read(f"{mount}/config/urls")
-                if res and 'data' in res: print(json.dumps(res['data'], indent=2))
-                else: print(f"❌ No CA config found at '{mount}/'")
+                current_mounts = client.sys.list_mounted_secrets_engines()['data']
+                if f"{mount}/" not in current_mounts:
+                    client.sys.enable_secrets_engine('pki', path=mount, config={'max_lease_ttl': args.ttl})
+                
+                print(f"🔒 Generating Internal Root CA for '{args.common_name}'...")
+                client.write(f"{mount}/root/generate/internal", common_name=args.common_name, ttl=args.ttl)
+                
+                # Configure URLs automatically
+                issuer_url = f"{client.url}/v1/{mount}/ca"
+                crl_url = f"{client.url}/v1/{mount}/crl"
+                client.write(f"{mount}/config/urls", issuing_certificates=[issuer_url], crl_distribution_points=[crl_url])
+                
+                print(f"🎉 PKI CA enabled and configured at '{mount}/'")
+            except Exception as e:
+                print(f"❌ Error setting up PKI engine: {e}")
+                
+        elif action == "read":
+            try:
+                res = client.read(f"{mount}/cert/ca")
+                if res and 'data' in res:
+                    print(json.dumps(res['data'], indent=2))
+                else: print(f"❌ No CA cert found at '{mount}/'")
             except Exception as e:
                 print(f"❌ Error reading PKI engine: {e}")
                 
-        elif args.action == "delete":
+        elif action == "info":
+            try:
+                # Get the actual CA Certificate text
+                res = client.read(f"{mount}/cert/ca")
+                if res and 'data' in res and 'certificate' in res['data']:
+                    cert_body = res['data']['certificate']
+                    print(f"🏛️ PKI CA Engine: {mount}/")
+                    # Quick parsing for human readability
+                    cert_lines = cert_body.strip().split('\n')
+                    print(f"  ├─ Certificate : {cert_lines[0]} ... ({len(cert_lines)-2} lines) ... {cert_lines[-1]}")
+                    
+                    # Fetch config to show max TTL
+                    config_res = client.sys.read_mount_configuration(path=mount)
+                    if config_res and 'data' in config_res:
+                        print(f"  ├─ Max TTL     : {config_res['data'].get('max_lease_ttl', 'Unknown')}s")
+                else:
+                    print(f"❌ No active CA certificate found at '{mount}/'. (Has a root/intermediate been generated?)")
+            except Exception as e:
+                print(f"❌ Error reading PKI info: {e}")
+
+        elif action == "update":
+            print("ℹ️ Update action is not applicable to the base engine. Update roles instead.")
+
+        elif action == "delete":
             print(f"🧹 Tearing down PKI CA engine at '{mount}/'...")
-            if vault.teardown_pki_engine(mount):
-                print(f"🎉 Engine destroyed!")
+            try:
+                client.sys.disable_secrets_engine(path=mount)
+                print(f"🎉 PKI Engine destroyed!")
+            except Exception as e:
+                print(f"❌ Error deleting engine: {e}")
 
     # -------------------------------------------------------------------------
-    # 4. ROLE
+    # 2. ROLE
     # -------------------------------------------------------------------------
     elif cmd == "role":
-        mount = args.mount.strip('/')
+        action = args.action
+        mount = getattr(args, 'mount', '').strip('/')
+        role_name = getattr(args, 'role_name', '')
         
-        if args.action == "list":
-            client = vault._get_client()
-            try:
-                res = client.list(f"{mount}/roles")
-                roles = res.get('data', {}).get('keys', []) if res else []
-                if roles:
-                    print(f"👥 Active PKI Roles at '{mount}/':")
-                    for r in roles: print(f"  ├─ {r}")
-                else:
-                    print("ℹ️ No PKI roles found.")
-            except Exception as e:
-                if "404" in str(e): print("ℹ️ No PKI roles found.")
-                else: print(f"❌ Error listing PKI roles: {e}")
+        if action == "list":
+            if mount:
+                engines_to_check = [mount]
+            else:
+                print("🔍 Searching across all active PKI engines...")
+                engines = vault.list_engines(backend_type="pki") or []
+                engines_to_check = [e.strip('/') for e in engines]
+
+            if not engines_to_check:
+                print("ℹ️ No PKI Engines currently mounted.")
+                sys.exit(0)
+
+            found_any = False
+            for m in engines_to_check:
+                client = vault._get_client()
+                try:
+                    res = client.list(f"{m}/roles")
+                    roles = res.get('data', {}).get('keys', []) if res else []
+                    if roles:
+                        found_any = True
+                        print(f"\n👥 Active PKI Roles at '{m}/':")
+                        for r in roles: print(f"  ├─ {r}")
+                except Exception as e:
+                    if "404" not in str(e): print(f"❌ Error listing PKI roles at '{m}/': {e}")
+            
+            if not found_any: print("\nℹ️ No PKI roles found.")
             sys.exit(0)
             
-        if not args.role_name:
-            print("❌ Error: role_name is required for this action.", file=sys.stderr)
+        if not mount or not role_name:
+            print("❌ Error: mount and role_name are required.", file=sys.stderr)
             sys.exit(1)
             
-        if args.action == "create":
+        client = vault._get_client()
+
+        if action in ["create", "update"]:
             if not args.allowed_domains:
                 print("❌ Error: --allowed-domains is required to create a PKI role.", file=sys.stderr)
                 sys.exit(1)
-            print(f"🚀 Creating PKI Role '{args.role_name}'...")
-            if vault.create_pki_role(args.role_name, mount, args.allowed_domains, max_ttl=args.ttl):
-                print(f"✅ PKI Role '{args.role_name}' successfully configured.")
                 
-        elif args.action == "read":
-            details = vault.read_pki_role(args.role_name, mount)
-            if details: print(json.dumps(details, indent=2))
-            else: print(f"❌ Role '{args.role_name}' not found.")
+            print(f"🚀 {action.capitalize()}ing PKI Role '{role_name}'...")
+            try:
+                domains = [d.strip() for d in args.allowed_domains.split(",")]
+                client.write(
+                    f"{mount}/roles/{role_name}",
+                    allowed_domains=domains,
+                    allow_subdomains=args.allow_subdomains,
+                    max_ttl=args.ttl
+                )
+                print(f"✅ PKI Role '{role_name}' successfully configured.")
+            except Exception as e:
+                print(f"❌ Error configuring PKI role: {e}")
                 
-        elif args.action == "delete":
-            if vault.delete_pki_role(args.role_name, mount):
-                print(f"✅ Deleted PKI role '{args.role_name}'.")
+        elif action == "read":
+            try:
+                res = client.read(f"{mount}/roles/{role_name}")
+                if res and 'data' in res:
+                    print(json.dumps(res['data'], indent=2))
+                else: print(f"❌ Role '{role_name}' not found.")
+            except Exception as e:
+                print(f"❌ Error reading role: {e}")
+                
+        elif action == "info":
+            try:
+                res = client.read(f"{mount}/roles/{role_name}")
+                if res and 'data' in res:
+                    d = res['data']
+                    print(f"🏷️  PKI Role: {role_name}")
+                    print(f"  ├─ Engine Mount      : {mount}/")
+                    print(f"  ├─ Allowed Domains   : {', '.join(d.get('allowed_domains', []))}")
+                    print(f"  ├─ Allow Subdomains  : {d.get('allow_subdomains', False)}")
+                    print(f"  ├─ Allow Bare Domains: {d.get('allow_bare_domains', False)}")
+                    print(f"  ├─ Allow Any Name    : {d.get('allow_any_name', False)}")
+                    
+                    max_ttl = d.get('max_ttl')
+                    ttl_str = f"{max_ttl}s" if max_ttl else "System Default"
+                    print(f"  ├─ Max TTL           : {ttl_str}")
+                else: print(f"❌ Role '{role_name}' not found.")
+            except Exception as e:
+                print(f"❌ Error fetching role info: {e}")
+                
+        elif action == "delete":
+            try:
+                client.delete(f"{mount}/roles/{role_name}")
+                print(f"✅ Deleted PKI role '{role_name}'.")
+            except Exception as e:
+                print(f"❌ Error deleting PKI role: {e}")
+
+    # -------------------------------------------------------------------------
+    # 3. ISSUE (Requesting Certificates)
+    # -------------------------------------------------------------------------
+    elif cmd == "issue":
+        mount = args.mount.strip('/')
+        role_name = args.role_name
+        common_name = args.common_name
+        
+        client = vault._get_client()
+        print(f"🔒 Requesting TLS Certificate for '{common_name}' from {mount}/{role_name}...")
+        
+        try:
+            res = client.write(f"{mount}/issue/{role_name}", common_name=common_name, ttl=args.ttl)
+            if not res or 'data' not in res:
+                print("❌ Failed to issue certificate: No data returned from Vault.")
+                sys.exit(1)
+                
+            data = res['data']
+            cert = data.get('certificate')
+            priv_key = data.get('private_key')
+            ca_chain = data.get('ca_chain', [])
+            
+            # Write to files
+            os.makedirs(args.out_dir, exist_ok=True)
+            safe_cn = common_name.replace("*", "star")
+            
+            cert_path = os.path.join(args.out_dir, f"{safe_cn}.crt")
+            key_path = os.path.join(args.out_dir, f"{safe_cn}.key")
+            ca_path = os.path.join(args.out_dir, f"{safe_cn}-ca.crt")
+            
+            with open(cert_path, "w") as f: f.write(cert)
+            with open(key_path, "w") as f: f.write(priv_key)
+            with open(ca_path, "w") as f:
+                for c in ca_chain: f.write(c + "\n")
+                
+            print(f"✅ Success! Certificate issued.")
+            print(f"  ├─ Serial Number: {data.get('serial_number')}")
+            print(f"  ├─ Private Key  : {key_path}")
+            print(f"  ├─ Certificate  : {cert_path}")
+            print(f"  ├─ CA Chain     : {ca_path}")
+            
+        except Exception as e:
+            print(f"❌ Error issuing certificate: {e}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

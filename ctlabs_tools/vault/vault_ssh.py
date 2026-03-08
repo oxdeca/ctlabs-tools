@@ -17,7 +17,6 @@ from .core import HashiVault
 def parse_ssh_config(target_host):
     """Parses ~/.ssh/config using OpenSSH's strict 'first match wins' rule."""
     config_path = os.path.expanduser("~/.ssh/config")
-    
     principal = None
     identity_file = None
 
@@ -43,14 +42,11 @@ def parse_ssh_config(target_host):
                 elif key == 'identityfile' and not identity_file:
                     identity_file = parts[1].strip('"\'')
 
-    # Smart Fallbacks
     if not principal:
         principal = os.environ.get("USER", "root")
         
-    # Advanced Key Discovery Logic
     if not identity_file:
         keys_dir = os.path.expanduser("~/.ssh/keys")
-        
         if os.path.exists(os.path.join(keys_dir, "id_ed25519")):
             identity_file = os.path.join(keys_dir, "id_ed25519")
         elif os.path.exists(keys_dir) and os.path.isdir(keys_dir):
@@ -63,7 +59,7 @@ def parse_ssh_config(target_host):
     return principal, identity_file
 
 def find_valid_ephemeral_key(principal, mount, role):
-    """Scans for an active, unexpired ephemeral key matching the target principal, mount, and role."""
+    """Scans for an active, unexpired ephemeral key."""
     safe_mount = mount.replace('/', '_')
     temp_dir = tempfile.gettempdir()
     
@@ -91,8 +87,7 @@ def find_valid_ephemeral_key(principal, mount, role):
                     elif line and line != "(none)":
                         principals.append(line)
             
-            if principal not in principals:
-                continue
+            if principal not in principals: continue
                 
             if " to " in valid_str:
                 to_date_str = valid_str.split(" to ")[1].strip()
@@ -151,7 +146,6 @@ def main():
     # -------------------------------------------------------------------------
     if cmd == "info":
         cert_paths = []
-        
         for target_dir in ["~/.ssh", "~/.ssh/keys"]:
             search_path = os.path.expanduser(target_dir)
             if os.path.exists(search_path) and os.path.isdir(search_path):
@@ -172,17 +166,13 @@ def main():
             try:
                 res = subprocess.run(["ssh-keygen", "-L", "-f", cert], capture_output=True, text=True, check=True)
                 lines = res.stdout.strip().split('\n')
-                
-                key_id = "Unknown"
+                key_id, valid_str, time_str = "Unknown", "Unknown", "Unknown"
                 principals = []
-                valid_str = "Unknown"
-                time_str = "Unknown"
-                
                 parsing_principals = False
+                
                 for line in lines:
                     line = line.strip()
-                    if line.startswith("Key ID:"):
-                        key_id = line.split(":", 1)[1].strip().strip('"')
+                    if line.startswith("Key ID:"): key_id = line.split(":", 1)[1].strip().strip('"')
                     elif line.startswith("Valid:"):
                         valid_str = line.split(":", 1)[1].strip()
                         if " to " in valid_str:
@@ -192,21 +182,14 @@ def main():
                                 now = datetime.now()
                                 if now < to_date:
                                     rem = int((to_date - now).total_seconds())
-                                    mins = rem // 60
-                                    time_str = f"{mins} minutes ({rem}s)"
+                                    time_str = f"{rem // 60} minutes ({rem}s)"
                                 else:
                                     time_str = "EXPIRED ⚠️"
-                            except ValueError:
-                                time_str = valid_str
-                    elif line.startswith("Principals:"):
-                        parsing_principals = True
-                        continue
+                            except ValueError: time_str = valid_str
+                    elif line.startswith("Principals:"): parsing_principals = True; continue
                     elif parsing_principals:
-                        if line.startswith("Critical Options:") or line.startswith("Extensions:"):
-                            parsing_principals = False
-                        else:
-                            if line and line != "(none)":
-                                principals.append(line)
+                        if line.startswith("Critical Options:") or line.startswith("Extensions:"): parsing_principals = False
+                        elif line and line != "(none)": principals.append(line)
                                 
                 is_ephemeral = "vault-ssh-" in cert
                 badge = " (👻 Ephemeral Sandbox Key)" if is_ephemeral else ""
@@ -215,12 +198,9 @@ def main():
                 print(f"🆔 Key ID      : {key_id}")
                 print(f"👤 Principals  : {', '.join(principals) if principals else 'None'}")
                 print(f"⏳ Time Remaining: {time_str}")
-                if "EXPIRED" in time_str:
-                    print(f"   (Valid was: {valid_str})")
+                if "EXPIRED" in time_str: print(f"   (Valid was: {valid_str})")
 
-            except Exception as e:
-                print(f"⚠️ Could not parse {cert}: {e}")
-                
+            except Exception as e: print(f"⚠️ Could not parse {cert}: {e}")
         sys.exit(0)
 
     # -------------------------------------------------------------------------
@@ -229,14 +209,11 @@ def main():
     elif cmd == "exec":
         mount = args.engine.strip('/')
         target_host = args.target_host
-        
         command_list = args.exec_cmd
-        if command_list and command_list[0] == "--":
-            command_list = command_list[1:]
+        if command_list and command_list[0] == "--": command_list = command_list[1:]
         
         use_ephemeral = args.ephemeral
-        principal = None
-        identity_file = None
+        principal, identity_file = None, None
 
         if not use_ephemeral:
             if args.key:
@@ -247,8 +224,7 @@ def main():
                 
             if not identity_file:
                 use_ephemeral = True
-                if not principal:
-                    principal = os.environ.get("USER", "root")
+                if not principal: principal = os.environ.get("USER", "root")
 
         temp_dir = None
         exit_code = 1
@@ -256,16 +232,13 @@ def main():
         try:
             if use_ephemeral:
                 if not principal: principal = os.environ.get("USER", "root")
-                
                 existing_key = find_valid_ephemeral_key(principal, mount, args.role)
                 
                 if existing_key:
                     print(f"♻️  Reusing active ephemeral key for Mount: '{mount}' | Role: '{args.role}'...", file=sys.stderr)
                     identity_file = existing_key
                 else:
-                    if not args.ephemeral:
-                        print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
-                        
+                    if not args.ephemeral: print(f"ℹ️  No valid local SSH key found. Falling back to ephemeral key generation.", file=sys.stderr)
                     safe_mount = mount.replace('/', '_')
                     temp_dir = tempfile.mkdtemp(prefix=f"vault-ssh-{safe_mount}-{args.role}-")
                     os.chmod(temp_dir, 0o700)
@@ -284,7 +257,6 @@ def main():
                     
                     cert_path = f"{identity_file}-cert.pub"
                     with open(cert_path, 'w') as f: f.write(signed_key)
-                
             else:
                 identity_file = os.path.expanduser(identity_file)
                 if identity_file.endswith(".pub"):
@@ -298,7 +270,6 @@ def main():
                     sys.exit(1)
                     
                 with open(pub_key_path, 'r') as f: pub_key = f.read()
-                    
                 print(f"🔍 Resolved target '{target_host}': Principal '{principal}', Key '{pub_key_path}'", file=sys.stderr)
                 print(f"🔒 Requesting signed SSH certificate from Vault...", file=sys.stderr)
                 
@@ -307,17 +278,12 @@ def main():
                 
                 cert_path = f"{identity_file}-cert.pub"
                 with open(cert_path, 'w') as f: f.write(signed_key)
-                    
                 print(f"✅ Certificate saved to {cert_path} and ready for use.", file=sys.stderr)
 
             ssh_command = ["ssh"]
-            if use_ephemeral:
-                ssh_command.extend(["-i", identity_file, "-o", "IdentitiesOnly=yes"])
-                
+            if use_ephemeral: ssh_command.extend(["-i", identity_file, "-o", "IdentitiesOnly=yes"])
             ssh_command.append(target_host)
-            
-            if command_list:
-                ssh_command.extend(command_list)
+            if command_list: ssh_command.extend(command_list)
             
             print(f"🚀 Connecting to {target_host}...\n" + "-"*40, file=sys.stderr)
             exit_code = subprocess.run(ssh_command).returncode
@@ -326,7 +292,6 @@ def main():
             if temp_dir and os.path.exists(temp_dir):
                 print(f"\n🧹 Shredding temporary SSH keys...", file=sys.stderr)
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                
             sys.exit(exit_code)
 
     # -------------------------------------------------------------------------
@@ -341,8 +306,7 @@ def main():
             if engines:
                 print("🌐 Active SSH CA Engines:")
                 for e in engines: print(f"  ├─ {e}")
-            else:
-                print("ℹ️ No SSH CA Engines mounted.")
+            else: print("ℹ️ No SSH CA Engines mounted.")
             sys.exit(0)
             
         if not mount:
@@ -354,14 +318,31 @@ def main():
             if vault.setup_ssh_engine(mount, private_key_path=args.private_key):
                 print(f"🎉 SSH CA enabled at '{mount}/'")
                 
-        elif action in ["read", "info"]:
+        elif action == "read":
             client = vault._get_client()
             try:
                 res = client.read(f"{mount}/config/ca")
                 if res and 'data' in res:
                     print(json.dumps(res['data'], indent=2))
-                else:
-                    print(f"❌ No CA config found at '{mount}/'")
+                else: print(f"❌ No CA config found at '{mount}/'")
+            except Exception as e:
+                print(f"❌ Error reading SSH engine: {e}")
+                
+        elif action == "info":
+            client = vault._get_client()
+            try:
+                res = client.read(f"{mount}/config/ca")
+                if res and 'data' in res:
+                    d = res['data']
+                    print(f"🌐 SSH CA Engine: {mount}/")
+                    pub_key = d.get('public_key', '')
+                    if pub_key:
+                        parts = pub_key.split()
+                        pk_display = f"{parts[0]} {parts[1][:30]}... {parts[-1] if len(parts)>2 else ''}"
+                    else:
+                        pk_display = "None"
+                    print(f"  ├─ Public Key : {pk_display}")
+                else: print(f"❌ No CA config found at '{mount}/'")
             except Exception as e:
                 print(f"❌ Error reading SSH engine: {e}")
                 
@@ -370,8 +351,7 @@ def main():
                 
         elif action == "delete":
             print(f"🧹 Tearing down SSH CA engine at '{mount}/'...")
-            if vault.teardown_ssh_engine(mount):
-                print(f"🎉 Engine destroyed!")
+            if vault.teardown_ssh_engine(mount): print(f"🎉 Engine destroyed!")
 
     # -------------------------------------------------------------------------
     # 4. ROLE
@@ -406,8 +386,7 @@ def main():
                 except Exception as e:
                     if "404" not in str(e): print(f"❌ Error listing SSH roles at '{m}/': {e}")
             
-            if not found_any:
-                print("\nℹ️ No SSH roles found.")
+            if not found_any: print("\nℹ️ No SSH roles found.")
             sys.exit(0)
             
         if not mount:
@@ -423,16 +402,34 @@ def main():
             if vault.create_ssh_role(role_name, mount, args.default_user, args.allowed_users, args.ttl):
                 print(f"✅ SSH Role '{role_name}' successfully configured.")
                 
-        elif action in ["read", "info"]:
+        elif action == "read":
             client = vault._get_client()
             try:
                 res = client.read(f"{mount}/roles/{role_name}")
                 if res and 'data' in res:
                     print(json.dumps(res['data'], indent=2))
-                else:
-                    print(f"❌ Role '{role_name}' not found.")
+                else: print(f"❌ Role '{role_name}' not found.")
             except Exception as e:
                 print(f"❌ Error reading role: {e}")
+                
+        elif action == "info":
+            client = vault._get_client()
+            try:
+                res = client.read(f"{mount}/roles/{role_name}")
+                if res and 'data' in res:
+                    d = res['data']
+                    print(f"👥 SSH Role: {role_name}")
+                    print(f"  ├─ Engine        : {mount}/")
+                    print(f"  ├─ Key Type      : {d.get('key_type', 'Any')}")
+                    print(f"  ├─ Default User  : {d.get('default_user', 'None')}")
+                    print(f"  ├─ Allowed Users : {d.get('allowed_users', 'None')}")
+                    
+                    max_ttl = d.get('max_ttl')
+                    ttl_str = f"{max_ttl}s" if max_ttl else "System Default"
+                    print(f"  ├─ Max TTL       : {ttl_str}")
+                else: print(f"❌ Role '{role_name}' not found.")
+            except Exception as e:
+                print(f"❌ Error fetching role info: {e}")
                 
         elif action == "delete":
             client = vault._get_client()
