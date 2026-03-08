@@ -12,9 +12,6 @@ from .core import HashiVault
 
 def print_policy_table(name, hcl_text):
     """Parses raw Vault HCL and prints a color-coded permission table."""
-    print(f"\n📜 Policy: {name}")
-    print("=" * 95)
-    
     # 1. Strip comments to prevent regex confusion
     hcl_clean = re.sub(r'(#|//).*', '', hcl_text)
     hcl_clean = re.sub(r'/\*.*?\*/', '', hcl_clean, flags=re.DOTALL)
@@ -35,19 +32,27 @@ def print_policy_table(name, hcl_text):
         else:
             paths[path] = []
 
+    print(f"\n📜 Policy: {name}")
+
     if not paths:
+        print("=" * 95)
         print("⚠️ No parsable paths/capabilities found in this policy.")
         print("-" * 95)
         print(hcl_text.strip())
+        print("=" * 95 + "\n")
         return
 
     # 3. Define columns and formatting
-    all_caps = ["create", "read", "update", "delete", "list", "sudo", "deny"]
+    all_caps = ["create", "read", "update", "patch", "delete", "list", "sudo", "deny"]
     max_path_len = max([len(p) for p in paths.keys()] + [25])
     
+    # Calculate the exact dynamic width of the table
     header = f"{'Path'.ljust(max_path_len)} | " + " | ".join([c.capitalize().center(6) for c in all_caps])
+    table_width = len(header)
+    
+    print("=" * table_width)
     print(header)
-    print("-" * len(header))
+    print("-" * table_width)
     
     GREEN = "\033[92m"
     RED = "\033[91m"
@@ -60,12 +65,17 @@ def print_policy_table(name, hcl_text):
         cap_strs = []
         for c in all_caps:
             if c in caps:
-                cap_strs.append(f"{GREEN}{'ok'.center(6)}{RESET}")
+                if c == "deny":
+                    cap_strs.append(f"{RED}{'ok'.center(6)}{RESET}")
+                else:
+                    cap_strs.append(f"{GREEN}{'ok'.center(6)}{RESET}")
             else:
                 cap_strs.append(f"{DIM}{'--'.center(6)}{RESET}")
         row += " | ".join(cap_strs)
         print(row)
-    print("=" * 95 + "\n")
+        
+    print("=" * table_width + "\n")
+
 
 def get_args():
     parser = argparse.ArgumentParser(description="Vault Authentication & Policy Manager")
