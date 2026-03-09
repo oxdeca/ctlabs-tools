@@ -16,6 +16,7 @@ from .mixins.ssh      import VaultSSHMixin
 from .mixins.pki      import VaultPKIMixin
 from .mixins.ldap     import VaultLDAPMixin
 from .mixins.oidc     import VaultOIDCMixin
+from .mixins.totp     import VaultTOTPMixin
 from .mixins.approle  import VaultAppRoleMixin
 from .mixins.identity import VaultIdentityMixin
 from .gsm             import GCPSecretManager
@@ -31,7 +32,8 @@ class HashiVault(
     VaultIdentityMixin,
     VaultLDAPMixin,
     VaultPKIMixin,
-    VaultSSHMixin
+    VaultSSHMixin,
+    VaultTOTPMixin
 ):
     """
     Unified Vault Client.
