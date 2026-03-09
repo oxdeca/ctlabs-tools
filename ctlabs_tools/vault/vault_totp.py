@@ -18,41 +18,34 @@ def get_args():
     # 1. ENGINE
     p_engine = subparsers.add_parser("engine", help="Manage TOTP Secrets Engines")
     p_engine.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_engine.add_argument("mount_name", nargs="?", default="totp", help="Mount path name (default: totp)")
+    p_engine.add_argument("path_args", nargs="*", default=["totp"], help="Mount path name (default: totp)")
 
     # 2. KEY
     p_key = subparsers.add_parser("key", help="Manage TOTP Keys")
     p_key.add_argument("action", choices=["create", "update", "read", "delete", "list", "info"], help="Action to perform")
-    p_key.add_argument("name", nargs="?", default="", help="Name of the TOTP key")
-    p_key.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
-    p_key.add_argument("--generate", action="store_true", help="Auto-generate the TOTP key material inside Vault")
-    p_key.add_argument("--export", action="store_true", help="Save a QR code PNG file (only used with --generate)")
+    p_key.add_argument("path_args", nargs="*", default=["totp"], help="<mount>/<key> [<account_name>] [<issuer>] OR <mount> <key> [<account_name>] [<issuer>]")
+    p_key.add_argument("--export", action="store_true", help="Save a QR code PNG file (when generating)")
     p_key.add_argument("--show-qr", action="store_true", help="Print the QR code directly to the terminal (requires 'qrcode' pip package)")
     p_key.add_argument("--out-dir", default=".", help="Directory to save the QR code image if exported (default: ./)")
-    p_key.add_argument("--key-string", help="Explicit base64 or PEM encoded key (if not using --generate)")
+    p_key.add_argument("--key-string", help="Explicit base64 or PEM encoded key (if not auto-generating)")
     p_key.add_argument("--url", help="A standard otpauth:// URL to import an existing key")
-    p_key.add_argument("--issuer", default="Vault", help="Issuer name to display in the authenticator app")
-    p_key.add_argument("--account-name", help="Account name to display in the authenticator app (e.g., user@domain.com)")
+    p_key.add_argument("--account-name", help="Fallback flag if not provided positionally")
+    p_key.add_argument("--issuer", default="Vault", help="Fallback flag if not provided positionally")
     p_key.add_argument("--period", type=int, default=30, help="Time validity period in seconds (default: 30)")
     p_key.add_argument("--digits", type=int, default=6, choices=[6, 8], help="Number of digits in the code (default: 6)")
     p_key.add_argument("--algorithm", default="SHA1", choices=["SHA1", "SHA256", "SHA512"], help="Hashing algorithm")
 
-    # 3. CODE (Generate a TOTP code)
+    # 3. CODE
     p_code = subparsers.add_parser("code", help="Generate a current TOTP code")
-    p_code.add_argument("name", help="Name of the TOTP key")
-    p_code.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
+    p_code.add_argument("path_args", nargs="+", help="<mount>/<key> OR <mount> <key>")
 
-    # 4. VERIFY (Verify a TOTP code)
+    # 4. VERIFY
     p_verify = subparsers.add_parser("verify", help="Verify a TOTP code provided by a user")
-    p_verify.add_argument("name", help="Name of the TOTP key")
-    p_verify.add_argument("code", help="The TOTP code to verify")
-    p_verify.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
+    p_verify.add_argument("path_args", nargs="+", help="<mount>/<key> <code> OR <mount> <key> <code>")
 
-    # 5. EXEC (Ephemeral Injection)
+    # 5. EXEC
     p_exec = subparsers.add_parser("exec", help="Generate a TOTP code, inject it into ENV, and run a command")
-    p_exec.add_argument("name", help="Name of the TOTP key")
-    p_exec.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
-    p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
+    p_exec.add_argument("path_args", nargs=argparse.REMAINDER, help="<mount>/<key> [--] <cmd> OR <mount> <key> [--] <cmd>")
 
     return parser.parse_args()
 
@@ -70,7 +63,7 @@ def main():
     # -------------------------------------------------------------------------
     if cmd == "engine":
         action = args.action
-        mount = getattr(args, 'mount_name', 'totp').strip('/')
+        mount = args.path_args[0].strip('/') if args.path_args else 'totp'
         
         if action == "list":
             try:
@@ -86,10 +79,6 @@ def main():
             except Exception as e:
                 print(f"❌ Error listing engines: {e}", file=sys.stderr)
             sys.exit(0)
-            
-        if not mount:
-            print("❌ Error: Mount name is required.", file=sys.stderr)
-            sys.exit(1)
 
         if action == "create":
             print(f"🚀 Enabling TOTP Engine at '{mount}/'...")
@@ -134,8 +123,32 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "key":
         action = args.action
-        mount = getattr(args, 'mount', 'totp').strip('/')
-        name = getattr(args, 'name', '')
+        raw_args = args.path_args
+
+        # 🌟 SMART PATH PARSING
+        if '/' in raw_args[0]:
+            mount, name = raw_args[0].split('/', 1)
+            remaining = raw_args[1:]
+        else:
+            if action == "list":
+                mount = raw_args[0]
+                name = ""
+                remaining = raw_args[1:]
+            else:
+                if len(raw_args) < 2:
+                    print("❌ Error: Path must include the mount point (e.g., totp/my-key or totp my-key)")
+                    sys.exit(1)
+                mount = raw_args[0]
+                name = raw_args[1]
+                remaining = raw_args[2:]
+        
+        # Extract optional positionals
+        account_name = args.account_name
+        issuer = args.issuer
+        if len(remaining) > 0:
+            account_name = remaining[0]
+        if len(remaining) > 1:
+            issuer = remaining[1]
         
         if action == "list":
             try:
@@ -150,36 +163,37 @@ def main():
                 if "404" not in str(e): print(f"❌ Error listing TOTP keys: {e}", file=sys.stderr)
                 else: print(f"ℹ️ No TOTP keys found at '{mount}/'.")
             sys.exit(0)
-            
-        if not name:
-            print(f"❌ Error: Key name is required for '{action}'.", file=sys.stderr)
-            sys.exit(1)
 
         if action in ["create", "update"]:
             payload = {
-                "issuer": args.issuer,
                 "period": args.period,
                 "algorithm": args.algorithm,
                 "digits": args.digits
             }
-            if args.account_name: payload["account_name"] = args.account_name
-            if args.generate:
-                payload["generate"] = True
-                payload["export"] = True # We need Vault to export the data so we can generate the terminal QR or PNG
-            elif args.key_string:
+            if issuer: payload["issuer"] = issuer
+            if account_name: payload["account_name"] = account_name
+
+            # Implicit Generate Logic
+            if args.key_string:
                 payload["key"] = args.key_string
             elif args.url:
                 payload["url"] = args.url
             else:
-                print("❌ Error: You must provide --generate, --key-string, or --url to create a key.", file=sys.stderr)
-                sys.exit(1)
+                if not account_name:
+                    print("❌ Error: 'account_name' is strictly required when generating a new key.")
+                    print("Usage: vault-totp key create <mount> <key> <account_name> [issuer]")
+                    sys.exit(1)
+                    
+                payload["generate"] = True
+                payload["export"] = True # Need to tell Vault to send us the barcode payload
 
             print(f"🚀 {action.capitalize()}ing TOTP Key '{name}' in '{mount}/'...")
             try:
                 res = client.write(f"{mount}/keys/{name}", **payload)
                 print(f"✅ TOTP Key '{name}' successfully configured.")
                 
-                if args.generate and res and 'data' in res:
+                # Handle QR Code generation if we asked Vault to generate the key
+                if payload.get("generate") and res and 'data' in res:
                     data = res['data']
                     url = data.get('url', '')
                     barcode = data.get('barcode', '')
@@ -245,8 +259,15 @@ def main():
     # 3. CODE (Generate TOTP)
     # -------------------------------------------------------------------------
     elif cmd == "code":
-        mount = getattr(args, 'mount', 'totp').strip('/')
-        name = args.name
+        raw_args = args.path_args
+        if '/' in raw_args[0]:
+            mount, name = raw_args[0].split('/', 1)
+        else:
+            if len(raw_args) < 2:
+                print("❌ Error: Path must include mount point (e.g., totp/my-key or totp my-key)")
+                sys.exit(1)
+            mount = raw_args[0]
+            name = raw_args[1]
         
         try:
             res = client.read(f"{mount}/code/{name}")
@@ -263,9 +284,24 @@ def main():
     # 4. VERIFY (Verify a TOTP Code)
     # -------------------------------------------------------------------------
     elif cmd == "verify":
-        mount = getattr(args, 'mount', 'totp').strip('/')
-        name = args.name
-        code = args.code
+        raw_args = args.path_args
+        if '/' in raw_args[0]:
+            mount, name = raw_args[0].split('/', 1)
+            remaining = raw_args[1:]
+        else:
+            if len(raw_args) < 2:
+                print("❌ Error: Path must include mount point (e.g., totp/my-key 123456 or totp my-key 123456)")
+                sys.exit(1)
+            mount = raw_args[0]
+            name = raw_args[1]
+            remaining = raw_args[2:]
+            
+        if not remaining:
+            print("❌ Error: Missing verification code.")
+            print("Usage: vault-totp verify <mount> <key> <code>")
+            sys.exit(1)
+            
+        code = remaining[0]
         
         try:
             res = client.write(f"{mount}/code/{name}", code=code)
@@ -288,10 +324,23 @@ def main():
     # 5. EXEC (Ephemeral Injection)
     # -------------------------------------------------------------------------
     elif cmd == "exec":
-        mount = getattr(args, 'mount', 'totp').strip('/')
-        name = args.name
-        
-        command_list = args.exec_cmd
+        raw_args = args.path_args
+        if not raw_args:
+            print("❌ Error: Missing arguments for exec command.")
+            sys.exit(1)
+            
+        if '/' in raw_args[0]:
+            mount, name = raw_args[0].split('/', 1)
+            remaining = raw_args[1:]
+        else:
+            if len(raw_args) < 2:
+                print("❌ Error: Path must include mount point (e.g., totp/my-key -- ./script.sh)")
+                sys.exit(1)
+            mount = raw_args[0]
+            name = raw_args[1]
+            remaining = raw_args[2:]
+            
+        command_list = remaining
         if command_list and command_list[0] == "--":
             command_list = command_list[1:]
             
