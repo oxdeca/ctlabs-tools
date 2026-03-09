@@ -268,7 +268,7 @@ def main():
         code = args.code
         
         try:
-            res = client.write(f"{mount}/verify/{name}", code=code)
+            res = client.write(f"{mount}/code/{name}", code=code)
             if res and 'data' in res:
                 is_valid = res['data'].get('valid', False)
                 if is_valid:
