@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import base64
+import subprocess
 from .core import HashiVault
 
 def get_args():
@@ -25,7 +26,8 @@ def get_args():
     p_key.add_argument("name", nargs="?", default="", help="Name of the TOTP key")
     p_key.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
     p_key.add_argument("--generate", action="store_true", help="Auto-generate the TOTP key material inside Vault")
-    p_key.add_argument("--export", action="store_true", help="Return the provisioning URL and save a QR code PNG (only used with --generate)")
+    p_key.add_argument("--export", action="store_true", help="Save a QR code PNG file (only used with --generate)")
+    p_key.add_argument("--show-qr", action="store_true", help="Print the QR code directly to the terminal (requires 'qrcode' pip package)")
     p_key.add_argument("--out-dir", default=".", help="Directory to save the QR code image if exported (default: ./)")
     p_key.add_argument("--key-string", help="Explicit base64 or PEM encoded key (if not using --generate)")
     p_key.add_argument("--url", help="A standard otpauth:// URL to import an existing key")
@@ -45,6 +47,12 @@ def get_args():
     p_verify.add_argument("name", help="Name of the TOTP key")
     p_verify.add_argument("code", help="The TOTP code to verify")
     p_verify.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
+
+    # 5. EXEC (Ephemeral Injection)
+    p_exec = subparsers.add_parser("exec", help="Generate a TOTP code, inject it into ENV, and run a command")
+    p_exec.add_argument("name", help="Name of the TOTP key")
+    p_exec.add_argument("--mount", default="totp", help="Engine mount path (default: totp)")
+    p_exec.add_argument("exec_cmd", nargs='*', help="The command to execute (prefix with '--')")
 
     return parser.parse_args()
 
@@ -157,7 +165,7 @@ def main():
             if args.account_name: payload["account_name"] = args.account_name
             if args.generate:
                 payload["generate"] = True
-                payload["export"] = args.export
+                payload["export"] = True # We need Vault to export the data so we can generate the terminal QR or PNG
             elif args.key_string:
                 payload["key"] = args.key_string
             elif args.url:
@@ -171,21 +179,32 @@ def main():
                 res = client.write(f"{mount}/keys/{name}", **payload)
                 print(f"✅ TOTP Key '{name}' successfully configured.")
                 
-                # If exported, unpack the payload and write out the QR code
-                if args.generate and args.export and res and 'data' in res:
+                if args.generate and res and 'data' in res:
                     data = res['data']
                     url = data.get('url', '')
                     barcode = data.get('barcode', '')
                     
                     if url: print(f"  ├─ Provisioning URL : {url}")
                     
-                    if barcode:
+                    if args.export and barcode:
                         os.makedirs(args.out_dir, exist_ok=True)
                         qr_path = os.path.join(args.out_dir, f"totp_{name}_qr.png")
                         with open(qr_path, "wb") as f:
                             f.write(base64.b64decode(barcode))
                         print(f"  ├─ QR Code saved to : {qr_path}")
-                        print(f"  ℹ️  (Scan this QR code with Google Authenticator or Authy)")
+                        
+                    if args.show_qr and url:
+                        try:
+                            import qrcode
+                            print(f"\n  📱 Scan this QR Code with your Authenticator App:\n")
+                            qr = qrcode.QRCode()
+                            qr.add_data(url)
+                            qr.make(fit=True)
+                            qr.print_tty()
+                            print("\n")
+                        except ImportError:
+                            print("  ⚠️ Cannot print QR to terminal: 'qrcode' python package is missing.")
+                            print("  ℹ️ Run: pip install qrcode")
 
             except Exception as e:
                 print(f"❌ Error configuring TOTP key: {e}", file=sys.stderr)
@@ -263,6 +282,44 @@ def main():
                 sys.exit(1)
         except Exception as e:
             print(f"❌ Error verifying TOTP code: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # 5. EXEC (Ephemeral Injection)
+    # -------------------------------------------------------------------------
+    elif cmd == "exec":
+        mount = getattr(args, 'mount', 'totp').strip('/')
+        name = args.name
+        
+        command_list = args.exec_cmd
+        if command_list and command_list[0] == "--":
+            command_list = command_list[1:]
+            
+        if not command_list:
+            print("❌ Error: No command provided to execute.", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            # 1. Fetch the TOTP code
+            res = client.read(f"{mount}/code/{name}")
+            if not res or 'data' not in res or 'code' not in res['data']:
+                print(f"❌ Could not generate code. Key '{name}' might not exist.", file=sys.stderr)
+                sys.exit(1)
+                
+            code = res['data']['code']
+            
+            # 2. Inject into environment
+            env = os.environ.copy()
+            env["VAULT_TOTP_CODE"] = code
+            
+            print(f"🚀 Injecting TOTP code into environment (VAULT_TOTP_CODE) and running command...\n" + "-"*40, file=sys.stderr)
+            
+            # 3. Execute
+            exit_code = subprocess.run(command_list, env=env).returncode
+            sys.exit(exit_code)
+
+        except Exception as e:
+            print(f"❌ Error during exec: {e}", file=sys.stderr)
             sys.exit(1)
 
 if __name__ == "__main__":
