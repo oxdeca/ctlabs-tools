@@ -23,7 +23,7 @@ def get_args():
 
     # READ
     p_read = subparsers.add_parser("read", help="Read a static secret payload or a specific key")
-    p_read.add_argument("path_args", nargs="+", help="Supports: <mount>/<path>, <mount> <path> <key>, or <mount>/<path>/<key>")
+    p_read.add_argument("path_args", nargs="+", help="Supports: <mount>/<path>, <mount>/<path> <key>, or <mount>/<path>:<key>")
 
     # LIST
     p_list = subparsers.add_parser("list", help="List folders or secret keys")
@@ -43,13 +43,32 @@ def main():
         sys.exit(1)
 
     cmd = args.command
+    key_target = None
 
     # 🌟 SMART TOKEN PARSER
-    # This takes any combination of spaces and slashes and normalizes them into a standard path
-    raw_tokens = []
-    for arg in args.path_args:
-        raw_tokens.extend([t for t in arg.split('/') if t])
-    raw_path = "/".join(raw_tokens)
+    # Explicitly separate the Secret Path from the Payload Key before calling the API
+    if cmd == "read":
+        if len(args.path_args) == 2:
+            # Matches: vault-secret read kvv2/apps/my-secret my_key
+            raw_path = args.path_args[0]
+            key_target = args.path_args[1]
+        elif len(args.path_args) > 2:
+            raw_path = args.path_args[0]
+            key_target = " ".join(args.path_args[1:])
+        else:
+            raw_input = args.path_args[0]
+            if ":" in raw_input:
+                # Matches: vault-secret read kvv2/apps/my-secret:my_key
+                raw_path, key_target = raw_input.split(":", 1)
+            else:
+                # Matches: vault-secret read kvv2/apps/my-secret
+                raw_path = raw_input
+    else:
+        # For write, list, search, raw - combine paths standardly
+        raw_tokens = []
+        for arg in args.path_args:
+            raw_tokens.extend([t for t in arg.split('/') if t])
+        raw_path = "/".join(raw_tokens)
 
     if cmd == "raw":
         data = vault.read_raw_path(raw_path)
@@ -57,6 +76,7 @@ def main():
         else: print(f"⚠️ No data found at {raw_path}")
         sys.exit(0)
 
+    # Separate Mount Point from the rest of the path
     parts = raw_path.split('/', 1)
     
     if len(parts) == 1:
@@ -82,44 +102,31 @@ def main():
             print(f"✅ Successfully wrote data to {raw_path}")
 
     elif cmd == "read":
+        # Handle internal non-KV paths gracefully
         if mount_point in ["sys", "auth", "identity", "pki", "transit"]:
             data = vault.read_raw_path(raw_path)
-            if data: print(json.dumps(data, indent=2))
-            else: print(f"⚠️ No data found at {raw_path}")
         else:
-            # 🚀 ATTEMPT 1: Assume the full path points directly to a secret
+            # 🚀 Read the exact path exactly once
             data = vault.read_secret(path=secret_path, mount_point=mount_point)
-            
-            if data is not None:
-                # The path was a full secret, print the whole JSON payload
-                print(json.dumps(data, indent=2))
-            else:
-                # 🚀 ATTEMPT 2 (Fallback): Assume the last word in the path is actually a KEY
-                if '/' in secret_path:
-                    parent_path, key = secret_path.rsplit('/', 1)
-                    parent_data = vault.read_secret(path=parent_path, mount_point=mount_point)
-                    
-                    if parent_data is not None and key in parent_data:
-                        val = parent_data[key]
-                        # If the key points to a simple string/int, print it raw so bash can capture it!
-                        if isinstance(val, (dict, list)):
-                            print(json.dumps(val, indent=2))
-                        else:
-                            print(val)
+            if data is None: 
+                data = vault.read_raw_path(raw_path)
+
+        if data is not None:
+            if key_target:
+                if key_target in data:
+                    val = data[key_target]
+                    # Print raw so it can be captured by bash variables!
+                    if isinstance(val, (dict, list)):
+                        print(json.dumps(val, indent=2))
                     else:
-                        # 🚀 ATTEMPT 3 (Deep Fallback): Check if it's a raw engine path (like metadata)
-                        raw_data = vault.read_raw_path(raw_path)
-                        if raw_data:
-                            print(json.dumps(raw_data, indent=2))
-                        else:
-                            print(f"⚠️ No secret or key '{key}' found at {raw_path}")
+                        print(val)
                 else:
-                    # Single token secret path fallback
-                    raw_data = vault.read_raw_path(raw_path)
-                    if raw_data:
-                        print(json.dumps(raw_data, indent=2))
-                    else:
-                        print(f"⚠️ No data found at {raw_path}")
+                    print(f"⚠️ Key '{key_target}' not found in secret '{raw_path}'", file=sys.stderr)
+            else:
+                print(json.dumps(data, indent=2))
+        else:
+            # Since the ugly API error is already printed by core.py, we just exit cleanly here
+            sys.exit(1)
 
     elif cmd == "list":
         keys = vault.list_secrets(path=secret_path, mount_point=mount_point)
