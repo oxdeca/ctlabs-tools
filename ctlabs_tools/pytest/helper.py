@@ -101,7 +101,7 @@ class Terraform:
 
             choice = input("Action: [r]etry, [q]uit current test, [A]bort entire suite: ").strip().lower()
             if choice == 'a':
-                pytest.exit("🛑 User triggered master abort. Stopping all remaining tests.")
+                pytest.exit("🛑\b User triggered master abort. Stopping all remaining tests.")
             elif choice != 'r':
                 pytest.fail("User aborted.")
                 

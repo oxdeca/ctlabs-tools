@@ -3,26 +3,26 @@
 # License : MIT
 # -----------------------------------------------------------------------------
 
-import streamlit as st
-import pandas as pd
+import base64
+import glob
 import json
 import os
-import time
-from datetime import datetime, timedelta
-from cryptography.fernet import Fernet
-import base64
-from hashlib import sha256
+import pandas    as pd
+import streamlit as st
 import tempfile
-import glob
+import time
+from cryptography.fernet import Fernet
+from datetime            import datetime, timedelta
+from hashlib             import sha256
 
 try:
-    from confluent_kafka import Producer, Consumer
+    from confluent_kafka       import Producer, Consumer
     from confluent_kafka.admin import AdminClient, NewTopic, NewPartitions
     KAFKA_AVAILABLE = True
 except ImportError:
     KAFKA_AVAILABLE = False
 
-APP_VERSION = "3.7.0"
+APP_VERSION  = "3.7.0"
 CREATED_DATE = "2024-05-22"
 
 def cleanup_old_certs():
