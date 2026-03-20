@@ -455,10 +455,19 @@ def main():
                             
                             master_sa = args.master_sa or f"vault-gcp-broker@{project}.iam.gserviceaccount.com"
                             
-                            for res_type, uri_path in {'projects': 'projects', 'folders': 'folders', 'organizations': 'organizations'}.items():
+                            # Map the YAML key to its specific GCP API domain and URI path
+                            resource_maps = {
+                                'projects': ('cloudresourcemanager.googleapis.com', 'projects'),
+                                'folders': ('cloudresourcemanager.googleapis.com', 'folders'),
+                                'organizations': ('cloudresourcemanager.googleapis.com', 'organizations'),
+                                'billingAccounts': ('cloudbilling.googleapis.com', 'billingAccounts') # <-- Added Billing
+                            }
+                            
+                            for res_type, (api_domain, uri_path) in resource_maps.items():
                                 for item in config.get(res_type, []):
                                     target_name = item['name']
                                     
+                                    # Keep your existing auto-patching logic for cross-project access
                                     if res_type == 'projects' and target_name != project:
                                         print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
                                         run_gcloud([
@@ -466,9 +475,10 @@ def main():
                                             f"--member=serviceAccount:{master_sa}",
                                             "--role=roles/resourcemanager.projectIamAdmin"
                                         ], quiet=True, ignore_errors=True)
-
+                            
                                     roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
-                                    bindings_hcl += f'\nresource "//cloudresourcemanager.googleapis.com/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
+                                    # Use the dynamic api_domain instead of hardcoding cloudresourcemanager
+                                    bindings_hcl += f'\nresource "//{api_domain}/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
                             print(f"📄 Parsed YAML bindings.")
                         else:
                             bindings_hcl = f.read()
