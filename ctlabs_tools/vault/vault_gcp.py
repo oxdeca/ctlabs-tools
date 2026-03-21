@@ -227,10 +227,11 @@ def main():
             # Base roles Vault ALWAYS needs on its Home Project to spawn temporary SAs
             base_roles = [
                 "roles/iam.serviceAccountAdmin",
-                "roles/iam.serviceAccountKeyAdmin"
+                "roles/iam.serviceAccountKeyAdmin",
+                "roles/resourcemanager.projectIamAdmin"
             ]
             
-            # 🌟 NEW FIX: Always grant Home Base permissions on the host project!
+            # 🌟 Always grant Home Base permissions on the host project!
             print(f"  ├─ Granting SA Management on home project: {project}...")
             for role in base_roles:
                 run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
