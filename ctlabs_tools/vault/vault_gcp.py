@@ -366,40 +366,44 @@ def main():
             
         elif action in ["create", "update"]:
             bindings_hcl = ""
+            requires_static_workaround = False
+            yaml_config = {}
             
             if args.bindings:
                 try:
                     with open(args.bindings, 'r') as f:
                         if args.bindings.endswith(('.yaml', '.yml')):
                             import yaml
-                            config = yaml.safe_load(f)
+                            yaml_config = yaml.safe_load(f)
+                            
+                            # 🌟 SMART DETECTION: Does this need Billing?
+                            if 'billingAccounts' in yaml_config:
+                                requires_static_workaround = True
                             
                             master_sa = args.master_sa or f"vault-gcp-broker@{project}.iam.gserviceaccount.com"
                             
-                            # Map the YAML key to its specific GCP API domain and URI path
                             resource_maps = {
                                 'projects': ('cloudresourcemanager.googleapis.com', 'projects'),
                                 'folders': ('cloudresourcemanager.googleapis.com', 'folders'),
-                                'organizations': ('cloudresourcemanager.googleapis.com', 'organizations'),
-                                'billingAccounts': ('cloudbilling.googleapis.com', 'billingAccounts') # <-- Added Billing
+                                'organizations': ('cloudresourcemanager.googleapis.com', 'organizations')
                             }
                             
-                            for res_type, (api_domain, uri_path) in resource_maps.items():
-                                for item in config.get(res_type, []):
-                                    target_name = item['name']
-                                    
-                                    # Keep your existing auto-patching logic for cross-project access
-                                    if res_type == 'projects' and target_name != project:
-                                        print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
-                                        run_gcloud([
-                                            "gcloud", "projects", "add-iam-policy-binding", target_name,
-                                            f"--member=serviceAccount:{master_sa}",
-                                            "--role=roles/resourcemanager.projectIamAdmin"
-                                        ], quiet=True, ignore_errors=True)
-                            
-                                    roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
-                                    # Use the dynamic api_domain instead of hardcoding cloudresourcemanager
-                                    bindings_hcl += f'\nresource "//{api_domain}/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
+                            # We only build HCL if we are NOT doing the static workaround
+                            if not requires_static_workaround:
+                                for res_type, (api_domain, uri_path) in resource_maps.items():
+                                    for item in yaml_config.get(res_type, []):
+                                        target_name = str(item['name'])
+                                        
+                                        if res_type == 'projects' and target_name != project:
+                                            print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
+                                            run_gcloud([
+                                                "gcloud", "projects", "add-iam-policy-binding", target_name,
+                                                f"--member=serviceAccount:{master_sa}",
+                                                "--role=roles/resourcemanager.projectIamAdmin"
+                                            ], quiet=True, ignore_errors=True)
+
+                                        roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
+                                        bindings_hcl += f'\nresource "//{api_domain}/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
                             print(f"📄 Parsed YAML bindings.")
                         else:
                             bindings_hcl = f.read()
@@ -408,18 +412,57 @@ def main():
                     sys.exit(1)
             else:
                 roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
-                
                 if args.folder:
                     resource_uri = f"//cloudresourcemanager.googleapis.com/folders/{args.folder}"
                     print(f"📁 Binding permissions at the FOLDER level (Folder ID: {args.folder})")
                 else:
                     resource_uri = f"//cloudresourcemanager.googleapis.com/projects/{project}"
                     print(f"🏗️ Binding permissions at the PROJECT level ({project})")
-                    
                 bindings_hcl = f'\nresource "{resource_uri}" {{\n  roles = [{", ".join(roles_list)}]\n}}\n'
                 
-            print(f"🚀 Creating Roleset '{roleset_name}'...")
-            vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
+            
+            # 🌟 ROUTING LOGIC 🌟
+            if requires_static_workaround:
+                print(f"💡 Billing permissions detected. Routing via intelligent static-account engine...")
+                
+                # GCP SA Names have a strict 30 character limit.
+                sa_name = f"vlt-{roleset_name}"[:30].rstrip('-')
+                sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+                
+                print(f"  ├─ Creating permanent Service Account '{sa_name}' in GCP...")
+                run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, f"--display-name=Vault Managed: {roleset_name}", "--project", project], ignore_errors=True, quiet=True)
+                
+                print(f"  ├─ Applying IAM Bindings natively via gcloud...")
+                for item in yaml_config.get('folders', []):
+                    for role in item.get('roles', []):
+                        run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", str(item['name']), f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+                
+                for item in yaml_config.get('projects', []):
+                    for role in item.get('roles', []):
+                        run_gcloud(["gcloud", "projects", "add-iam-policy-binding", str(item['name']), f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+
+                for item in yaml_config.get('billingAccounts', []):
+                    for role in item.get('roles', []):
+                        run_gcloud(["gcloud", "beta", "billing", "accounts", "add-iam-policy-binding", str(item['name']), f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+
+                print(f"  ├─ Registering with Vault as a managed static account...")
+                try:
+                    vault._get_client().write(
+                        f"{mount_point}/static-account/{roleset_name}",
+                        service_account_email=sa_email,
+                        secret_type="access_token",
+                        token_scopes=["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email"]
+                    )
+                    print(f"✅ Successfully created roleset '{roleset_name}'!")
+                except Exception as e:
+                    print(f"❌ Error registering static account in Vault: {e}", file=sys.stderr)
+                    sys.exit(1)
+
+            else:
+                # 🌟 NORMAL VAULT ROLESET CREATION 🌟
+                print(f"🚀 Creating Dynamic Roleset '{roleset_name}'...")
+                vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
+
 
     # -------------------------------------------------------------------------
     # 5. CLEANUP

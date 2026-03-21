@@ -10,14 +10,23 @@ class VaultGCPMixin:
         client = self._get_client()
         if not client: return None
         try:
-            res = client.read(f"{mount_point}/token/{roleset_name}")
+            # 1. Try the standard dynamic roleset path
+            try:
+                res = client.read(f"{mount_point}/token/{roleset_name}")
+            except Exception:
+                res = None
+                
+            # 2. If not found, try the smart static-account path
             if not res:
-                print(f"❌ Vault Error: Roleset '{roleset_name}' not found at '{mount_point}/'.", file=sys.stderr)
+                res = client.read(f"{mount_point}/static-account/{roleset_name}/token")
+
+            if not res:
+                print(f"❌ Vault Error: Roleset/Static Account '{roleset_name}' not found at '{mount_point}/'.", file=sys.stderr)
                 return None
                 
             return res.get('token') or res.get('token_oauth2_secret') or res.get('data', {}).get('token')
         except Exception as e:
-            print(f"❌ Error generating GCP token for roleset '{roleset_name}': {e}", file=sys.stderr)
+            print(f"❌ Error generating GCP token for '{roleset_name}': {e}", file=sys.stderr)
             return None
 
     def get_gcp_token_info(self, token_string):
