@@ -41,39 +41,40 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}\nError output: {e.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
 
-def resolve_gcp_folder_id(input_str):
+def resolve_gcp_folder_id(input_str, org_id=None): 
     """
     Looks up a GCP Folder ID from a potential Display Name.
-    If input is numeric, returns it immediately.
+    Requires org_id if input_str is a display name.
     """
-    # 1. Check if the input is already a pure number (likely the ID)
     if input_str and input_str.strip().isdigit():
         return input_str.strip()
     
-    # 2. If it's a string name, we need to perform a lookup.
-    # We use a filter to find exact display name matches.
-    print(f"  🔍 Resolving GCP Folder Display Name '{input_str}' to numeric ID...", file=sys.stderr)
+    # Check for required context
+    if not org_id:
+        print(f"  ⚠️ Cannot resolve Display Name '{input_str}': Missing --organization context.", file=sys.stderr)
+        return input_str # Fallback to original string
+
+    print(f"  🔍 Resolving GCP Folder Display Name '{input_str}' inside Organization '{org_id}'...", file=sys.stderr)
     cmd = [
         "gcloud", "resource-manager", "folders", "list",
+        f"--organization={org_id}", # 🌟 UPDATED: Context added!
         f'--filter=displayName:"{input_str}"',
-        "--format=json" # JSON capture so we can parse the name -> ID map
+        "--format=json"
     ]
     
-    # Use your existing run_gcloud helper but capture the result
     json_result = run_gcloud(cmd, capture_json=True, ignore_errors=True, quiet=True)
     
+    # (Existing parsing logic remains the same below)
     if json_result:
         try:
             folder_list = json.loads(json_result)
             if folder_list:
-                # GCP names are returned as 'folders/12345'
                 numeric_id = folder_list[0]['name'].split('folders/')[-1]
                 print(f"  ✅ Resolved Display Name '{input_str}' to Folder ID '{numeric_id}'.", file=sys.stderr)
                 return numeric_id
         except Exception:
             pass
             
-    # 3. Fallback: If lookup fails, pass the original string through (maybe GCP allows it later?)
     print(f"  ⚠️ Could not resolve Display Name '{input_str}' (Lookup failed). Passing string directly...", file=sys.stderr)
     return input_str
 
@@ -97,6 +98,7 @@ def get_args():
     p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"])
     p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID for Broker SA placement (and default mount point: gcp/<project>)")
     p_engine.add_argument("--sa-name", default="vault-gcp-broker", help="Custom name for the Broker SA (defaults to vault-gcp-broker)")
+    p_engine.add_argument("--organization", help="Optional Organization ID (Required if using Folder Display Names)")
     p_engine.add_argument("--folder", help="SCOPE: Target a Folder ID (scopes Master SA to the folder level)")
     p_engine.add_argument("--project-only", action="store_true", help="SCOPE: Strict least-privilege (scopes Master SA only locally to its project)")
     p_engine.add_argument("--ttl", help="Update default lease TTL (e.g., '1h')")
@@ -231,7 +233,8 @@ def main():
             if args.folder:
                 # 📁 HIGH-PRIVILEGE FOLDER SCOPING (Modern, Project Creator, Billing Admin)
                 print(f"  ├─ SCOPE: Scoping Vault's access to FOLDER: {args.folder}...")
-                resolved_folder_id = resolve_gcp_folder_id(args.folder)
+
+                resolved_folder_id = resolve_gcp_folder_id(args.folder, args.organization)
 
                 folder_roles = base_roles + [
                     "roles/resourcemanager.projectIamAdmin",
