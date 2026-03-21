@@ -41,6 +41,42 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}\nError output: {e.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
 
+def resolve_gcp_folder_id(input_str):
+    """
+    Looks up a GCP Folder ID from a potential Display Name.
+    If input is numeric, returns it immediately.
+    """
+    # 1. Check if the input is already a pure number (likely the ID)
+    if input_str and input_str.strip().isdigit():
+        return input_str.strip()
+    
+    # 2. If it's a string name, we need to perform a lookup.
+    # We use a filter to find exact display name matches.
+    print(f"  🔍 Resolving GCP Folder Display Name '{input_str}' to numeric ID...", file=sys.stderr)
+    cmd = [
+        "gcloud", "resource-manager", "folders", "list",
+        f'--filter=displayName:"{input_str}"',
+        "--format=json" # JSON capture so we can parse the name -> ID map
+    ]
+    
+    # Use your existing run_gcloud helper but capture the result
+    json_result = run_gcloud(cmd, capture_json=True, ignore_errors=True, quiet=True)
+    
+    if json_result:
+        try:
+            folder_list = json.loads(json_result)
+            if folder_list:
+                # GCP names are returned as 'folders/12345'
+                numeric_id = folder_list[0]['name'].split('folders/')[-1]
+                print(f"  ✅ Resolved Display Name '{input_str}' to Folder ID '{numeric_id}'.", file=sys.stderr)
+                return numeric_id
+        except Exception:
+            pass
+            
+    # 3. Fallback: If lookup fails, pass the original string through (maybe GCP allows it later?)
+    print(f"  ⚠️ Could not resolve Display Name '{input_str}' (Lookup failed). Passing string directly...", file=sys.stderr)
+    return input_str
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault GCP Identity & Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds")
@@ -195,6 +231,8 @@ def main():
             if args.folder:
                 # 📁 HIGH-PRIVILEGE FOLDER SCOPING (Modern, Project Creator, Billing Admin)
                 print(f"  ├─ SCOPE: Scoping Vault's access to FOLDER: {args.folder}...")
+                resolved_folder_id = resolve_gcp_folder_id(args.folder)
+
                 folder_roles = base_roles + [
                     "roles/resourcemanager.projectIamAdmin",
                     "roles/resourcemanager.folderIamAdmin" # Needed for project creator/management
