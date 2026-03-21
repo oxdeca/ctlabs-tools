@@ -317,15 +317,16 @@ def main():
             print("❌ Error: Project and roleset_name are required.", file=sys.stderr)
             sys.exit(1)
 
-        if action == "read":
-            data = vault.read_gcp_roleset(name=roleset_name, mount_point=mount_point)
-            if data: print(json.dumps(data, indent=2))
-            else: print(f"❌ Roleset '{roleset_name}' not found.")
-            
-        elif action == "info":
+        if action in ["info", "read"]:
             # 1. Try to read as a Dynamic Roleset first
-            data = vault.read_gcp_roleset(name=roleset_name, mount_point=mount_point)
+            data = None
             is_static = False
+            try:
+                res = vault._get_client().read(f"{mount_point}/roleset/{roleset_name}")
+                if res and 'data' in res:
+                    data = res['data']
+            except Exception:
+                pass
             
             # 2. If not found, try reading as a Static Account
             if not data:
@@ -343,23 +344,122 @@ def main():
                 print(f"  ├─ Secret Type : {data.get('secret_type', 'Unknown')}")
                 if not is_static:
                     print(f"  ├─ Project     : {data.get('project', 'Unknown')}")
-                print(f"  ├─ SA Email    : {data.get('service_account_email', 'Unknown')}")
+                
+                sa_email = data.get('service_account_email', 'Unknown')
+                print(f"  ├─ SA Email    : {sa_email}")
                 
                 scopes = data.get('token_scopes', [])
                 print(f"  ├─ Scopes      : {', '.join(scopes) if scopes else 'None'}")
                 
                 if is_static:
-                    print(f"  ├─ Bindings    : Managed externally via GCP IAM (Billing/Folder Workaround)")
+                    print(f"  ├─ Bindings    : 🔍 Scanning GCP for active IAM roles (this may take a moment)...")
+                    
+                    import subprocess
+                    import json
+                    bindings_found = []
+                    
+                    try:
+                        # Scan 1: Project Level
+                        proj_out = subprocess.check_output(["gcloud", "projects", "get-iam-policy", project, "--format=json"], stderr=subprocess.DEVNULL)
+                        for b in json.loads(proj_out).get('bindings', []):
+                            if any(sa_email in m for m in b.get('members', [])):
+                                bindings_found.append(f"Project ({project}) -> {b.get('role')}")
+                                
+                        # Scan 2: Billing Accounts
+                        ba_out = subprocess.check_output(["gcloud", "beta", "billing", "accounts", "list", "--format=value(name)"], stderr=subprocess.DEVNULL)
+                        for ba in ba_out.decode('utf-8').strip().split():
+                            if not ba: continue
+                            ba_id = ba.split('/')[-1]
+                            try:
+                                ba_pol = subprocess.check_output(["gcloud", "beta", "billing", "accounts", "get-iam-policy", ba_id, "--format=json"], stderr=subprocess.DEVNULL)
+                                for b in json.loads(ba_pol).get('bindings', []):
+                                    if any(sa_email in m for m in b.get('members', [])):
+                                        bindings_found.append(f"Billing ({ba_id}) -> {b.get('role')}")
+                            except Exception:
+                                pass
+                                
+                        # Scan 3: Folders via Cloud Asset Inventory (Catches everything else)
+                        org_out = subprocess.check_output(["gcloud", "projects", "get-ancestors", project, "--format=json"], stderr=subprocess.DEVNULL)
+                        org_id = next((a['id'] for a in json.loads(org_out) if a.get('type') == 'organization'), None)
+                        
+                        if org_id:
+                            try:
+                                asset_out = subprocess.check_output([
+                                    "gcloud", "asset", "search-all-iam-policies", 
+                                    f"--scope=organizations/{org_id}", 
+                                    f"--query=policy:{sa_email}", 
+                                    "--format=json"
+                                ], stderr=subprocess.DEVNULL)
+                                
+                                for p in json.loads(asset_out):
+                                    res_name = p.get('resource', '').split('/')[-1]
+                                    res_type = p.get('resource', '').split('/')[-2] if '/' in p.get('resource', '') else 'Folder/Org'
+                                    
+                                    for b in p.get('policy', {}).get('bindings', []):
+                                        if any(sa_email in m for m in b.get('members', [])):
+                                            entry = f"{res_type.capitalize()} ({res_name}) -> {b.get('role')}"
+                                            # Prevent duplicating Project/Billing rules we already found
+                                            if not any(res_name in existing for existing in bindings_found):
+                                                bindings_found.append(entry)
+                            except Exception:
+                                pass # Cloud Asset API might be disabled
+                                
+                    except Exception as e:
+                        bindings_found.append(f"⚠️ Partial results (Error querying GCP: {e})")
+
+                    # Print out the discovered bindings
+                    if bindings_found:
+                        for bf in bindings_found:
+                            print(f"  │  ├─ {bf}")
+                    else:
+                        print(f"  │  ├─ ⚠️ No active bindings found or permission denied to read them.")
+
                 else:
                     bindings = data.get('bindings', {})
                     if bindings:
                         print(f"  ├─ Bindings    :")
-                        # ... (keep your existing bindings print loop here) ...
+                        print(f"  │  ├─ {bindings}") # Customize this to match your existing print logic
+
             else:
                 print(f"❌ Roleset or Static Account '{roleset_name}' not found.")
 
         elif action == "delete":
-            vault.delete_gcp_roleset(name=roleset_name, mount_point=mount_point)
+            # 1. Check if it's a Static Account first
+            is_static = False
+            sa_email = None
+            try:
+                res = vault._get_client().read(f"{mount_point}/static-account/{roleset_name}")
+                if res and 'data' in res:
+                    is_static = True
+                    sa_email = res['data'].get('service_account_email')
+            except Exception:
+                pass
+
+            if is_static:
+                print(f"🗑️ Deleting Static Account '{roleset_name}'...")
+                
+                # Delete the Vault mapping
+                try:
+                    vault._get_client().delete(f"{mount_point}/static-account/{roleset_name}")
+                    print(f"  ├─ Removed static-account mapping from Vault.")
+                except Exception as e:
+                    print(f"  ├─ ⚠️ Failed to remove from Vault: {e}")
+                
+                # Tear down the permanent Service Account in GCP
+                if sa_email:
+                    print(f"  ├─ Deleting permanent Service Account '{sa_email}' from GCP...")
+                    run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
+                
+                print(f"✅ Successfully deleted static account '{roleset_name}'.")
+                
+            else:
+                # 2. Fallback to normal Dynamic Roleset deletion
+                print(f"🗑️ Deleting Dynamic Roleset '{roleset_name}'...")
+                try:
+                    vault._get_client().delete(f"{mount_point}/roleset/{roleset_name}")
+                    print(f"✅ Successfully deleted roleset '{roleset_name}'.")
+                except Exception as e:
+                    print(f"❌ Error deleting roleset '{roleset_name}': {e}", file=sys.stderr)
             
         elif action in ["create", "update"]:
             bindings_hcl = ""
