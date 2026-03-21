@@ -98,9 +98,10 @@ def get_args():
     p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"])
     p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID for Broker SA placement (and default mount point: gcp/<project>)")
     p_engine.add_argument("--sa-name", default="vault-gcp-broker", help="Custom name for the Broker SA (defaults to vault-gcp-broker)")
-    p_engine.add_argument("--organization", help="Optional Organization ID (Required if using Folder Display Names)")
     p_engine.add_argument("--folder", help="SCOPE: Target a Folder ID (scopes Master SA to the folder level)")
     p_engine.add_argument("--project-only", action="store_true", help="SCOPE: Strict least-privilege (scopes Master SA only locally to its project)")
+    p_engine.add_argument("--billing-accounts", help="Optional: Comma-separated list of Billing Account IDs (requires Billing Admin permissions)")
+    p_engine.add_argument("--organization", help="Optional Organization ID (Required if using Folder Display Names)")
     p_engine.add_argument("--ttl", help="Update default lease TTL (e.g., '1h')")
 
     # 4. ROLESET
@@ -229,31 +230,39 @@ def main():
                 "roles/iam.serviceAccountKeyAdmin"
             ]
 
-            # 🌟 STEP 3: Smart Scoping based on arguments 🌟
+            # 🌟 STEP 3: Smart Scoping based on arguments
             if args.folder:
-                # 📁 HIGH-PRIVILEGE FOLDER SCOPING (Modern, Project Creator, Billing Admin)
                 print(f"  ├─ SCOPE: Scoping Vault's access to FOLDER: {args.folder}...")
-
                 resolved_folder_id = resolve_gcp_folder_id(args.folder, args.organization)
-
+                
                 folder_roles = base_roles + [
                     "roles/resourcemanager.projectIamAdmin",
-                    "roles/resourcemanager.folderIamAdmin" # Needed for project creator/management
+                    "roles/resourcemanager.folderIamAdmin"
                 ]
                 for role in folder_roles:
-                    run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", args.folder, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-                
-                # (Add your Optional Billing Support Logic here too, if needed!)
+                    run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", resolved_folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
 
             elif args.project_only:
-                # 📄 EXTREME LEAST-PRIVILEGE SCOPING (Legacy project sandbox)
                 print(f"  ├─ SCOPE: Sandboxing Vault strictly to PROJECT: {project}...")
                 project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
                 for role in project_roles:
                     run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-                    
+
             else:
                 sys.exit("\n❌ SCOPE REQUIRED: Must provide either '--folder <id>' for modern architecture, or '--project-only' for least-privilege sandboxing.")
+
+            # 🌟 STEP 4: THE BILLING FIX 🌟
+            if getattr(args, 'billing_accounts', None):
+                print(f"  ├─ 💳 Assigning Billing Admin role to Vault Broker SA...")
+                billing_ids = [b.strip() for b in args.billing_accounts.split(",")]
+                for billing_id in billing_ids:
+                    # Note: gcloud beta is required for billing account IAM
+                    run_gcloud([
+                        "gcloud", "beta", "billing", "accounts", "add-iam-policy-binding", billing_id,
+                        f"--member=serviceAccount:{sa_email}",
+                        "--role=roles/billing.admin"
+                    ], ignore_errors=True)
+                    print(f"  │  ├─ Granted access to Billing Account: {billing_id}")
 
             # (Generate JSON Key and write to Vault...)
             print("  ├─ 🔑 Generating JSON Key and updating Vault...")
