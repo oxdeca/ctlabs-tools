@@ -409,8 +409,13 @@ def main():
                                     for b in p.get('policy', {}).get('bindings', []):
                                         if any(sa_email in m for m in b.get('members', [])):
                                             entry = f"{res_type.capitalize()} ({res_name}) -> {b.get('role')}"
-                                            # Prevent duplicating Project/Billing rules we already found
-                                            if not any(res_name in existing for existing in bindings_found):
+                                            # Prevent duplicating the exact same resource + role combination
+                                            is_dupe = False
+                                            for existing in bindings_found:
+                                                if res_name in existing and b.get('role') in existing:
+                                                    is_dupe = True
+                                                    break
+                                            if not is_dupe:
                                                 bindings_found.append(entry)
                             except subprocess.CalledProcessError as e:
                                 err_msg = e.stderr.decode('utf-8').strip().split('\n')[0]
