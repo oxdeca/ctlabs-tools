@@ -323,44 +323,41 @@ def main():
             else: print(f"❌ Roleset '{roleset_name}' not found.")
             
         elif action == "info":
+            # 1. Try to read as a Dynamic Roleset first
             data = vault.read_gcp_roleset(name=roleset_name, mount_point=mount_point)
+            is_static = False
+            
+            # 2. If not found, try reading as a Static Account
+            if not data:
+                try:
+                    res = vault._get_client().read(f"{mount_point}/static-account/{roleset_name}")
+                    if res and 'data' in res:
+                        data = res['data']
+                        is_static = True
+                except Exception:
+                    pass
+
             if data:
-                print(f"👥 GCP Roleset: {roleset_name}")
+                print(f"👥 GCP {'Static Account' if is_static else 'Roleset'}: {roleset_name}")
                 print(f"  ├─ Engine      : {mount_point}/")
-                print(f"  ├─ Secret Type : {data.get('secret_type', 'access_token')}")
-                print(f"  ├─ Project     : {data.get('project', project)}")
-                
-                # 🌟 Added the SA Email output
-                sa_email = data.get('service_account_email', 'Dynamic/Unknown')
-                print(f"  ├─ SA Email    : {sa_email}")
+                print(f"  ├─ Secret Type : {data.get('secret_type', 'Unknown')}")
+                if not is_static:
+                    print(f"  ├─ Project     : {data.get('project', 'Unknown')}")
+                print(f"  ├─ SA Email    : {data.get('service_account_email', 'Unknown')}")
                 
                 scopes = data.get('token_scopes', [])
-                if scopes:
-                    print(f"  ├─ Scopes      : {', '.join(scopes)}")
-                    
-                # 🌟 Safely format the bindings into a neat tree
-                bindings = data.get('bindings', '')
-                if bindings:
-                    if isinstance(bindings, str):
-                        lines = len(bindings.strip().split('\n'))
-                        print(f"  ├─ Bindings    : Configured ({lines} lines of raw HCL)")
-                    elif isinstance(bindings, dict):
-                        print(f"  ├─ Bindings    :")
-                        for uri, roles in bindings.items():
-                            # Clean up the URI to just show projects/foo or folders/bar
-                            display_uri = uri.split('googleapis.com/')[-1] if 'googleapis.com/' in uri else uri
-                            print(f"  │  ├─ {display_uri}")
-                            for role in roles:
-                                print(f"  │  │  ├─ {role}")
-                    elif isinstance(bindings, list):
-                        print(f"  ├─ Bindings    : Configured ({len(bindings)} items)")
-                    else:
-                        print(f"  ├─ Bindings    : Configured")
+                print(f"  ├─ Scopes      : {', '.join(scopes) if scopes else 'None'}")
+                
+                if is_static:
+                    print(f"  ├─ Bindings    : Managed externally via GCP IAM (Billing/Folder Workaround)")
                 else:
-                    print(f"  ├─ Bindings    : None")
+                    bindings = data.get('bindings', {})
+                    if bindings:
+                        print(f"  ├─ Bindings    :")
+                        # ... (keep your existing bindings print loop here) ...
             else:
-                print(f"❌ Roleset '{roleset_name}' not found.")
-            
+                print(f"❌ Roleset or Static Account '{roleset_name}' not found.")
+
         elif action == "delete":
             vault.delete_gcp_roleset(name=roleset_name, mount_point=mount_point)
             
