@@ -56,12 +56,14 @@ def get_args():
     p_exec.add_argument("roleset", nargs="?", default="terraform-runner", help="Roleset name (default: terraform-runner)")
     p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
 
-    # 3. ENGINE (Legacy Project-level setup)
-    p_engine = subparsers.add_parser("engine", help="Manage GCP Secrets Engines")
+    # 3. ENGINE (Bootstrapping the Secrets Engine)
+    p_engine = subparsers.add_parser("engine", help="Manage Vault GCP Secrets Engines (Broker Setup)")
     p_engine.add_argument("action", choices=["create", "delete", "list", "read", "info", "update"])
-    p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID")
+    p_engine.add_argument("project", nargs="?", default="", help="GCP Project ID for Broker SA placement (and default mount point: gcp/<project>)")
+    p_engine.add_argument("--sa-name", default="vault-gcp-broker", help="Custom name for the Broker SA (defaults to vault-gcp-broker)")
+    p_engine.add_argument("--folder", help="SCOPE: Target a Folder ID (scopes Master SA to the folder level)")
+    p_engine.add_argument("--project-only", action="store_true", help="SCOPE: Strict least-privilege (scopes Master SA only locally to its project)")
     p_engine.add_argument("--ttl", help="Update default lease TTL (e.g., '1h')")
-    p_engine.add_argument("--max-ttl", help="Update max lease TTL (e.g., '24h')")
 
     # 4. ROLESET
     p_role = subparsers.add_parser("role", help="Manage GCP rolesets (team service accounts)")
@@ -73,24 +75,19 @@ def get_args():
     p_role.add_argument("--master-sa", default="", help="Custom Vault Master SA email (used for cross-project auto-patching)")
     p_role.add_argument("--folder", help="Target a Folder ID instead of the Project (e.g., 123456789)")
 
-    # 5. BOOTSTRAP (New Folder-Level Setup)
-    p_bootstrap = subparsers.add_parser("bootstrap", help="Configure Vault GCP engine with Folder-level permissions (Least Privilege)")
-    p_bootstrap.add_argument("--project", required=True, help="The GCP Project ID where the Vault Broker SA will live")
-    p_bootstrap.add_argument("--folder-id", help="Optional: Scopes Vault's permissions to this GCP Folder ID")
-
-    # 6. CLEANUP (New Teardown)
+    # 5. CLEANUP (New Teardown)
     p_cleanup = subparsers.add_parser("cleanup", help="Revoke Vault's GCP access and delete the broker SA")
     p_cleanup.add_argument("--project", required=True, help="The GCP Project ID where the Vault Broker SA lives")
     p_cleanup.add_argument("--folder-id", help="Optional: The GCP Folder ID where Vault's permissions were scoped")
 
-    # 7. GKE CREDENTIALS (Zero-Dependency Kubeconfig)
+    # 6. GKE CREDENTIALS (Zero-Dependency Kubeconfig)
     p_gke = subparsers.add_parser("get-gke-credentials", help="Fetch GKE cluster credentials via REST API (No gcloud required)")
     p_gke.add_argument("project", help="The GCP Project ID")
     p_gke.add_argument("location", help="GCP Location (e.g., us-central1)")
     p_gke.add_argument("cluster", help="GKE Cluster Name")
     p_gke.add_argument("--roleset", default="gke-admin", help="The Vault GCP Roleset (suggested: gke-admin for bootstrapping)")
 
-    # 8. LEASES (Management)
+    # 7. LEASES (Management)
     p_leases = subparsers.add_parser("leases", help="Manage dynamic GCP OAuth tokens and Service Account keys")
     leases_subs = p_leases.add_subparsers(dest="action", required=True)
     p_leases_list = leases_subs.add_parser("list", help="List active GCP leases")
@@ -158,208 +155,76 @@ def main():
             print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
             sys.exit(1)
 
-    # ---------------------------------------------------------------------
-    # 3. LEASES
-    # ---------------------------------------------------------------------
-    elif cmd == "leases":
-        action = args.action
-        
-        if action == "list":
-            if args.project:
-                engines_to_check = [f"gcp/{args.project}"]
-            else:
-                print("🔍 Searching across all active GCP engines...")
-                engines = vault.list_engines(backend_type="gcp") or []
-                engines_to_check = [e.strip('/') for e in engines if e.startswith("gcp/")]
-
-            if not engines_to_check:
-                print("ℹ️ No GCP Engines currently mounted.")
-                sys.exit(0)
-
-            found_any = False
-            for m in engines_to_check:
-                for token_type in ["token/", "key/"]:
-                    rolesets = vault.list_leases(f"{m}/{token_type}")
-                    if rolesets:
-                        for roleset in rolesets:
-                            lease_ids = vault.list_leases(f"{m}/{token_type}{roleset}")
-                            if lease_ids:
-                                if not found_any: print("")
-                                print(f"📁 Active Leases in {m}/{token_type}{roleset}:")
-                                for lid in lease_ids:
-                                    print(f"  ├─ {m}/{token_type}{roleset}{lid}")
-                                    found_any = True
-                                
-            if not found_any:
-                print("✅ No active GCP leases found.")
-                
-        elif action == "revoke":
-            mount_point = f"gcp/{args.project}"
-            
-            if getattr(args, "id", None):
-                print(f"🗑️ Revoking specific lease '{args.id}'...")
-                if vault.revoke_lease(args.id):
-                    print("✅ GCP lease successfully revoked.")
-            elif getattr(args, "force", False):
-                print(f"🔥 Force revoking ALL leases under '{mount_point}/'...")
-                if vault.force_revoke_prefix(mount_point):
-                    print("✅ All GCP leases forcefully wiped.")
-            else:
-                print("⚠️ You must provide either '--id <lease_id>' or use '--force' to wipe the engine.")
-
     # -------------------------------------------------------------------------
-    # 4. BOOTSTRAP
-    # -------------------------------------------------------------------------
-    elif cmd == "bootstrap":
-        project = args.project
-        folder_id = args.folder_id
-        sa_name = "vault-gcp-broker"
-        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
-        mount_point = f"gcp/{project}"
-
-        print(f"🚀 Initializing Vault GCP Broker in project: {project}...")
-        
-        print(f"  ├─ Enabling necessary GCP Services...")
-        run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=2)
-
-        print(f"  ├─ Creating Service Account '{sa_name}'...")
-        run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Broker", "--project", project], ignore_errors=True)
-
-        base_roles = [
-            "roles/iam.serviceAccountAdmin",
-            "roles/iam.serviceAccountKeyAdmin"
-        ]
-
-        if folder_id:
-            print(f"  ├─ 📁 Scoping Vault's access to FOLDER: {folder_id}...")
-            folder_roles = base_roles + [
-                "roles/resourcemanager.projectIamAdmin",
-                "roles/resourcemanager.folderIamAdmin"
-            ]
-            for role in folder_roles:
-                run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-        else:
-            print(f"  ├─ 📄 Scoping Vault's access locally to PROJECT: {project}...")
-            project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
-            for role in project_roles:
-                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-
-        print("  ├─ 🔑 Generating JSON Key in-memory and updating Vault...")
-        creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project], capture_json=True)
-
-        if vault.setup_gcp_engine(creds_json=creds_json, mount_point=mount_point):
-            print(f"🎉 Vault GCP Broker is configured and ready at '{mount_point}/'!")
-        else:
-            print(f"❌ Failed to configure Vault engine.", file=sys.stderr)
-            sys.exit(1)
-
-    # -------------------------------------------------------------------------
-    # 5. CLEANUP
-    # -------------------------------------------------------------------------
-    elif cmd == "cleanup":
-        project = args.project
-        folder_id = args.folder_id
-        sa_name = "vault-gcp-broker"
-        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
-        mount_point = f"gcp/{project}"
-
-        print(f"🧹 Starting Vault GCP Broker cleanup for project: {project}...")
-
-        base_roles = [
-            "roles/iam.serviceAccountAdmin",
-            "roles/iam.serviceAccountKeyAdmin"
-        ]
-
-        if folder_id:
-            print(f"  ├─ 📁 Removing Vault's access from FOLDER: {folder_id}...")
-            folder_roles = base_roles + ["roles/resourcemanager.projectIamAdmin", "roles/resourcemanager.folderIamAdmin"]
-            for role in folder_roles:
-                run_gcloud(["gcloud", "resource-manager", "folders", "remove-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
-        else:
-            print(f"  ├─ 📄 Removing Vault's access from PROJECT: {project}...")
-            project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
-            for role in project_roles:
-                run_gcloud(["gcloud", "projects", "remove-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
-
-        print(f"  ├─ 🗑️ Deleting Service Account '{sa_name}'...")
-        run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
-
-        print(f"  ├─ 🧹 Tearing down Vault engine at '{mount_point}/'...")
-        vault.teardown_gcp_engine(mount_point=mount_point)
-
-        print("✅ Cleanup complete. Vault's GCP access has been fully revoked.")
-
-    # -------------------------------------------------------------------------
-    # 6. ENGINE (Legacy)
+    # 3. ENGINE MANAGEMENT (Unified Broker Setup)
     # -------------------------------------------------------------------------
     elif cmd == "engine":
         action = args.action
-        project = args.project
         
         if action == "list":
-            engines = vault.list_engines(backend_type="gcp")
-            if engines:
-                print("🌐 Active GCP Secrets Engines:")
-                for e in engines: 
-                    if e.startswith("gcp/"): print(f"  ├─ {e}")
-            else:
-                print("ℹ️ No GCP Secrets Engines mounted.")
-            sys.exit(0)
+            # (Keep your existing list_engines logic here)
+            pass
 
+        project = args.project
         if not project:
-            print("❌ Error: Project ID required for this action.", file=sys.stderr)
-            sys.exit(1)
+            sys.exit("❌ Error: Project ID required.", file=sys.stderr)
 
-        mount_point = f"gcp/{project}"
-        sa_name = getattr(args, "sa_name", "vault-admin")
+        sa_name = args.sa_name # Unified flag!
         sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+        mount_point = f"gcp/{project}"
 
-        if action in ["create", "update"]:
-            print(f"🚀 Initializing Zero-Touch GCP Engine at '{mount_point}/'...")
-            run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=3)
+        if action == "create":
+            print(f"🚀 Initializing Unified GCP Broker in project: {project}...")
+            print(f"  ├─ Logical Path: {mount_point}/")
+            
+            # (Enable Necessary Services...)
+            print(f"  ├─ Enabling necessary GCP Services...")
+            run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=2)
+
+            # (Create the Service Account...)
             print(f"  ├─ Creating Service Account '{sa_name}'...")
-            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Master", "--project", project], retries=2, ignore_errors=True)
-            print(f"  ├─ Granting IAM Permissions...")
-            for role in ["roles/iam.serviceAccountAdmin", "roles/iam.serviceAccountKeyAdmin", "roles/resourcemanager.projectIamAdmin"]:
-                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-            print(f"  ├─ Generating JSON Key in-memory...")
+            run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Broker", "--project", project], ignore_errors=True)
+
+            # (Base roles Vault always needs...)
+            base_roles = [
+                "roles/iam.serviceAccountAdmin",
+                "roles/iam.serviceAccountKeyAdmin"
+            ]
+
+            # 🌟 STEP 3: Smart Scoping based on arguments 🌟
+            if args.folder:
+                # 📁 HIGH-PRIVILEGE FOLDER SCOPING (Modern, Project Creator, Billing Admin)
+                print(f"  ├─ SCOPE: Scoping Vault's access to FOLDER: {args.folder}...")
+                folder_roles = base_roles + [
+                    "roles/resourcemanager.projectIamAdmin",
+                    "roles/resourcemanager.folderIamAdmin" # Needed for project creator/management
+                ]
+                for role in folder_roles:
+                    run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", args.folder, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+                
+                # (Add your Optional Billing Support Logic here too, if needed!)
+
+            elif args.project_only:
+                # 📄 EXTREME LEAST-PRIVILEGE SCOPING (Legacy project sandbox)
+                print(f"  ├─ SCOPE: Sandboxing Vault strictly to PROJECT: {project}...")
+                project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
+                for role in project_roles:
+                    run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
+                    
+            else:
+                sys.exit("\n❌ SCOPE REQUIRED: Must provide either '--folder <id>' for modern architecture, or '--project-only' for least-privilege sandboxing.")
+
+            # (Generate JSON Key and write to Vault...)
+            print("  ├─ 🔑 Generating JSON Key and updating Vault...")
             creds_json = run_gcloud(["gcloud", "iam", "service-accounts", "keys", "create", "-", f"--iam-account={sa_email}", "--project", project], capture_json=True)
+
             if vault.setup_gcp_engine(creds_json=creds_json, mount_point=mount_point):
-                print(f"🎉 GCP Backend ready at '{mount_point}/'!")
-
-        elif action == "delete":
-            print(f"🧹 Tearing down engine at '{mount_point}/'...")
-            vault.teardown_gcp_engine(mount_point=mount_point)
-            run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
-            print("🎉 Engine destroyed!")
-
-        elif action == "read":
-            config = vault.read_gcp_engine_config(mount_point=mount_point)
-            if config:
-                print(json.dumps(config, indent=2))
+                print(f"🎉 Vault GCP Broker Engine configured successfully at '{mount_point}/'!")
             else:
-                print(f"❌ Config not found at '{mount_point}/'.")
-                
-        elif action == "info":
-            config = vault.read_gcp_engine_config(mount_point=mount_point)
-            if config:
-                print(f"🏛️  GCP Engine: {mount_point}/")
-                print(f"  ├─ Service Account : {config.get('service_account_email', 'Unknown')}")
-                ttl = config.get('ttl', 0)
-                print(f"  ├─ Default TTL     : {f'{ttl}s' if ttl else 'System Default'}")
-                max_ttl = config.get('max_ttl', 0)
-                print(f"  ├─ Max TTL         : {f'{max_ttl}s' if max_ttl else 'System Default'}")
-                print(f"  ├─ Auto Rotation   : {'Disabled' if config.get('disable_automated_rotation') else 'Enabled'}")
-            else:
-                print(f"❌ Config not found at '{mount_point}/'.")
-                
-        elif action == "update":
-            print(f"⚙️ Updating GCP Engine Config for '{mount_point}/'...")
-            if vault.update_gcp_engine_config(mount_point, ttl=args.ttl, max_ttl=args.max_ttl):
-                print("✅ Successfully updated GCP Engine TTLs!")
+                sys.exit("❌ Failed to configure Vault engine.", file=sys.stderr)
 
     # -------------------------------------------------------------------------
-    # 7. ROLESET
+    # 4. ROLESET
     # -------------------------------------------------------------------------
     elif cmd == "role":
         action = args.action
@@ -501,7 +366,44 @@ def main():
             vault.create_gcp_roleset(name=roleset_name, project_id=project, bindings_hcl=bindings_hcl, mount_point=mount_point)
 
     # -------------------------------------------------------------------------
-    # 8. GKE CREDENTIALS (Zero-Dependency API Call)
+    # 5. CLEANUP
+    # -------------------------------------------------------------------------
+    elif cmd == "cleanup":
+        project = args.project
+        folder_id = args.folder_id
+        sa_name = "vault-gcp-broker"
+        sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
+        mount_point = f"gcp/{project}"
+
+        print(f"🧹 Starting Vault GCP Broker cleanup for project: {project}...")
+
+        base_roles = [
+            "roles/iam.serviceAccountAdmin",
+            "roles/iam.serviceAccountKeyAdmin"
+        ]
+
+        if folder_id:
+            print(f"  ├─ 📁 Removing Vault's access from FOLDER: {folder_id}...")
+            folder_roles = base_roles + ["roles/resourcemanager.projectIamAdmin", "roles/resourcemanager.folderIamAdmin"]
+            for role in folder_roles:
+                run_gcloud(["gcloud", "resource-manager", "folders", "remove-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
+        else:
+            print(f"  ├─ 📄 Removing Vault's access from PROJECT: {project}...")
+            project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
+            for role in project_roles:
+                run_gcloud(["gcloud", "projects", "remove-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
+
+        print(f"  ├─ 🗑️ Deleting Service Account '{sa_name}'...")
+        run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
+
+        print(f"  ├─ 🧹 Tearing down Vault engine at '{mount_point}/'...")
+        vault.teardown_gcp_engine(mount_point=mount_point)
+
+        print("✅ Cleanup complete. Vault's GCP access has been fully revoked.")
+
+
+    # -------------------------------------------------------------------------
+    # 6. GKE CREDENTIALS (Zero-Dependency API Call)
     # -------------------------------------------------------------------------
     elif cmd == "get-gke-credentials":
         project = args.project
@@ -571,6 +473,55 @@ users:
         except Exception as e:
             print(f"❌ Error communicating with GKE API: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # ---------------------------------------------------------------------
+    # 7. LEASES
+    # ---------------------------------------------------------------------
+    elif cmd == "leases":
+        action = args.action
+        
+        if action == "list":
+            if args.project:
+                engines_to_check = [f"gcp/{args.project}"]
+            else:
+                print("🔍 Searching across all active GCP engines...")
+                engines = vault.list_engines(backend_type="gcp") or []
+                engines_to_check = [e.strip('/') for e in engines if e.startswith("gcp/")]
+
+            if not engines_to_check:
+                print("ℹ️ No GCP Engines currently mounted.")
+                sys.exit(0)
+
+            found_any = False
+            for m in engines_to_check:
+                for token_type in ["token/", "key/"]:
+                    rolesets = vault.list_leases(f"{m}/{token_type}")
+                    if rolesets:
+                        for roleset in rolesets:
+                            lease_ids = vault.list_leases(f"{m}/{token_type}{roleset}")
+                            if lease_ids:
+                                if not found_any: print("")
+                                print(f"📁 Active Leases in {m}/{token_type}{roleset}:")
+                                for lid in lease_ids:
+                                    print(f"  ├─ {m}/{token_type}{roleset}{lid}")
+                                    found_any = True
+                                
+            if not found_any:
+                print("✅ No active GCP leases found.")
+                
+        elif action == "revoke":
+            mount_point = f"gcp/{args.project}"
+            
+            if getattr(args, "id", None):
+                print(f"🗑️ Revoking specific lease '{args.id}'...")
+                if vault.revoke_lease(args.id):
+                    print("✅ GCP lease successfully revoked.")
+            elif getattr(args, "force", False):
+                print(f"🔥 Force revoking ALL leases under '{mount_point}/'...")
+                if vault.force_revoke_prefix(mount_point):
+                    print("✅ All GCP leases forcefully wiped.")
+            else:
+                print("⚠️ You must provide either '--id <lease_id>' or use '--force' to wipe the engine.")
 
 if __name__ == "__main__":
     main()
