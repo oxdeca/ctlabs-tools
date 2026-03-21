@@ -338,7 +338,16 @@ def main():
                 except Exception:
                     pass
 
-            if data:
+            if not data:
+                print(f"❌ Roleset or Static Account '{roleset_name}' not found.")
+            
+            # 🌟 RAW JSON OUTPUT (For automation/debugging)
+            elif action == "read":
+                import json
+                print(json.dumps(data, indent=2))
+            
+            # 🌟 USER-FRIENDLY OUTPUT (Human readable info)
+            elif action == "info":
                 print(f"👥 GCP {'Static Account' if is_static else 'Roleset'}: {roleset_name}")
                 print(f"  ├─ Engine      : {mount_point}/")
                 print(f"  ├─ Secret Type : {data.get('secret_type', 'Unknown')}")
@@ -389,9 +398,11 @@ def main():
                                     f"--scope=organizations/{org_id}", 
                                     f"--query=policy:{sa_email}", 
                                     "--format=json"
-                                ], stderr=subprocess.DEVNULL)
+                                ], stderr=subprocess.PIPE)
                                 
-                                for p in json.loads(asset_out):
+                                asset_data = json.loads(asset_out) if asset_out.strip() else []
+                                
+                                for p in asset_data:
                                     res_name = p.get('resource', '').split('/')[-1]
                                     res_type = p.get('resource', '').split('/')[-2] if '/' in p.get('resource', '') else 'Folder/Org'
                                     
@@ -401,8 +412,13 @@ def main():
                                             # Prevent duplicating Project/Billing rules we already found
                                             if not any(res_name in existing for existing in bindings_found):
                                                 bindings_found.append(entry)
-                            except Exception:
-                                pass # Cloud Asset API might be disabled
+                            except subprocess.CalledProcessError as e:
+                                err_msg = e.stderr.decode('utf-8').strip().split('\n')[0]
+                                bindings_found.append(f"⚠️ Folder scan failed: Asset API error or missing Org permissions -> {err_msg}")
+                            except Exception as e:
+                                bindings_found.append(f"⚠️ Folder scan failed: {str(e)}")
+                        else:
+                            bindings_found.append("⚠️ Folder scan skipped: Could not resolve Organization ID.")
                                 
                     except Exception as e:
                         bindings_found.append(f"⚠️ Partial results (Error querying GCP: {e})")
@@ -419,9 +435,6 @@ def main():
                     if bindings:
                         print(f"  ├─ Bindings    :")
                         print(f"  │  ├─ {bindings}") # Customize this to match your existing print logic
-
-            else:
-                print(f"❌ Roleset or Static Account '{roleset_name}' not found.")
 
         elif action == "delete":
             # 1. Check if it's a Static Account first
@@ -460,7 +473,7 @@ def main():
                     print(f"✅ Successfully deleted roleset '{roleset_name}'.")
                 except Exception as e:
                     print(f"❌ Error deleting roleset '{roleset_name}': {e}", file=sys.stderr)
-            
+
         elif action in ["create", "update"]:
             bindings_hcl = ""
             requires_static_workaround = False
