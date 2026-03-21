@@ -212,7 +212,7 @@ def main():
         sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
         mount_point = f"gcp/{project}"
 
-        if action == "create":
+        if action in ["create", "update"]:
             print(f"🚀 Initializing Unified GCP Broker in project: {project}...")
             print(f"  ├─ Logical Path: {mount_point}/")
             
@@ -224,18 +224,24 @@ def main():
             print(f"  ├─ Creating Service Account '{sa_name}'...")
             run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, "--display-name=Vault GCP Broker", "--project", project], ignore_errors=True)
 
-            # (Base roles Vault always needs...)
+            # Base roles Vault ALWAYS needs on its Home Project to spawn temporary SAs
             base_roles = [
                 "roles/iam.serviceAccountAdmin",
                 "roles/iam.serviceAccountKeyAdmin"
             ]
+            
+            # 🌟 NEW FIX: Always grant Home Base permissions on the host project!
+            print(f"  ├─ Granting SA Management on home project: {project}...")
+            for role in base_roles:
+                run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
 
             # 🌟 STEP 3: Smart Scoping based on arguments
             if args.folder:
-                print(f"  ├─ SCOPE: Scoping Vault's access to FOLDER: {args.folder}...")
+                print(f"  ├─ SCOPE: Scoping Vault's Jurisdiction to FOLDER: {args.folder}...")
                 resolved_folder_id = resolve_gcp_folder_id(args.folder, args.organization)
                 
-                folder_roles = base_roles + [
+                # Notice base_roles are removed from here! Only Jurisdiction roles applied to the folder.
+                folder_roles = [
                     "roles/resourcemanager.projectIamAdmin",
                     "roles/resourcemanager.folderIamAdmin"
                 ]
@@ -244,12 +250,11 @@ def main():
 
             elif args.project_only:
                 print(f"  ├─ SCOPE: Sandboxing Vault strictly to PROJECT: {project}...")
-                project_roles = base_roles + ["roles/resourcemanager.projectIamAdmin"]
+                project_roles = ["roles/resourcemanager.projectIamAdmin"]
                 for role in project_roles:
                     run_gcloud(["gcloud", "projects", "add-iam-policy-binding", project, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-
             else:
-                sys.exit("\n❌ SCOPE REQUIRED: Must provide either '--folder <id>' for modern architecture, or '--project-only' for least-privilege sandboxing.")
+                sys.exit("\n❌ SCOPE REQUIRED: Must provide either '--folder <id>' or '--project-only'.")
 
             # 🌟 STEP 4: THE BILLING FIX 🌟
             if getattr(args, 'billing_accounts', None):
