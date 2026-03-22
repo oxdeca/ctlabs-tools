@@ -2,11 +2,12 @@
 # File    : ctlabs-tools/ctlabs_tools/vault/vault_gcp.py
 # Purpose : Dedicated CLI for GCP Dynamic Secrets & Identity Management
 # -----------------------------------------------------------------------------
-import argparse
+
 import sys
-import json
 import os
 import subprocess
+import json
+import yaml
 import time
 from .core import HashiVault
 
@@ -23,13 +24,13 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             sys.exit(1)
         except subprocess.CalledProcessError as e:
             stderr_text = e.stderr.lower()
-            
+
             # 🔥 SMART UX: Fail fast on authentication errors
             if "reauthentication failed" in stderr_text or "gcloud auth login" in stderr_text:
                 print(f"\n🔐 GCP Authentication Error: Your gcloud session has expired or is missing.", file=sys.stderr)
                 print(f"👉 Fix this by running: gcloud auth login", file=sys.stderr)
                 sys.exit(1)
-                
+
             if attempt < retries:
                 if not quiet:
                     cmd_name = cmd_list[1] if len(cmd_list) > 1 else "command"
@@ -41,14 +42,14 @@ def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, r
             print(f"\n❌ GCP Command Failed: {' '.join(cmd_list)}\nError output: {e.stderr.strip()}", file=sys.stderr)
             sys.exit(1)
 
-def resolve_gcp_folder_id(input_str, org_id=None): 
+def resolve_gcp_folder_id(input_str, org_id=None):
     """
     Looks up a GCP Folder ID from a potential Display Name.
     Requires org_id if input_str is a display name.
     """
     if input_str and input_str.strip().isdigit():
         return input_str.strip()
-    
+
     # Check for required context
     if not org_id:
         print(f"  ⚠️ Cannot resolve Display Name '{input_str}': Missing --organization context.", file=sys.stderr)
@@ -61,9 +62,9 @@ def resolve_gcp_folder_id(input_str, org_id=None):
         f'--filter=displayName:"{input_str}"',
         "--format=json"
     ]
-    
+
     json_result = run_gcloud(cmd, capture_json=True, ignore_errors=True, quiet=True)
-    
+
     # (Existing parsing logic remains the same below)
     if json_result:
         try:
@@ -74,7 +75,7 @@ def resolve_gcp_folder_id(input_str, org_id=None):
                 return numeric_id
         except Exception:
             pass
-            
+
     print(f"  ⚠️ Could not resolve Display Name '{input_str}' (Lookup failed). Passing string directly...", file=sys.stderr)
     return input_str
 
@@ -136,6 +137,7 @@ def get_args():
     p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
     p_leases_revoke.add_argument("--force", action="store_true", help="Force wipe all leases under this project")
 
+    import argparse # Ensuring argparse is imported if somehow missed globally
     return parser.parse_args()
 
 def main():
@@ -154,7 +156,7 @@ def main():
         if not token:
             print("❌ Error: No token provided and $GOOGLE_OAUTH_ACCESS_TOKEN is not set.", file=sys.stderr)
             sys.exit(1)
-            
+
         print("🔍 Introspecting GCP Token...", file=sys.stderr)
         metadata = vault.get_gcp_token_info(token)
         if metadata and "expires_in" in metadata:
@@ -176,7 +178,7 @@ def main():
         command_list = args.exec_cmd
         if command_list and command_list[0] == "--":
             command_list = command_list[1:]
-        
+
         if not command_list:
             print("❌ Error: No command provided to execute.", file=sys.stderr)
             sys.exit(1)
@@ -199,7 +201,7 @@ def main():
     # -------------------------------------------------------------------------
     elif cmd == "engine":
         action = args.action
-        
+
         if action == "list":
             # (Keep your existing list_engines logic here)
             pass
@@ -215,7 +217,7 @@ def main():
         if action in ["create", "update"]:
             print(f"🚀 Initializing Unified GCP Broker in project: {project}...")
             print(f"  ├─ Logical Path: {mount_point}/")
-            
+
             # (Enable Necessary Services...)
             print(f"  ├─ Enabling necessary GCP Services...")
             run_gcloud(["gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com", "iamcredentials.googleapis.com", "--project", project], retries=2)
@@ -230,7 +232,7 @@ def main():
                 "roles/iam.serviceAccountKeyAdmin",
                 "roles/resourcemanager.projectIamAdmin"
             ]
-            
+
             # 🌟 Always grant Home Base permissions on the host project!
             print(f"  ├─ Granting SA Management on home project: {project}...")
             for role in base_roles:
@@ -240,7 +242,7 @@ def main():
             if args.folder:
                 print(f"  ├─ SCOPE: Scoping Vault's Jurisdiction to FOLDER: {args.folder}...")
                 resolved_folder_id = resolve_gcp_folder_id(args.folder, args.organization)
-                
+
                 # Notice base_roles are removed from here! Only Jurisdiction roles applied to the folder.
                 folder_roles = [
                     "roles/resourcemanager.projectIamAdmin",
@@ -302,13 +304,29 @@ def main():
 
             found_any = False
             for mount in engines_to_check:
-                roles = vault.list_gcp_rolesets(mount_point=mount)
-                if roles:
+                all_roles = []
+                
+                # Fetch Dynamic Rolesets
+                dynamic_roles = vault.list_gcp_rolesets(mount_point=mount)
+                if dynamic_roles:
+                    all_roles.extend(dynamic_roles)
+                
+                # Fetch Static Accounts
+                try:
+                    res_static = vault._get_client().list(f"{mount}/static-account")
+                    if res_static and 'data' in res_static and 'keys' in res_static['data']:
+                        for key in res_static['data']['keys']:
+                            all_roles.append(f"{key} (Static Account)")
+                except Exception:
+                    pass
+
+                if all_roles:
                     found_any = True
                     print(f"\n👥 Active Rolesets at '{mount}/':")
-                    for r in roles: 
+                    # Sort alphabetically so static and dynamic are cleanly mixed
+                    for r in sorted(all_roles):
                         print(f"  ├─ {r}")
-                        
+
             if not found_any:
                 print("\nℹ️ No rolesets found.")
             sys.exit(0)
@@ -327,7 +345,7 @@ def main():
                     data = res['data']
             except Exception:
                 pass
-            
+
             # 2. If not found, try reading as a Static Account
             if not data:
                 try:
@@ -340,12 +358,11 @@ def main():
 
             if not data:
                 print(f"❌ Roleset or Static Account '{roleset_name}' not found.")
-            
+
             # 🌟 RAW JSON OUTPUT (For automation/debugging)
             elif action == "read":
-                import json
                 print(json.dumps(data, indent=2))
-            
+
             # 🌟 USER-FRIENDLY OUTPUT (Human readable info)
             elif action == "info":
                 print(f"👥 GCP {'Static Account' if is_static else 'Roleset'}: {roleset_name}")
@@ -353,27 +370,25 @@ def main():
                 print(f"  ├─ Secret Type : {data.get('secret_type', 'Unknown')}")
                 if not is_static:
                     print(f"  ├─ Project     : {data.get('project', 'Unknown')}")
-                
+
                 sa_email = data.get('service_account_email', 'Unknown')
                 print(f"  ├─ SA Email    : {sa_email}")
-                
+
                 scopes = data.get('token_scopes', [])
                 print(f"  ├─ Scopes      : {', '.join(scopes) if scopes else 'None'}")
-                
+
                 if is_static:
                     print(f"  ├─ Bindings    : 🔍 Scanning GCP for active IAM roles (this may take a moment)...")
-                    
-                    import subprocess
-                    import json
+
                     bindings_found = []
-                    
+
                     try:
                         # Scan 1: Project Level
                         proj_out = subprocess.check_output(["gcloud", "projects", "get-iam-policy", project, "--format=json"], stderr=subprocess.DEVNULL)
                         for b in json.loads(proj_out).get('bindings', []):
                             if any(sa_email in m for m in b.get('members', [])):
                                 bindings_found.append(f"Project ({project}) -> {b.get('role')}")
-                                
+
                         # Scan 2: Billing Accounts
                         ba_out = subprocess.check_output(["gcloud", "beta", "billing", "accounts", "list", "--format=value(name)"], stderr=subprocess.DEVNULL)
                         for ba in ba_out.decode('utf-8').strip().split():
@@ -386,26 +401,26 @@ def main():
                                         bindings_found.append(f"Billing ({ba_id}) -> {b.get('role')}")
                             except Exception:
                                 pass
-                                
+
                         # Scan 3: Folders via Cloud Asset Inventory (Catches everything else)
                         org_out = subprocess.check_output(["gcloud", "projects", "get-ancestors", project, "--format=json"], stderr=subprocess.DEVNULL)
                         org_id = next((a['id'] for a in json.loads(org_out) if a.get('type') == 'organization'), None)
-                        
+
                         if org_id:
                             try:
                                 asset_out = subprocess.check_output([
-                                    "gcloud", "asset", "search-all-iam-policies", 
-                                    f"--scope=organizations/{org_id}", 
-                                    f"--query=policy:{sa_email}", 
+                                    "gcloud", "asset", "search-all-iam-policies",
+                                    f"--scope=organizations/{org_id}",
+                                    f"--query=policy:{sa_email}",
                                     "--format=json"
                                 ], stderr=subprocess.PIPE)
-                                
+
                                 asset_data = json.loads(asset_out) if asset_out.strip() else []
-                                
+
                                 for p in asset_data:
                                     res_name = p.get('resource', '').split('/')[-1]
                                     res_type = p.get('resource', '').split('/')[-2] if '/' in p.get('resource', '') else 'Folder/Org'
-                                    
+
                                     for b in p.get('policy', {}).get('bindings', []):
                                         if any(sa_email in m for m in b.get('members', [])):
                                             entry = f"{res_type.capitalize()} ({res_name}) -> {b.get('role')}"
@@ -424,7 +439,7 @@ def main():
                                 bindings_found.append(f"⚠️ Folder scan failed: {str(e)}")
                         else:
                             bindings_found.append("⚠️ Folder scan skipped: Could not resolve Organization ID.")
-                                
+
                     except Exception as e:
                         bindings_found.append(f"⚠️ Partial results (Error querying GCP: {e})")
 
@@ -455,21 +470,21 @@ def main():
 
             if is_static:
                 print(f"🗑️ Deleting Static Account '{roleset_name}'...")
-                
+
                 # Delete the Vault mapping
                 try:
                     vault._get_client().delete(f"{mount_point}/static-account/{roleset_name}")
                     print(f"  ├─ Removed static-account mapping from Vault.")
                 except Exception as e:
                     print(f"  ├─ ⚠️ Failed to remove from Vault: {e}")
-                
+
                 # Tear down the permanent Service Account in GCP
                 if sa_email:
                     print(f"  ├─ Deleting permanent Service Account '{sa_email}' from GCP...")
                     run_gcloud(["gcloud", "iam", "service-accounts", "delete", sa_email, "--project", project, "--quiet"], ignore_errors=True)
-                
+
                 print(f"✅ Successfully deleted static account '{roleset_name}'.")
-                
+
             else:
                 # 2. Fallback to normal Dynamic Roleset deletion
                 print(f"🗑️ Deleting Dynamic Roleset '{roleset_name}'...")
@@ -483,32 +498,31 @@ def main():
             bindings_hcl = ""
             requires_static_workaround = False
             yaml_config = {}
-            
+
             if args.bindings:
                 try:
                     with open(args.bindings, 'r') as f:
                         if args.bindings.endswith(('.yaml', '.yml')):
-                            import yaml
                             yaml_config = yaml.safe_load(f)
-                            
+
                             # 🌟 SMART DETECTION: Does this need Billing?
                             if 'billingAccounts' in yaml_config:
                                 requires_static_workaround = True
-                            
+
                             master_sa = args.master_sa or f"vault-gcp-broker@{project}.iam.gserviceaccount.com"
-                            
+
                             resource_maps = {
                                 'projects': ('cloudresourcemanager.googleapis.com', 'projects'),
                                 'folders': ('cloudresourcemanager.googleapis.com', 'folders'),
                                 'organizations': ('cloudresourcemanager.googleapis.com', 'organizations')
                             }
-                            
+
                             # We only build HCL if we are NOT doing the static workaround
                             if not requires_static_workaround:
                                 for res_type, (api_domain, uri_path) in resource_maps.items():
                                     for item in yaml_config.get(res_type, []):
                                         target_name = str(item['name'])
-                                        
+
                                         if res_type == 'projects' and target_name != project:
                                             print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
                                             run_gcloud([
@@ -534,24 +548,24 @@ def main():
                     resource_uri = f"//cloudresourcemanager.googleapis.com/projects/{project}"
                     print(f"🏗️ Binding permissions at the PROJECT level ({project})")
                 bindings_hcl = f'\nresource "{resource_uri}" {{\n  roles = [{", ".join(roles_list)}]\n}}\n'
-                
-            
+
+
             # 🌟 ROUTING LOGIC 🌟
             if requires_static_workaround:
                 print(f"💡 Billing permissions detected. Routing via intelligent static-account engine...")
-                
+
                 # GCP SA Names have a strict 30 character limit.
                 sa_name = f"vlt-{roleset_name}"[:30].rstrip('-')
                 sa_email = f"{sa_name}@{project}.iam.gserviceaccount.com"
-                
+
                 print(f"  ├─ Creating permanent Service Account '{sa_name}' in GCP...")
                 run_gcloud(["gcloud", "iam", "service-accounts", "create", sa_name, f"--display-name=Vault Managed: {roleset_name}", "--project", project], ignore_errors=True, quiet=True)
-                
+
                 print(f"  ├─ Applying IAM Bindings natively via gcloud...")
                 for item in yaml_config.get('folders', []):
                     for role in item.get('roles', []):
                         run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", str(item['name']), f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
-                
+
                 for item in yaml_config.get('projects', []):
                     for role in item.get('roles', []):
                         run_gcloud(["gcloud", "projects", "add-iam-policy-binding", str(item['name']), f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
@@ -624,32 +638,32 @@ def main():
         location = args.location
         cluster = args.cluster
         mount_point = f"gcp/{project}"
-        
+
         print(f"🔒 Fetching ephemeral GCP token for roleset '{args.roleset}'...", file=sys.stderr)
         gcp_token = vault.get_gcp_token(roleset_name=args.roleset, mount_point=mount_point)
         if not gcp_token:
             sys.exit(1)
-            
+
         print(f"🌐 Querying Google Container REST API for cluster details...", file=sys.stderr)
         import urllib.request
         import urllib.error
         import ssl
-        
+
         url = f"https://container.googleapis.com/v1/projects/{project}/locations/{location}/clusters/{cluster}"
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {gcp_token}"})
-        
+
         try:
             ctx = ssl.create_default_context()
             with urllib.request.urlopen(req, context=ctx) as response:
                 data = json.loads(response.read().decode())
-                
+
             endpoint = data.get("endpoint")
             ca_cert = data.get("masterAuth", {}).get("clusterCaCertificate")
-            
+
             if not endpoint or not ca_cert:
                 print("❌ Error: Cluster endpoint or CA cert not found in API response.", file=sys.stderr)
                 sys.exit(1)
-                
+
             kubeconfig = f"""apiVersion: v1
 kind: Config
 clusters:
@@ -671,15 +685,15 @@ users:
             kube_dir = os.path.expanduser("~/.kube")
             os.makedirs(kube_dir, exist_ok=True)
             kube_file = os.path.join(kube_dir, f"config-gke-{cluster}")
-            
+
             with open(kube_file, "w") as f:
                 f.write(kubeconfig)
-                
+
             print(f"✅ GKE Credentials successfully generated! (No gcloud needed)")
             print(f"👉 1. Activate it  : export KUBECONFIG={kube_file}")
             print(f"👉 2. Test it      : kubectl get nodes")
             print(f"👉 3. Mount to Vault: vault-k8s engine create {cluster}")
-            
+
         except urllib.error.HTTPError as e:
             error_body = e.read().decode()
             print(f"❌ GCP API Error ({e.code}): {error_body}", file=sys.stderr)
@@ -693,7 +707,7 @@ users:
     # ---------------------------------------------------------------------
     elif cmd == "leases":
         action = args.action
-        
+
         if action == "list":
             if args.project:
                 engines_to_check = [f"gcp/{args.project}"]
@@ -719,13 +733,13 @@ users:
                                 for lid in lease_ids:
                                     print(f"  ├─ {m}/{token_type}{roleset}{lid}")
                                     found_any = True
-                                
+
             if not found_any:
                 print("✅ No active GCP leases found.")
-                
+
         elif action == "revoke":
             mount_point = f"gcp/{args.project}"
-            
+
             if getattr(args, "id", None):
                 print(f"🗑️ Revoking specific lease '{args.id}'...")
                 if vault.revoke_lease(args.id):
