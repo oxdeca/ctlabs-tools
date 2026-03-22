@@ -5,6 +5,7 @@
 
 import sys
 import os
+import argparse
 import subprocess
 import json
 import yaml
@@ -137,7 +138,6 @@ def get_args():
     p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
     p_leases_revoke.add_argument("--force", action="store_true", help="Force wipe all leases under this project")
 
-    import argparse # Ensuring argparse is imported if somehow missed globally
     return parser.parse_args()
 
 def main():
@@ -753,3 +753,4 @@ users:
 
 if __name__ == "__main__":
     main()
+
