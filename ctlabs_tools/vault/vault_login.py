@@ -197,6 +197,49 @@ def run_cli():
     vault = HashiVault()
 
     # ---------------------------------------------------------
+    # 0. EXEC COMMAND
+    # ---------------------------------------------------------
+    if args.command == "exec":
+        command_list = args.exec_cmd
+        if command_list and command_list[0] == "--":
+            command_list = command_list[1:]
+
+        if not command_list:
+            print("❌ Error: No command provided to execute.", file=sys.stderr)
+            sys.exit(1)
+
+        # Try to load secrets from your secure GPG environment file
+        if not vault.load_secrets():
+            print("❌ Error: No active Vault session found. Please log in first using 'vault-login user' or 'vault-login oidc'.", file=sys.stderr)
+            sys.exit(1)
+            
+        is_valid, remaining = vault.check_expiration()
+        if remaining <= 0:
+            print("❌ Error: The locally cached token has expired. Please log in again.", file=sys.stderr)
+            sys.exit(1)
+
+        # Pull the target configurations out of the environment or cache
+        target_addr = os.environ.get("VAULT_ADDR") or get_cached_vault_server()
+        target_token = os.environ.get("VAULT_TOKEN")
+
+        if not target_token:
+            print("❌ Error: Could not extract VAULT_TOKEN from decrypted cache.", file=sys.stderr)
+            sys.exit(1)
+
+        # Build clean execution environment
+        exec_env = os.environ.copy()
+        exec_env["VAULT_ADDR"] = target_addr
+        exec_env["VAULT_TOKEN"] = target_token
+        exec_env["VAULT_SKIP_VERIFY"] = "true"
+
+        print(f"🚀 Executing via Vault session context: {' '.join(command_list)}\n" + "-"*50, file=sys.stderr)
+        try:
+            sys.exit(subprocess.run(command_list, env=exec_env).returncode)
+        except FileNotFoundError:
+            print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
+            sys.exit(1)
+
+    # ---------------------------------------------------------
     # 1. INFO COMMAND
     # ---------------------------------------------------------
     if args.command == "info":
@@ -357,76 +400,6 @@ def run_cli():
 
     # Save to Dev/Test cache so Terraform/Ansible wrappers can pick it up
     cache_local_token(vault_addr, token, lease_duration)
-
-    # ---------------------------------------------------------
-    # EXEC COMMAND
-    # ---------------------------------------------------------
-    if args.command == "exec":
-        command_list = args.exec_cmd
-        if command_list and command_list[0] == "--":
-            command_list = command_list[1:]
-
-        if not command_list:
-            print("❌ Error: No command provided to execute.", file=sys.stderr)
-            sys.exit(1)
-
-        # Smart context loading: Try to fetch cached gpg session tokens first
-        has_session = vault.load_secrets()
-        is_valid = False
-        if has_session:
-            is_valid, remaining = vault.check_expiration()
-            if remaining <= 0:
-                is_valid = False
-
-        # If there's no valid local session cached, perform a real-time login before exec
-        if not is_valid:
-            print("ℹ️ No active or valid Vault session found. Initiating verification/login...", file=sys.stderr)
-            
-            # Resolve address using your tool's cascading resolution
-            vault_addr = getattr(args, 'addr', None) or os.environ.get("VAULT_ADDR") or get_cached_vault_server()
-            if not vault_addr:
-                vault_addr = input("Enter Vault Address (e.g., https://127.0.0.1:8200): ").strip()
-            if not vault_addr.startswith("http"):
-                vault_addr = f"https://{vault_addr}"
-            
-            save_cached_vault_server(vault_addr)
-            os.environ["VAULT_ADDR"] = vault_addr
-            check_vault_health(vault_addr)
-
-            # Fallback to standard interactive user login to acquire a fresh token
-            client = hvac.Client(url=vault_addr, verify=False)
-            print("\nPlease log in to generate an execution context:")
-            login_res, used_method = login_human(client, None, None)
-            
-            if not login_res:
-                print("❌ Failed to authenticate execution context.", file=sys.stderr)
-                sys.exit(1)
-                
-            token = login_res['auth']['client_token']
-            lease_duration = login_res['auth'].get('lease_duration', 28800) or 28800
-            cache_local_token(vault_addr, token, lease_duration)
-            
-            # Reload what we just cached back into memory structures
-            vault.load_secrets()
-
-        # Extract environment elements verified or constructed by HashiVault()
-        # Assumes vault.vault_addr and vault.vault_token or similar properties exist on your object
-        target_addr = getattr(vault, 'vault_addr', os.environ.get("VAULT_ADDR"))
-        target_token = getattr(vault, 'vault_token', os.environ.get("VAULT_TOKEN"))
-
-        # Inject context strictly down into the sub-process environment scope
-        exec_env = os.environ.copy()
-        exec_env["VAULT_ADDR"] = target_addr
-        exec_env["VAULT_TOKEN"] = target_token
-        exec_env["VAULT_SKIP_VERIFY"] = "true"
-
-        print(f"🚀 Executing via Vault session context: {' '.join(command_list)}\n" + "-"*50, file=sys.stderr)
-        try:
-            # Execute sub-process passing down the augmented environment state
-            sys.exit(subprocess.run(command_list, env=exec_env).returncode)
-        except FileNotFoundError:
-            print(f"\n❌ Error: Command not found: {command_list[0]}", file=sys.stderr)
-            sys.exit(1)
 
 
 def main():
