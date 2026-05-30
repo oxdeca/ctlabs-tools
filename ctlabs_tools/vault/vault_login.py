@@ -232,7 +232,7 @@ def run_cli():
         exec_env["VAULT_TOKEN"] = target_token
         exec_env["VAULT_SKIP_VERIFY"] = "true"
 
-        print(f"🚀 Executing via Vault session context: {' '.join(command_list)}\n" + "-"*50, file=sys.stderr)
+        print("-"*50 + f"\n🚀 Executing via Vault session context: {' '.join(command_list)}\n" + "-"*50, file=sys.stderr)
         try:
             sys.exit(subprocess.run(command_list, env=exec_env).returncode)
         except FileNotFoundError:
