@@ -10,49 +10,58 @@ A collection of Python helpers for testing Infrastructure-as-Code (Terraform, An
 Create a `conftest.py` to seamlessly wrap your Terraform execution with dynamic Vault identities.
 
 ```python
-import os
 import pytest
-from ctlabs_tools.pytest.helper import Terraform, HashiVault
+from ctlabs_tools.pytest.helper import Terraform, Ansible, ConfTest
+from ctlabs_tools.vault.core    import HashiVault
 
 def pytest_addoption(parser):
-    parser.addoption("--interactive", action="store_true", default=False)
+    """Register the --interactive flag for the entire test suite."""
+    parser.addoption(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Enable interactive retry loops on failures"
+    )
 
 @pytest.fixture(scope="session")
 def is_interactive(request):
+    """Returns True if --interactive was passed in the command line."""
     return request.config.getoption("--interactive")
 
 @pytest.fixture(scope="session")
 def vault_auth():
-    # HashiVault is imported from the helper facade!
-    v = HashiVault()
-    v.ensure_valid_token(interactive=True) 
-    return v
+    """Provides a single Vault instance for the test session."""
+    return HashiVault()
 
 @pytest.fixture(scope="session")
 def tf(is_interactive, vault_auth):
-    # 1. Ask Vault for a JIT GCP token
-    gcp_token = vault_auth.get_gcp_token(
-        roleset_name="terraform-runner", 
-        mount_point="gcp/ctlabs-prj-2025101601"
-    )
-    
-    # 2. Inject it securely into the local environment
-    if gcp_token:
-        os.environ["GOOGLE_OAUTH_ACCESS_TOKEN"] = gcp_token
-        os.environ["CLOUDSDK_AUTH_ACCESS_TOKEN"] = gcp_token
-
-    # 3. Start Terraform
+    """Shared Terraform fixture with Vault auth injected."""
     t = Terraform(
-        wd="./terraform", 
+        wd=".",
         interactive=is_interactive,
-        auth_callback=vault_auth.ensure_valid_token 
+        auth_callback=vault_auth.ensure_valid_token # Injects the auth check!
     )
     yield t
     t.cleanup()
-    
-    # 4. Clean up the environment variables
-    os.environ.pop("GOOGLE_OAUTH_ACCESS_TOKEN", None)
-    os.environ.pop("CLOUDSDK_AUTH_ACCESS_TOKEN", None)
+
+@pytest.fixture(scope="session")
+def tf_stack(tf, is_interactive, vault_auth):
+    tf.init()
+    tf.plan()
+    has_changes = tf.has_changes()
+
+    if has_changes:
+        print("\n[CONFTEST] Evaluating Terraform plan against Rego policies...")
+        policy_checker = ConfTest(wd=".", input="tfplan.json", interactive=is_interactive, auth_callback=vault_auth.ensure_valid_token)
+        policy_checker.run(ns="main")
+
+    tf.show_changes()
+    tf.apply()
+    tf.has_changes = has_changes
+    yield tf
+    tf.cleanup()
+    print("")
+    tf.destroy()
 ```
 
 ---
