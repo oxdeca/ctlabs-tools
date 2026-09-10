@@ -120,7 +120,6 @@ def get_args():
     p_role.add_argument("--project", dest="target_project", default="", help="The GCP Project ID the roleset binds to (required for create/update)")
     p_role.add_argument("--roles", default="roles/editor", help="Comma-separated roles (for simple create)")
     p_role.add_argument("--bindings", help="Path to YAML/HCL bindings file (for advanced/cross-project)")
-    p_role.add_argument("--master-sa", default="", help="Vault Broker SA email (required when auto-patching cross-project bindings)")
     p_role.add_argument("--folder", help="Target a Folder ID instead of the Project (e.g., 123456789)")
 
     # 5. CLEANUP (New Teardown)
@@ -293,7 +292,8 @@ def main():
                 # Notice base_roles are removed from here! Only Jurisdiction roles applied to the folder.
                 folder_roles = [
                     "roles/resourcemanager.projectIamAdmin",
-                    "roles/resourcemanager.folderIamAdmin"
+                    "roles/resourcemanager.folderIamAdmin",
+                    "roles/resourcemanager.projectCreator"
                 ]
                 for role in folder_roles:
                     run_gcloud(["gcloud", "resource-manager", "folders", "add-iam-policy-binding", resolved_folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], quiet=True)
@@ -564,7 +564,6 @@ def main():
 
                             # YAML is the source of truth; CLI flags act as explicit overrides
                             target_project = args.target_project or yaml_config.get('project') or ''
-                            master_sa = args.master_sa or yaml_config.get('master_sa') or ''
 
                             # 🌟 SMART DETECTION: Does this need Billing?
                             if 'billingAccounts' in yaml_config:
@@ -583,16 +582,12 @@ def main():
                                         target_name = str(item['name'])
 
                                         if res_type == 'projects' and target_name != target_project:
-                                            if not master_sa:
-                                                print(f"\n❌ Auto-patching project '{target_name}' requires the Broker SA email.", file=sys.stderr)
-                                                print(f"   Set 'master_sa' in the YAML or pass '--master-sa vault-gcp-broker@<admin-project>.iam.gserviceaccount.com'.", file=sys.stderr)
-                                                sys.exit(1)
-                                            print(f"  ⚡ Auto-Patching external project '{target_name}' to allow Vault access...")
-                                            run_gcloud([
-                                                "gcloud", "projects", "add-iam-policy-binding", target_name,
-                                                f"--member=serviceAccount:{master_sa}",
-                                                "--role=roles/resourcemanager.projectIamAdmin"
-                                            ], quiet=True, ignore_errors=True)
+                                            # No cross-project patching: the Broker SA's rights come from
+                                            # folder-level inheritance (it can create projects and assign
+                                            # IAM permissions inside the managed folder). If the target is
+                                            # outside that folder, Vault will correctly 403 (blast radius).
+                                            print(f"  ℹ️ Binding to project '{target_name}' (different from SA placement '{target_project}').")
+                                            print(f"     The Broker SA must hold folder-inherited IAM rights over this project.")
 
                                         roles_str = ", ".join([f'"{r.strip()}"' for r in item.get('roles', [])])
                                         bindings_hcl += f'\nresource "//{api_domain}/{uri_path}/{target_name}" {{\n  roles = [{roles_str}]\n}}\n'
@@ -603,7 +598,6 @@ def main():
                     print(f"❌ Error reading bindings: {e}", file=sys.stderr)
                     sys.exit(1)
             else:
-                master_sa = args.master_sa
                 roles_list = [f'"{r.strip()}"' for r in args.roles.split(",")]
                 if args.folder:
                     resource_uri = f"//cloudresourcemanager.googleapis.com/folders/{args.folder}"
@@ -680,7 +674,7 @@ def main():
 
         if folder_id:
             print(f"  ├─ 📁 Removing Vault's access from FOLDER: {folder_id}...")
-            folder_roles = base_roles + ["roles/resourcemanager.projectIamAdmin", "roles/resourcemanager.folderIamAdmin"]
+            folder_roles = base_roles + ["roles/resourcemanager.projectIamAdmin", "roles/resourcemanager.folderIamAdmin", "roles/resourcemanager.projectCreator"]
             for role in folder_roles:
                 run_gcloud(["gcloud", "resource-manager", "folders", "remove-iam-policy-binding", folder_id, f"--member=serviceAccount:{sa_email}", f"--role={role}"], ignore_errors=True, quiet=True)
         else:

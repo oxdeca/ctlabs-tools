@@ -1,6 +1,13 @@
 # 📖 `vault-gcp` Advanced Bindings & Auto-Patching
 
-This guide explains how the `vault-gcp` CLI translates user-friendly YAML configurations into HashiCorp Vault's native HCL format, and how it automatically manages cross-project IAM permissions.
+This guide explains how the `vault-gcp` CLI translates user-friendly YAML configurations into HashiCorp Vault's native HCL format.
+
+---
+
+## 🏗️ The Model: Folder Inheritance (no patching)
+The Broker SA is provisioned in a **dedicated admin project** and granted folder-level rights inside a **managed folder** — `roles/resourcemanager.projectCreator` (creates new projects), `roles/resourcemanager.projectIamAdmin` and `roles/resourcemanager.folderIamAdmin` (assigns permissions). 
+
+Every project created under that folder **inherits** those IAM rights, so binding a roleset to any project inside the folder needs no cross-project patching — Vault applies the bindings directly. Projects *outside* the folder are simply out of scope: Vault returns `403 Permission Denied` (blast radius contained).
 
 ---
 
@@ -27,8 +34,7 @@ Inside each category, you define a list of target `name`s and the `roles` you wa
 
 **Example `vpc-admin.yml`:**
 ```yaml
-project: play-sandboxdev-05a03                        # SA placement: project the temp SA is created in
-master_sa: vault-gcp-broker@ctlabs-vault-admin.iam.gserviceaccount.com  # required only for cross-project auto-patching
+project: play-sandboxdev-05a03                        # placement: the project the temp SA is created in
 
 projects:
   - name: play-sandboxdev-05a03
@@ -42,7 +48,7 @@ folders:
       - roles/viewer
 ```
 
-When using `--bindings`, the YAML is the source of truth: it carries everything (SA placement `project`, `master_sa`, bindings, billing). CLI flags (`--project`, `--folder`, `--roles`, `--master-sa`) become explicit overrides — they are only mandatory in the flag-driven quick-create mode.
+When using `--bindings`, the YAML is the source of truth: it carries everything (SA placement `project`, bindings, billing). CLI flags (`--project`, `--folder`, `--roles`) become explicit overrides — they are only mandatory in the flag-driven quick-create mode.
 
 ```bash
 # YAML-driven (everything comes from the file):
@@ -66,12 +72,10 @@ The Python script reads the YAML and maps your simple keys to Google's official 
 * `projects` becomes `//cloudresourcemanager.googleapis.com/projects/...`
 * `folders` becomes `//cloudresourcemanager.googleapis.com/folders/...`
 
-### Step 2: The "Auto-Patching" Mechanism
-Before generating the HCL, the tool checks if any of the target projects are **different** from the roleset's SA placement `project`. 
+### Step 2: Cross-Project Bindings (no patching)
+If the YAML binds to a target project **different** from the SA placement `project`, the tool does *not* run any `gcloud` commands. Folder inheritance gives the Broker SA authority over every project inside the managed folder; it just flags the cross-project reference so you can confirm the target really is within the managed folder's scope.
 
-If it detects a cross-project reference (e.g., placement is `play-sandboxdev-05a03` but the YAML also targets `ctlabs-0815...`), the tool automatically executes a local `gcloud` command to grant the Vault Broker SA (`master_sa`) the `roles/resourcemanager.projectIamAdmin` role on the target project. 
-
-*This completely eliminates the dreaded `403 Permission Denied` error when Vault tries to create the bindings.*
+*Projects outside the folder are out of scope: Vault returns `403 Permission Denied` — the intended blast-radius containment.*
 
 ### Step 3: HCL Generation & API Call
 Finally, the script stitches together the HCL string and sends it to the Vault API. 
@@ -91,5 +95,5 @@ The underlying API payload sent to `POST /v1/gcp/<mount>/roleset/<name>` looks l
 ## 🎯 Summary
 By using `vault-gcp` with YAML bindings:
 1. **Developers** write clean, readable YAML.
-2. **The Tool** handles complex GCP IAM prerequisites (Auto-Patching).
-3. **Vault** receives perfectly formatted HCL to generate short-lived credentials.
+2. **The Tool** translates it into valid Vault HCL (no gcloud side-effects — folder inheritance covers IAM reach).
+3. **Vault** receives perfectly formatted HCL and enforces the bindings via short-lived credentials.
