@@ -20,15 +20,18 @@ To solve this, `vault-gcp` includes a **smart YAML parser** that translates simp
 
 ---
 
-## 🛠️ The YAML Structure
+## 🛠️ The YAML Structure — Single Source of Truth
 The `vault-gcp` parser expects a dictionary categorized by the GCP resource type: `projects`, `folders`, or `organizations`. 
 
 Inside each category, you define a list of target `name`s and the `roles` you want to grant.
 
 **Example `vpc-admin.yml`:**
 ```yaml
+project: play-sandboxdev-05a03                        # SA placement: project the temp SA is created in
+master_sa: vault-gcp-broker@ctlabs-vault-admin.iam.gserviceaccount.com  # required only for cross-project auto-patching
+
 projects:
-  - name: ctlabs-0815-123abc-05a-03
+  - name: play-sandboxdev-05a03
     roles:
       - roles/compute.networkAdmin
       - roles/compute.securityAdmin
@@ -39,11 +42,24 @@ folders:
       - roles/viewer
 ```
 
+When using `--bindings`, the YAML is the source of truth: it carries everything (SA placement `project`, `master_sa`, bindings, billing). CLI flags (`--project`, `--folder`, `--roles`, `--master-sa`) become explicit overrides — they are only mandatory in the flag-driven quick-create mode.
+
+```bash
+# YAML-driven (everything comes from the file):
+vault-gcp role create sandbox-dev vpcadmin --bindings vpc-admin.yml
+
+# Flag-driven quick create (equivalent):
+vault-gcp role create sandbox-dev vpcadmin \
+  --project play-sandboxdev-05a03 --roles "roles/editor"
+```
+
+Role sets live under the mount (`gcp/sandbox-dev/roleset/vpcadmin`). Roleset names are limited to **14 characters** by Vault's GCP engine.
+
 ---
 
 ## ⚙️ The Translation Engine (How it Works)
 
-When you run `vault-gcp roleset create ... --bindings vpc-admin.yml`, the tool performs three distinct steps:
+When you run `vault-gcp role create <mount> <roleset> --bindings vpc-admin.yml`, the tool performs three distinct steps:
 
 ### Step 1: Parsing & Resource Mapping
 The Python script reads the YAML and maps your simple keys to Google's official Cloud Resource Manager URIs.
@@ -51,20 +67,20 @@ The Python script reads the YAML and maps your simple keys to Google's official 
 * `folders` becomes `//cloudresourcemanager.googleapis.com/folders/...`
 
 ### Step 2: The "Auto-Patching" Mechanism
-Before generating the HCL, the tool checks if any of the target projects are **different** from the project where Vault is currently mounted. 
+Before generating the HCL, the tool checks if any of the target projects are **different** from the roleset's SA placement `project`. 
 
-If it detects a cross-project reference (e.g., Vault is in `ctlabs-prj-2025101601` but the YAML targets `ctlabs-0815...`), the tool automatically executes a local `gcloud` command to grant the Vault Identity Broker the `roles/resourcemanager.projectIamAdmin` role on the target project. 
+If it detects a cross-project reference (e.g., placement is `play-sandboxdev-05a03` but the YAML also targets `ctlabs-0815...`), the tool automatically executes a local `gcloud` command to grant the Vault Broker SA (`master_sa`) the `roles/resourcemanager.projectIamAdmin` role on the target project. 
 
 *This completely eliminates the dreaded `403 Permission Denied` error when Vault tries to create the bindings.*
 
 ### Step 3: HCL Generation & API Call
 Finally, the script stitches together the HCL string and sends it to the Vault API. 
 
-The underlying API payload sent to `POST /v1/gcp/ctlabs-prj-2025101601/roleset/vpc-admin` looks like this:
+The underlying API payload sent to `POST /v1/gcp/<mount>/roleset/<name>` looks like this:
 
 ```json
 {
-  "project": "ctlabs-prj-2025101601",
+  "project": "play-sandboxdev-05a03",
   "secret_type": "access_token",
   "bindings": "\nresource \"//[cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03](https://cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03)\" {\n  roles = [\"roles/compute.networkAdmin\", \"roles/compute.securityAdmin\"]\n}\n"
 }

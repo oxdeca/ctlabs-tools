@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctlabs-tools"
+version = "0.3.76"
+description = "CTLabs tools and helpers"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "hvac",
+    "jmespath",
+    "pytest",
+    "requests",
+    "streamlit",
+    "pandas",
+    "cryptography",
+    "flask",
+    "flask-jwt-extended",
+    "pyyaml",
+    "python-dotenv",
+    "qrcode",
+]
+
+[project.optional-dependencies]
+gcp = [
+    "google-cloud-secret-manager>=2.16.0",
+]
+all = [
+    "google-cloud-secret-manager>=2.16.0",
+]
+
+[project.scripts]
+vault-login = "ctlabs_tools.vault.vault_login:main"
+vault-auth = "ctlabs_tools.vault.vault_auth:main"
+vault-secret = "ctlabs_tools.vault.vault_secret:main"
+vault-ldap = "ctlabs_tools.vault.vault_ldap:main"
+vault-gcp = "ctlabs_tools.vault.vault_gcp:main"
+vault-cf = "ctlabs_tools.vault.vault_cf:main"
+vault-k8s = "ctlabs_tools.vault.vault_k8s:main"
+vault-ssh = "ctlabs_tools.vault.vault_ssh:main"
+vault-pki = "ctlabs_tools.vault.vault_pki:main"
+vault-totp = "ctlabs_tools.vault.vault_totp:main"
+vault-trap = "ctlabs_tools.vault.vault_trap:main"
+vault-audit = "ctlabs_tools.vault.vault_audit:main"
+flashcards = "ctlabs_tools.flashcards.server:main"
+
+[tool.setuptools]
+zip-safe = false
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["ctlabs_tools*"]
+
+[tool.setuptools.package-data]
+"ctlabs_tools.flashcards" = ["*.html"]

@@ -6,35 +6,36 @@ For this example, let's assume your Google Cloud environment looks like this:
 
 ---
 
-### Step 1: Bootstrap the Hub (Day 0 & 1)
-First, we need to create the Vault Master Service Account inside the Hub project, but crucially, we need to grant it the ability to manage IAM *on the Spoke folder*. 
+### Step 1: Bootstrap the Engine (Day 0 & 1)
+First, we need to create the Vault Broker Service Account inside the Hub project (`--project`), but crucially, we need to grant it the ability to manage IAM *on the Spoke folder*. The mount is namespaced per environment (`gcp/engineering`). 
 
 Run your zero-touch bootstrap command:
 
 ```bash
-vault-gcp bootstrap \
+vault-gcp engine create engineering \
   --project ctlabs-vault-admin \
-  --folder-id 1234567890
+  --folder 1234567890
 ```
 
 **What this does:**
 1. Creates `vault-gcp-broker@ctlabs-vault-admin.iam.gserviceaccount.com`.
 2. Attaches the `roles/resourcemanager.folderIamAdmin` and `projectIamAdmin` roles to that Service Account *specifically at the Folder level* (1234567890).
-3. Mounts the engine at `gcp/ctlabs-vault-admin/` in Vault.
+3. Mounts the engine at `gcp/engineering/` in Vault and stores the Broker SA key there.
 
 ---
 
 ### Step 2: Create the Folder-Scoped Role (Day 2)
-Now we tell Vault to create a JIT profile that grants developer access to that folder. We use the `--folder` switch. Let's create a role called `engineering-editor`:
+Now we tell Vault to create a JIT profile that grants developer access to that folder. We use the `--folder` switch. Let's create a role called `eng-editor` (roleset names are capped at 14 chars):
 
 ```bash
-vault-gcp role create ctlabs-vault-admin engineering-editor \
+vault-gcp role create engineering eng-editor \
+  --project ctlabs-vault-admin \
   --roles "roles/editor" \
   --folder 1234567890
 ```
 
 **What this does:**
-Vault saves a role configuration. When a user asks for this role, Vault will dynamically create a temporary Service Account inside `ctlabs-vault-admin`, but it will bind the `roles/editor` permission directly to Folder `1234567890`.
+Vault saves a role configuration. When a user asks for this role, Vault will dynamically create a temporary Service Account inside the placement project (`--project`), but it will bind the `roles/editor` permission directly to Folder `1234567890`.
 
 ---
 
@@ -44,7 +45,7 @@ Now, a developer logs in via OIDC. They need to manage infrastructure inside `de
 They run your wrapper:
 
 ```bash
-vault-gcp exec ctlabs-vault-admin engineering-editor -- bash
+vault-gcp exec engineering eng-editor -- bash
 ```
 
 Inside that JIT bash shell, the developer is fully authenticated as the temporary Service Account. 
@@ -65,7 +66,7 @@ gcloud compute instances list --project ctlabs-vault-admin
 If you ever need to completely tear down Vault's access to that folder, your `cleanup` command perfectly unwinds the Hub and Spoke architecture:
 
 ```bash
-vault-gcp cleanup \
+vault-gcp cleanup engineering \
   --project ctlabs-vault-admin \
   --folder-id 1234567890
 ```

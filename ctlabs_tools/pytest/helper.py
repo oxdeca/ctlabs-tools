@@ -76,8 +76,7 @@ class Terraform:
                         print("Terraform was denied access to Google Cloud.")
                         print("Your Vault-generated token has likely expired (Tokens only last 60 minutes).")
                         print("To fix this, generate a fresh token in your terminal:\n")
-                        print("  vault-secret get-token gcp/<project-id>")
-                        print("  export GOOGLE_OAUTH_ACCESS_TOKEN=\"...\"\n")
+                        print("  export GOOGLE_OAUTH_ACCESS_TOKEN=\"$(vault-gcp get-token <mount> <roleset>)\"\n")
                         
                         if not self.interactive:
                             pytest.fail("Terraform aborted due to expired GCP credentials.")
