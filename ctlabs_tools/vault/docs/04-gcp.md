@@ -6,7 +6,7 @@ For this example, let's assume your Google Cloud environment looks like this:
 
 ---
 
-### Step 1: Bootstrap the Engine (Day 0 & 1)
+### Step 1: Bootstrap the Engine
 First, we need to create the Vault Broker Service Account inside the Hub project (`--project`), but crucially, we need to grant it the ability to manage IAM *on the Spoke folder*. The mount is namespaced per environment (`gcp/engineering`). 
 
 Run your zero-touch bootstrap command:
@@ -24,7 +24,7 @@ vault-gcp engine create engineering \
 
 ---
 
-### Step 2: Create the Folder-Scoped Role (Day 2)
+### Step 2: Create the Folder-Scoped Role
 Now we tell Vault to create a JIT profile that grants developer access to that folder. We use the `--folder` switch. Let's create a role called `eng-editor` (roleset names are capped at 14 chars):
 
 ```bash
@@ -39,7 +39,7 @@ Vault saves a role configuration. When a user asks for this role, Vault will dyn
 
 ---
 
-### Step 3: The Developer Workflow (Day 3+)
+### Step 3: The Developer Workflow
 Now, a developer logs in via OIDC. They need to manage infrastructure inside `dev-cluster-01` (which sits inside the Spoke folder). 
 
 They run your wrapper:
@@ -62,38 +62,49 @@ gcloud compute instances list --project ctlabs-vault-admin
 
 ---
 
-### Step 3b: Ephemeral Sandbox Projects (No Terraform Required)
+### Step 3b: Leasable Sandbox Pool (No Terraform Per Sandbox)
 
-Sandboxes are just throwaway projects — no `sandbox` module, no state files, no budgets needed.
-Prerequisites (see `05-gcp-prerequisites.md` for the full detail): the Spoke folder already exists
-(terraform `sandbox` module) and a dynamic roleset holds **folder-level** project creation rights
-(`roles/resourcemanager.projectCreator`). A JIT token can then mint projects directly via the Cloud Resource
-Manager REST API — **no gcloud, no state**, and the new project inherits IAM from the folder binding:
+Sandboxes are a **fixed pool of pre-provisioned projects** (`sandbox-pool-01…NN`) — created once by the
+terraform `sandbox` platform module and linked to billing once. Quota stays constant (no projects are ever
+created or deleted at runtime; soft-deleted projects would otherwise hold quota for the 30-day purge
+window). A `roles/editor` folder-scoped roleset is all the JIT token needs: `roles/editor` includes
+`resourcemanager.projects.update` (rename/relabel), `serviceusage.services.enable/disable`, and read access.
+
+The daily loop is lease → work → release → reset (lifecycle `free → leased → disabled → free`):
 
 ```bash
-vault-gcp sandbox create engineering eng-editor sbox-dev-7f3a \
+# 1. Claim the first free pool project for 14 days
+vault-gcp sandbox lease engineering eng-editor \
   --folder 1234567890 \
-  --services compute.googleapis.com,iam.googleapis.com \
-  --labels env=sandbox
+  --owner wolfgang@example.com \
+  --ttl 14 --purpose gke-test \
+  --services compute.googleapis.com,iam.googleapis.com
+
+# 2. Operate inside the leased project with the same JIT identity
+vault-gcp exec engineering eng-editor -- bash
+
+# 3. Done working: disable all services + mark 'disabled' (still RESERVED)
+vault-gcp sandbox release engineering eng-editor sandbox-pool-02
+
+# 4. After a terraform destroy of the leftover resources: back to 'free'
+vault-gcp sandbox reset engineering eng-editor sandbox-pool-02
+
+# 5. Overview + (opt-in) auto-release of expired leases
+vault-gcp sandbox list engineering eng-editor --folder 1234567890
 ```
 
 **What this does:**
-1. Fetches a JIT token for the folder-scoped roleset.
-2. Calls `POST cloudresourcemanager.googleapis.com/v1/projects` under the folder (creation rights come from the folder binding).
-3. Optionally enables the requested API services via Service Usage.
-4. Projects are created **UNBILLED** — GCP has **no folder-level "default billing account"**. Attaching
-   billing requires `billing.resourceAssociations.create` (= `roles/billing.user`) on the billing account,
-   which a dynamic roleset can never hold (billing accounts can't be bound by Vault). Attach it afterwards
-   with a billing-authorized identity (a Vault static account with `roles/billing.user`, or a billing admin).
+1. Fetches a JIT token for the folder-scoped roleset (`roles/editor` on the sandbox folder).
+2. `lease` picks the first `state=free` member (CRM `projects.list` filtered to the folder), PATCHes
+   `state=leased`/`owner`/`purpose`/`lease-until` labels + display name `sbox-<owner>-<purpose>`, and
+   enables the requested services via Service Usage — **no gcloud, no state**.
+3. `release` disables **all** enabled services (so the project stops spending) and marks it `disabled`,
+   keeping it reserved for teardown. `reset` returns it to `free` once everything is cleaned up.
+4. An optional Cloud Scheduler → Cloud Function sweeper (terraform `sandbox.sweeper`, see
+   `05-gcp-prerequisites.md`) automatically does the release step for leases past their TTL.
 
-Tear-down is just as easy:
-
-```bash
-vault-gcp sandbox delete engineering eng-editor sbox-dev-7f3a
-```
-
-Project deletion via the CRM API is a **soft-delete** (permanently purged after 30 days), so
-accidental deletes are recoverable and abandoned sandboxes can be reclaimed at the folder level.
+No project is ever created or deleted at runtime — billing is attached **once** at pool provisioning, so
+the roleset needs none of the `billing.*` / `projectCreator` roles.
 
 ---
 

@@ -5,11 +5,14 @@
 
 import sys
 import os
+import re
 import argparse
 import subprocess
 import json
 import yaml
 import time
+from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 from .core import HashiVault
 
 def run_gcloud(cmd_list, capture_json=False, ignore_errors=False, quiet=False, retries=1, retry_delay=5):
@@ -123,6 +126,91 @@ def gcp_wait_operation(op, token, base_url):
     print("❌ Timeout waiting for GCP operation to complete.", file=sys.stderr)
     sys.exit(1)
 
+# -----------------------------------------------------------------------------
+# SANDBOX POOL HELPERS (no gcloud; JIT token + REST only)
+#
+# Pool lifecycle:  free -> leased -> disabled -> free
+#   - lease   : claim the first 'state=free' member, set owner/purpose/lease-until
+#   - release : disable ALL enabled services + mark 'disabled' (still holds data;
+#               a human runs terraform destroy, then 'reset')
+#   - reset   : mark a 'disabled' project 'free' again (teardown confirmed done)
+#   - list    : show pool state; --sweep auto-releases expired leases
+# -----------------------------------------------------------------------------
+CRM_V1 = "https://cloudresourcemanager.googleapis.com/v1"
+SERVICEUSAGE_V1 = "https://serviceusage.googleapis.com/v1"
+
+def sandbox_expire_dt(days):
+    """leash-until timestamp stored as ISO-8601 UTC string."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+def sandbox_parse_dt(iso_str):
+    try:
+        return datetime.fromisoformat(iso_str)
+    except (ValueError, TypeError):
+        return None
+
+def sandbox_pool(token, folder_id):
+    """List pool members: direct children of the folder (consistent index)."""
+    filt = quote(f"parent.type:folder parent.id:{folder_id}")
+    res = gcp_rest("GET", f"{CRM_V1}/projects?filter={filt}", token)
+    return [p for p in res.get("projects", []) if p.get("lifecycleState") == "ACTIVE"]
+
+def sandbox_get_project(token, project_id):
+    return gcp_rest("GET", f"{CRM_V1}/projects/{project_id}", token)
+
+def sandbox_patch_project(token, project_id, display_name=None, labels=None):
+    """PATCH displayName + labels (requires resourcemanager.projects.update, in roles/editor)."""
+    body, mask = {}, []
+    if display_name is not None:
+        body["displayName"] = display_name
+        mask.append("displayName")
+    if labels is not None:
+        body["labels"] = labels
+        mask.append("labels")
+    if not mask:
+        return {}
+    return gcp_rest("PATCH", f"{CRM_V1}/projects/{project_id}?updateMask={','.join(mask)}", token, body)
+
+def sandbox_disable_all_services(token, project_id):
+    """Best-effort: disable every enabled API so the project can't spend."""
+    res = gcp_rest("GET", f"{SERVICEUSAGE_V1}/projects/{project_id}/services?filter=state:ENABLED", token, ignore_errors=True)
+    enabled = [
+        s["name"].rsplit("/", 1)[-1]
+        for s in res.get("services", [])
+        if s.get("state") == "ENABLED"
+    ]
+    if not enabled:
+        return 0
+    op = gcp_rest("POST", f"{SERVICEUSAGE_V1}/projects/{project_id}/services:batchDisable", token, {"serviceIds": enabled})
+    gcp_wait_operation(op, token, SERVICEUSAGE_V1)
+    return len(enabled)
+
+def sandbox_enable_services(token, project_id, service_ids):
+    op = gcp_rest("POST", f"{SERVICEUSAGE_V1}/projects/{project_id}/services:batchEnable", token, {"serviceIds": service_ids})
+    gcp_wait_operation(op, token, SERVICEUSAGE_V1)
+
+def sandbox_slug(value, maxlen=20):
+    """Owner local-part / purpose slug for display names."""
+    local = value.split("@")[0] if "@" in value else value
+    s = re.sub(r"[^a-z0-9-]", "-", local.lower()).strip("-")
+    s = re.sub(r"-+", "-", s)
+    return s[:maxlen].rstrip("-") or "user"
+
+def sandbox_display_name(project_id, state, owner=None, purpose=None):
+    if state == "leased" and owner:
+        slug = sandbox_slug(owner)
+        suffix = sandbox_slug(purpose, maxlen=10)
+        name = f"sbox-{slug}-{suffix}"
+        name = re.sub(r"-+", "-", name).strip("-")
+        if not name[0].isalpha():
+            name = f"sbox-{name}"
+        return name[:30]
+    if state == "free":
+        return f"{project_id} (free)"
+    if state == "disabled":
+        return f"{project_id} (disabled)"
+    return project_id
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault GCP Identity & Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds")
@@ -189,21 +277,35 @@ def get_args():
     p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
     p_leases_revoke.add_argument("--force", action="store_true", help="Force wipe all leases under this project")
 
-    # 8. SANDBOX (Ephemeral Project Lifecycle, No gcloud Required)
-    p_sandbox = subparsers.add_parser("sandbox", help="Create/delete ephemeral GCP sandbox projects via REST (No gcloud required)")
+    # 8. SANDBOX (Leasable Pool of Pre-Provisioned Projects, No gcloud Required)
+    p_sandbox = subparsers.add_parser("sandbox", help="Lease/release projects from a pre-provisioned sandbox pool (no gcloud required)")
     sandbox_subs = p_sandbox.add_subparsers(dest="action", required=True)
-    p_sbox_create = sandbox_subs.add_parser("create", help="Create a throwaway sandbox project under a folder")
-    p_sbox_create.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
-    p_sbox_create.add_argument("roleset", help="Roleset name with folder-level project creation rights")
-    p_sbox_create.add_argument("project", help="New project ID (6-30 chars, lowercase, starts with a letter)")
-    p_sbox_create.add_argument("--name", default="", help="Display name (defaults to project ID)")
-    p_sbox_create.add_argument("--folder", required=True, help="Numeric Folder ID where the sandbox is created (projects are created UNBILLED; attach billing separately)")
-    p_sbox_create.add_argument("--services", default="", help="Comma-separated API services to enable after creation (optional)")
-    p_sbox_create.add_argument("--labels", default="", help="Comma-separated labels, e.g. env=sandbox,team=dev")
-    p_sbox_delete = sandbox_subs.add_parser("delete", help="Delete a sandbox project (soft-delete)")
-    p_sbox_delete.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
-    p_sbox_delete.add_argument("roleset", help="Roleset name with delete rights on the project")
-    p_sbox_delete.add_argument("project", help="Project ID to delete")
+
+    p_sbox_lease = sandbox_subs.add_parser("lease", help="Lease the first free pool project for a fixed TTL")
+    p_sbox_lease.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_lease.add_argument("roleset", help="Roleset name with 'roles/editor' on the sandbox folder")
+    p_sbox_lease.add_argument("--folder", required=True, help="Numeric sandbox folder ID (the pool projects live here)")
+    p_sbox_lease.add_argument("--owner", required=True, help="Lease owner (email or username) recorded in the 'owner' label")
+    p_sbox_lease.add_argument("--ttl", type=int, default=14, help="Lease length in days (default: 14)")
+    p_sbox_lease.add_argument("--purpose", default="sandbox", help="Short purpose slug used in the display name (default: sandbox)")
+    p_sbox_lease.add_argument("--services", default="", help="Comma-separated API services to enable on the leased project")
+    p_sbox_lease.add_argument("--pool", default="", help="Force a specific pool member by project ID (default: first free)")
+
+    p_sbox_release = sandbox_subs.add_parser("release", help="Disable all services and mark a leased project 'disabled' (kept until 'reset')")
+    p_sbox_release.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_release.add_argument("roleset", help="Roleset name with editor rights on the pool")
+    p_sbox_release.add_argument("project", help="Pool project ID to release")
+
+    p_sbox_reset = sandbox_subs.add_parser("reset", help="Mark a 'disabled' pool project free again after its resources were torn down")
+    p_sbox_reset.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_reset.add_argument("roleset", help="Roleset name with editor rights on the pool")
+    p_sbox_reset.add_argument("project", help="Pool project ID to reset")
+
+    p_sbox_list = sandbox_subs.add_parser("list", help="List pool projects and their lease state")
+    p_sbox_list.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_list.add_argument("roleset", help="Roleset name with read rights on the pool")
+    p_sbox_list.add_argument("--folder", required=True, help="Numeric sandbox folder ID (the pool projects live here)")
+    p_sbox_list.add_argument("--sweep", action="store_true", help="Auto-release (mark 'disabled') any leases past their TTL")
 
     return parser.parse_args()
 
@@ -833,54 +935,128 @@ users:
         if not gcp_token:
             sys.exit(1)
 
-        crc_url = "https://cloudresourcemanager.googleapis.com/v1"
-
-        if args.action == "create":
+        if args.action == "lease":
             if not args.folder.strip().isdigit():
-                print("❌ Error: --folder must be a numeric Folder ID (no gcloud available for display-name lookups).", file=sys.stderr)
+                print("❌ Error: --folder must be a numeric Folder ID.", file=sys.stderr)
                 sys.exit(1)
 
-            body = {
-                "projectId": args.project,
-                "name": args.name or args.project,
-                "parent": {"type": "folder", "id": args.folder.strip()},
-            }
-            if args.labels:
-                labels = {}
-                for kv in args.labels.split(","):
-                    if "=" in kv:
-                        k, v = kv.split("=", 1)
-                        labels[k.strip()] = v.strip()
-                if labels:
-                    body["labels"] = labels
+            pool = sandbox_pool(gcp_token, args.folder.strip())
+            if not pool:
+                print("❌ Error: no pool projects found under the folder. Did Prereq B provision them?", file=sys.stderr)
+                sys.exit(1)
 
-            print(f"⚙️  Creating project '{args.project}' under folder {args.folder}...", file=sys.stderr)
-            op = gcp_rest("POST", f"{crc_url}/projects", gcp_token, body)
-            gcp_wait_operation(op, gcp_token, crc_url)
+            def project_state(p):
+                return (p.get("labels") or {}).get("state", "free")
 
-            info = gcp_rest("GET", f"https://cloudbilling.googleapis.com/v1/projects/{args.project}/billingInfo", gcp_token, ignore_errors=True)
-            billing_note = info.get("billingAccountName", "n/a") if info.get("billingEnabled") else None
-            if billing_note:
-                print(f"✅ Project '{args.project}' created (billed to {billing_note}).")
+            if args.pool:
+                target = next((p for p in pool if p.get("projectId") == args.pool), None)
+                if not target:
+                    print(f"❌ Error: '{args.pool}' is not an ACTIVE project under the folder.", file=sys.stderr)
+                    sys.exit(1)
             else:
-                print(f"✅ Project '{args.project}' created.")
-                print("⚠️  Project is UNBILLED. To bill it, attach the billing account with an identity holding", file=sys.stderr)
-                print("⚠️  'roles/billing.user' on it: e.g. vault-gcp exec <mount> billing -- <cmd>, or a billing admin.", file=sys.stderr)
+                target = next((p for p in pool if project_state(p) == "free"), None)
+                if not target:
+                    print("❌ Error: pool exhausted — no 'free' member. Check 'sandbox list' (released ones need 'sandbox reset').", file=sys.stderr)
+                    sys.exit(1)
+
+            project_id = target["projectId"]
+            lease_until = sandbox_expire_dt(args.ttl)
+            display_name = sandbox_display_name(project_id, "leased", args.owner, args.purpose)
+            labels = {
+                "state": "leased",
+                "owner": args.owner,
+                "purpose": args.purpose,
+                "lease-until": lease_until,
+            }
+            print(f"⚙️  Leasing '{project_id}' to {args.owner} until {lease_until} (display name: '{display_name}')...", file=sys.stderr)
+            sandbox_patch_project(gcp_token, project_id, display_name=display_name, labels=labels)
+            print(f"✅ Leased '{project_id}'.")
 
             if args.services:
                 service_ids = [s.strip() for s in args.services.split(",") if s.strip()]
                 print(f"⚙️  Enabling services: {', '.join(service_ids)}...", file=sys.stderr)
-                op = gcp_rest("POST", f"https://serviceusage.googleapis.com/v1/projects/{args.project}/services:batchEnable", gcp_token, {"serviceIds": service_ids})
-                gcp_wait_operation(op, gcp_token, "https://serviceusage.googleapis.com/v1")
-                print(f"✅ Services enabled on '{args.project}'.")
+                sandbox_enable_services(gcp_token, project_id, service_ids)
+                print(f"✅ Services enabled on '{project_id}'.")
 
-            print("👉 Provision resources: vault-gcp exec <mount> <roleset> -- <cmd>", file=sys.stderr)
+            print(f"👉 Operate: vault-gcp exec {args.mount_name} {args.roleset} -- <cmd>", file=sys.stderr)
+            print(f"👉 Release when done: vault-gcp sandbox release {args.mount_name} {args.roleset} {project_id}", file=sys.stderr)
 
-        elif args.action == "delete":
-            print(f"🗑️  Deleting project '{args.project}'...", file=sys.stderr)
-            op = gcp_rest("DELETE", f"{crc_url}/projects/{args.project}", gcp_token)
-            gcp_wait_operation(op, gcp_token, crc_url)
-            print(f"✅ Project '{args.project}' deletion requested (soft-delete; purged after 30 days).")
+        elif args.action == "release":
+            project = sandbox_get_project(gcp_token, args.project)
+            labels = project.get("labels") or {}
+            state = labels.get("state", "free")
+            if state not in ("leased", "disabled"):
+                print(f"⚠️  Project '{args.project}' is not leased (state='{state}'); nothing to release.", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"🗑️  Disabling all services on '{args.project}'...", file=sys.stderr)
+            disabled = sandbox_disable_all_services(gcp_token, args.project)
+            print(f"✅ Disabled {disabled} service(s).", file=sys.stderr)
+
+            labels["state"] = "disabled"
+            labels.pop("lease-until", None)
+            display_name = sandbox_display_name(args.project, "disabled")
+            sandbox_patch_project(gcp_token, args.project, display_name=display_name, labels=labels)
+            print(f"✅ Project '{args.project}' marked 'disabled'. It stays RESERVED.")
+            print(f"👉 Tear down resources (terraform destroy), then: vault-gcp sandbox reset {args.mount_name} {args.roleset} {args.project}")
+
+        elif args.action == "reset":
+            project = sandbox_get_project(gcp_token, args.project)
+            labels = project.get("labels") or {}
+            if labels.get("state") != "disabled":
+                print(f"⚠️  Project '{args.project}' is not 'disabled' (state='{labels.get('state', 'free')}'); nothing to reset.", file=sys.stderr)
+                sys.exit(1)
+
+            for key in ("owner", "purpose", "lease-until"):
+                labels.pop(key, None)
+            labels["state"] = "free"
+            display_name = sandbox_display_name(args.project, "free")
+            sandbox_patch_project(gcp_token, args.project, display_name=display_name, labels=labels)
+            print(f"✅ Project '{args.project}' returned to the pool (state=free).")
+
+        elif args.action == "list":
+            if not args.folder.strip().isdigit():
+                print("❌ Error: --folder must be a numeric Folder ID.", file=sys.stderr)
+                sys.exit(1)
+
+            pool = sandbox_pool(gcp_token, args.folder.strip())
+            if not pool:
+                print("ℹ️ No pool projects found under the folder.", file=sys.stderr)
+                sys.exit(0)
+
+            now = datetime.now(timezone.utc)
+
+            def row(p):
+                labels = p.get("labels") or {}
+                state = labels.get("state", "free")
+                lease_until = None
+                if labels.get("lease-until"):
+                    dt = sandbox_parse_dt(labels["lease-until"])
+                    lease_until = dt if dt else labels["lease-until"]
+                expired = state == "leased" and isinstance(lease_until, datetime) and lease_until < now
+                return (p.get("projectId"), state, labels.get("owner", ""), str(lease_until)[:19], p.get("name", ""), expired)
+
+            rows = [row(p) for p in pool]
+
+            if args.sweep:
+                for project_id, state, _, until, _, expired in rows:
+                    if not expired:
+                        continue
+                    print(f"⏰ Lease expired on '{project_id}' ({until}) — releasing...", file=sys.stderr)
+                    labels = dict((sandbox_get_project(gcp_token, project_id).get("labels") or {}))
+                    disabled = sandbox_disable_all_services(gcp_token, project_id)
+                    labels["state"] = "disabled"
+                    labels.pop("lease-until", None)
+                    sandbox_patch_project(gcp_token, project_id, display_name=sandbox_display_name(project_id, "disabled"), labels=labels)
+                    print(f"✅ '{project_id}' released (disabled {disabled} service(s)).", file=sys.stderr)
+                pool = sandbox_pool(gcp_token, args.folder.strip())
+                rows = [row(p) for p in pool]
+
+            print(f"{'PROJECT':<20} {'STATE':<9} {'OWNER':<22} {'LEASE-UNTIL':<20} NAME")
+            print("-" * 100)
+            for project_id, state, owner, until, name, expired in sorted(rows):
+                flag = " ⚠️ EXPIRED-or-MISSING" if expired else ""
+                print(f"{project_id:<20} {state:<9} {str(owner):<22} {str(until or '-'):<20} {name}{flag}")
 
     # ---------------------------------------------------------------------
     # 7. LEASES

@@ -15,15 +15,17 @@ Every project created under that folder **inherits** those IAM rights, so bindin
 By default, Vault's GCP Secrets Engine requires roleset bindings to be written in a specific HashiCorp Configuration Language (HCL) format. Writing raw HCL can be error-prone and tedious for developers who are more accustomed to standard YAML or JSON.
 
 **Native Vault HCL Example:**
-```hcl
-resource "//[cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03](https://cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03)" {
+```lua
+resource "//cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03" {
   roles = ["roles/compute.networkAdmin", "roles/compute.securityAdmin"]
 }
 ```
 
+> Note: this is Vault's **bindings HCL**, not Terraform — 
+> `resource` takes a **single label** (the > asset resource URI), not a `type "name"` pair.
+> The tool emits this exact form from the YAML > (`resource "//cloudresourcemanager.googleapis.com/projects/<id>"`).
+
 To solve this, `vault-gcp` includes a **smart YAML parser** that translates simple YAML arrays into valid Vault HCL on the fly.
-
-
 
 ---
 
@@ -86,7 +88,7 @@ The underlying API payload sent to `POST /v1/gcp/<mount>/roleset/<name>` looks l
 {
   "project": "play-sandboxdev-05a03",
   "secret_type": "access_token",
-  "bindings": "\nresource \"//[cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03](https://cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03)\" {\n  roles = [\"roles/compute.networkAdmin\", \"roles/compute.securityAdmin\"]\n}\n"
+  "bindings": "\nresource \"//cloudresourcemanager.googleapis.com/projects/ctlabs-0815-123abc-05a-03\" {\n  roles = [\"roles/compute.networkAdmin\", \"roles/compute.securityAdmin\"]\n}\n"
 }
 ```
 
