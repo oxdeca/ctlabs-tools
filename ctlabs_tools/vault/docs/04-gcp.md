@@ -62,6 +62,41 @@ gcloud compute instances list --project ctlabs-vault-admin
 
 ---
 
+### Step 3b: Ephemeral Sandbox Projects (No Terraform Required)
+
+Sandboxes are just throwaway projects — no `sandbox` module, no state files, no budgets needed.
+Prerequisites (see `05-gcp-prerequisites.md` for the full detail): the Spoke folder already exists
+(terraform `sandbox` module) and a dynamic roleset holds **folder-level** project creation rights
+(`roles/resourcemanager.projectCreator`). A JIT token can then mint projects directly via the Cloud Resource
+Manager REST API — **no gcloud, no state**, and the new project inherits IAM from the folder binding:
+
+```bash
+vault-gcp sandbox create engineering eng-editor sbox-dev-7f3a \
+  --folder 1234567890 \
+  --services compute.googleapis.com,iam.googleapis.com \
+  --labels env=sandbox
+```
+
+**What this does:**
+1. Fetches a JIT token for the folder-scoped roleset.
+2. Calls `POST cloudresourcemanager.googleapis.com/v1/projects` under the folder (creation rights come from the folder binding).
+3. Optionally enables the requested API services via Service Usage.
+4. Projects are created **UNBILLED** — GCP has **no folder-level "default billing account"**. Attaching
+   billing requires `billing.resourceAssociations.create` (= `roles/billing.user`) on the billing account,
+   which a dynamic roleset can never hold (billing accounts can't be bound by Vault). Attach it afterwards
+   with a billing-authorized identity (a Vault static account with `roles/billing.user`, or a billing admin).
+
+Tear-down is just as easy:
+
+```bash
+vault-gcp sandbox delete engineering eng-editor sbox-dev-7f3a
+```
+
+Project deletion via the CRM API is a **soft-delete** (permanently purged after 30 days), so
+accidental deletes are recoverable and abandoned sandboxes can be reclaimed at the folder level.
+
+---
+
 ### The Cleanup (Optional)
 If you ever need to completely tear down Vault's access to that folder, your `cleanup` command perfectly unwinds the Hub and Spoke architecture:
 

@@ -80,6 +80,49 @@ def resolve_gcp_folder_id(input_str, org_id=None):
     print(f"  ⚠️ Could not resolve Display Name '{input_str}' (Lookup failed). Passing string directly...", file=sys.stderr)
     return input_str
 
+def gcp_rest(method, url, token, body=None, ignore_errors=False):
+    """Fire a REST call against a Google Cloud API using a JIT token (No gcloud required)."""
+    import urllib.request, urllib.error
+    import ssl
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, context=ssl.create_default_context()) as res:
+            return json.loads(res.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        if ignore_errors:
+            return {"error": {"code": e.code, "message": error_body}}
+        print(f"❌ GCP API Error ({e.code}): {error_body}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        if ignore_errors:
+            return {"error": {"message": str(e)}}
+        print(f"❌ Error communicating with GCP API: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def gcp_wait_operation(op, token, base_url):
+    """Poll a Google Cloud LRO until done (soft 4-minute cap)."""
+    name = op.get("name")
+    if not name:
+        return op
+    url = f"{base_url}/{name.lstrip('/')}"
+    print("  ⏳ Waiting for GCP operation to complete...", file=sys.stderr)
+    for _ in range(120):
+        res = gcp_rest("GET", url, token, ignore_errors=True)
+        if res.get("done") is True:
+            if res.get("error"):
+                print(f"❌ GCP Operation failed: {json.dumps(res['error'])}", file=sys.stderr)
+                sys.exit(1)
+            return res
+        time.sleep(2)
+    print("❌ Timeout waiting for GCP operation to complete.", file=sys.stderr)
+    sys.exit(1)
+
 def get_args():
     parser = argparse.ArgumentParser(description="Vault GCP Identity & Engine Manager")
     parser.add_argument("--timeout", type=int, default=90, help="API HTTP timeout in seconds")
@@ -145,6 +188,22 @@ def get_args():
     p_leases_revoke.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
     p_leases_revoke.add_argument("--id", help="Revoke a specific lease ID")
     p_leases_revoke.add_argument("--force", action="store_true", help="Force wipe all leases under this project")
+
+    # 8. SANDBOX (Ephemeral Project Lifecycle, No gcloud Required)
+    p_sandbox = subparsers.add_parser("sandbox", help="Create/delete ephemeral GCP sandbox projects via REST (No gcloud required)")
+    sandbox_subs = p_sandbox.add_subparsers(dest="action", required=True)
+    p_sbox_create = sandbox_subs.add_parser("create", help="Create a throwaway sandbox project under a folder")
+    p_sbox_create.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_create.add_argument("roleset", help="Roleset name with folder-level project creation rights")
+    p_sbox_create.add_argument("project", help="New project ID (6-30 chars, lowercase, starts with a letter)")
+    p_sbox_create.add_argument("--name", default="", help="Display name (defaults to project ID)")
+    p_sbox_create.add_argument("--folder", required=True, help="Numeric Folder ID where the sandbox is created (projects are created UNBILLED; attach billing separately)")
+    p_sbox_create.add_argument("--services", default="", help="Comma-separated API services to enable after creation (optional)")
+    p_sbox_create.add_argument("--labels", default="", help="Comma-separated labels, e.g. env=sandbox,team=dev")
+    p_sbox_delete = sandbox_subs.add_parser("delete", help="Delete a sandbox project (soft-delete)")
+    p_sbox_delete.add_argument("mount_name", help="Mount name (Vault mount point: gcp/<mount_name>)")
+    p_sbox_delete.add_argument("roleset", help="Roleset name with delete rights on the project")
+    p_sbox_delete.add_argument("project", help="Project ID to delete")
 
     return parser.parse_args()
 
@@ -763,6 +822,65 @@ users:
         except Exception as e:
             print(f"❌ Error communicating with GKE API: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # -------------------------------------------------------------------------
+    # 8. SANDBOX (Ephemeral Project Lifecycle, No gcloud Required)
+    # -------------------------------------------------------------------------
+    elif cmd == "sandbox":
+        mount_point = f"gcp/{args.mount_name}"
+        print(f"🔒 Fetching ephemeral GCP token for roleset '{args.roleset}'...", file=sys.stderr)
+        gcp_token = vault.get_gcp_token(roleset_name=args.roleset, mount_point=mount_point)
+        if not gcp_token:
+            sys.exit(1)
+
+        crc_url = "https://cloudresourcemanager.googleapis.com/v1"
+
+        if args.action == "create":
+            if not args.folder.strip().isdigit():
+                print("❌ Error: --folder must be a numeric Folder ID (no gcloud available for display-name lookups).", file=sys.stderr)
+                sys.exit(1)
+
+            body = {
+                "projectId": args.project,
+                "name": args.name or args.project,
+                "parent": {"type": "folder", "id": args.folder.strip()},
+            }
+            if args.labels:
+                labels = {}
+                for kv in args.labels.split(","):
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        labels[k.strip()] = v.strip()
+                if labels:
+                    body["labels"] = labels
+
+            print(f"⚙️  Creating project '{args.project}' under folder {args.folder}...", file=sys.stderr)
+            op = gcp_rest("POST", f"{crc_url}/projects", gcp_token, body)
+            gcp_wait_operation(op, gcp_token, crc_url)
+
+            info = gcp_rest("GET", f"https://cloudbilling.googleapis.com/v1/projects/{args.project}/billingInfo", gcp_token, ignore_errors=True)
+            billing_note = info.get("billingAccountName", "n/a") if info.get("billingEnabled") else None
+            if billing_note:
+                print(f"✅ Project '{args.project}' created (billed to {billing_note}).")
+            else:
+                print(f"✅ Project '{args.project}' created.")
+                print("⚠️  Project is UNBILLED. To bill it, attach the billing account with an identity holding", file=sys.stderr)
+                print("⚠️  'roles/billing.user' on it: e.g. vault-gcp exec <mount> billing -- <cmd>, or a billing admin.", file=sys.stderr)
+
+            if args.services:
+                service_ids = [s.strip() for s in args.services.split(",") if s.strip()]
+                print(f"⚙️  Enabling services: {', '.join(service_ids)}...", file=sys.stderr)
+                op = gcp_rest("POST", f"https://serviceusage.googleapis.com/v1/projects/{args.project}/services:batchEnable", gcp_token, {"serviceIds": service_ids})
+                gcp_wait_operation(op, gcp_token, "https://serviceusage.googleapis.com/v1")
+                print(f"✅ Services enabled on '{args.project}'.")
+
+            print("👉 Provision resources: vault-gcp exec <mount> <roleset> -- <cmd>", file=sys.stderr)
+
+        elif args.action == "delete":
+            print(f"🗑️  Deleting project '{args.project}'...", file=sys.stderr)
+            op = gcp_rest("DELETE", f"{crc_url}/projects/{args.project}", gcp_token)
+            gcp_wait_operation(op, gcp_token, crc_url)
+            print(f"✅ Project '{args.project}' deletion requested (soft-delete; purged after 30 days).")
 
     # ---------------------------------------------------------------------
     # 7. LEASES
