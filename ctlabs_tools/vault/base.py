@@ -117,22 +117,30 @@ class VaultBase:
             if self.load_secrets():
                 return True
 
-            # 2. Try Automated AppRole Login (Rundeck / CI/CD Workflow)
+            vault_url = os.getenv("VAULT_ADDR")
+
+            # 2. Try Automated JWT/OIDC Login (CI/CD Workflow, no static secret)
+            jwt = self._load_jwt()
+            if vault_url and jwt:
+                print("🤖 Automated environment detected. Logging into Vault via JWT/OIDC...")
+                if self.jwt_login(vault_url, jwt=jwt):
+                    return True
+
+            # 3. Try Automated AppRole Login (Rundeck / CI/CD Workflow)
             role_id = os.getenv("VAULT_ROLE_ID")
             secret_id = os.getenv("VAULT_SECRET_ID")
-            vault_url = os.getenv("VAULT_ADDR")
 
             if role_id and secret_id and vault_url:
                 print("🤖 Automated environment detected. Logging into Vault via AppRole...")
                 if self.approle_login(vault_url, role_id, secret_id):
                     return True
 
-            # 3. Fallback to Headless Failure or Interactive Prompt
+            # 4. Fallback to Headless Failure or Interactive Prompt
             if not interactive:
                 if "PYTEST_CURRENT_TEST" in os.environ:
-                    pytest.fail("Vault auth failed: No valid token or AppRole credentials found in environment.")
+                    pytest.fail("Vault auth failed: No valid token, JWT/OIDC or AppRole credentials found in environment.")
                 else:
-                    print("❌ Vault auth failed: No valid token or AppRole credentials found in environment.")
+                    print("❌ Vault auth failed: No valid token, JWT/OIDC or AppRole credentials found in environment.")
                     sys.exit(1)
                 
             print("\n" + "!"*40 + "\n🔑 VAULT TOKEN EXPIRED OR MISSING\n" + "!"*40)
@@ -148,5 +156,3 @@ class VaultBase:
                     
             print("🔄 Checking for new Vault secrets...")
             # The loop goes back to the top and checks load_secrets() again!
-
-

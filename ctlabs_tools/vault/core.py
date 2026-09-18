@@ -16,6 +16,7 @@ from .mixins.ssh      import VaultSSHMixin
 from .mixins.pki      import VaultPKIMixin
 from .mixins.ldap     import VaultLDAPMixin
 from .mixins.oidc     import VaultOIDCMixin
+from .mixins.jwt      import VaultJWTMixin
 from .mixins.totp     import VaultTOTPMixin
 from .mixins.approle  import VaultAppRoleMixin
 from .mixins.identity import VaultIdentityMixin
@@ -28,6 +29,7 @@ class HashiVault(
     VaultGCPMixin,
     VaultK8sMixin,
     VaultOIDCMixin,
+    VaultJWTMixin,
     VaultAppRoleMixin,
     VaultIdentityMixin,
     VaultLDAPMixin,

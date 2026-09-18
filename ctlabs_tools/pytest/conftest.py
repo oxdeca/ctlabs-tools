@@ -4,12 +4,7 @@ from ctlabs_tools.vault.core    import HashiVault
 
 def pytest_addoption(parser):
     """Register the --interactive flag for the entire test suite."""
-    parser.addoption(
-        "--interactive",
-        action="store_true",
-        default=False,
-        help="Enable interactive retry loops on failures"
-    )
+    parser.addoption("-I", "--interactive", action="store_true", default=False, help="Enable interactive retry loops on failures")
 
 @pytest.fixture(scope="session")
 def is_interactive(request):
@@ -24,11 +19,7 @@ def vault_auth():
 @pytest.fixture(scope="session")
 def tf(is_interactive, vault_auth):
     """Shared Terraform fixture with Vault auth injected."""
-    t = Terraform(
-        wd=".",
-        interactive=is_interactive,
-        auth_callback=vault_auth.ensure_valid_token # Injects the auth check!
-    )
+    t = Terraform(wd=".", interactive=is_interactive, auth_callback=vault_auth.ensure_valid_token)
     yield t
     t.cleanup()
 
@@ -46,7 +37,8 @@ def tf_stack(tf, is_interactive, vault_auth):
     tf.show_changes()
     tf.apply()
     tf.has_changes = has_changes
+
     yield tf
+
     tf.cleanup()
-    print("")
     tf.destroy()

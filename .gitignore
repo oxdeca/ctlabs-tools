@@ -1,0 +1,8 @@
+.DS_Store
+*.sublime-workspace
+.terraform*
+terraform.tfstate*
+*aws.conf.yml
+*gcp.conf.yml
+__pycache__
+*.egg-info
