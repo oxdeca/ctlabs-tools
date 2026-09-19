@@ -142,6 +142,9 @@ def get_args():
     p_approle.add_argument("name_args", nargs="*", help="Supports: <role>, <mount> <role>, or <mount>/<role>")
     p_approle.add_argument("--ttl", default="1h", help="Token TTL (e.g. 1h, 30m)")
     p_approle.add_argument("--policies", help="Comma-separated list of policies")
+    p_approle.add_argument("--secret-id-ttl", help="SecretID TTL (e.g. 24h) — bounds how long minted SecretIDs stay valid")
+    p_approle.add_argument("--secret-id-num-uses", type=int, help="Max logins per SecretID (1 = single-use / wrapped delivery)")
+    p_approle.add_argument("--secret-id-bound-cidrs", help="Comma-separated CIDRs from which this role's SecretIDs may log in")
 
     # 2. USER
     p_user = subparsers.add_parser("user", help="Manage Human Identities (Userpass / LDAP)")
@@ -203,6 +206,20 @@ def get_args():
     p_oidc.add_argument("--ttl", default="1h", help="Token TTL")
     p_oidc.add_argument("--gcp-project", help="GCP Project ID to use or create for the OAuth Client")
     p_oidc.add_argument("--admin-email", help="Your Google email to grant IAM roles to")
+
+    # 8b. JWT AUTH (CI/CD machine login)
+    p_jwt = subparsers.add_parser("jwt", help="Manage JWT Auth & Roles (CI/CD machine login)")
+    p_jwt.add_argument("action", choices=["create", "update", "read", "delete", "list", "info", "configure"])
+    p_jwt.add_argument("name_args", nargs="*", help="Supports: <role>, <mount> <role>, or <mount>/<role>")
+    p_jwt.add_argument("--discovery-url", help="OIDC discovery URL of the CI issuer (for 'configure')")
+    p_jwt.add_argument("--default-role", default="default", help="Default JWT role (for 'configure')")
+    p_jwt.add_argument("--issuer", help="Bound issuer claim (e.g. https://token.actions.githubusercontent.com)")
+    p_jwt.add_argument("--audiences", help="Comma-separated allowed audiences (bound_audiences)")
+    p_jwt.add_argument("--bound-claims", help="JSON object of claims to bind, e.g. '{\"repository\":\"acme/*\"}'")
+    p_jwt.add_argument("--bound-claims-type", default="glob", choices=["string", "glob"], help="Bound claims match type (default: glob)")
+    p_jwt.add_argument("--user-claim", default="sub", help="User claim to derive the entity alias from (default: sub)")
+    p_jwt.add_argument("--policies", help="Comma-separated list of Vault policies")
+    p_jwt.add_argument("--ttl", default="1h", help="Token TTL")
 
     # 9. GCP AUTH
     p_gcp = subparsers.add_parser("gcp", help="Manage GCP Auth Roles & Configuration")
@@ -278,8 +295,22 @@ def main():
         elif action in ["create", "update"]:
             if not name: sys.exit("❌ Error: Role name is required.")
             policies = [p.strip() for p in args.policies.split(",")] if args.policies else []
+            payload = dict(token_policies=policies, token_ttl=args.ttl)
+            # SecretID lifecycle options (optional — omit to keep Vault defaults)
+            if args.secret_id_ttl:        payload["secret_id_ttl"] = args.secret_id_ttl
+            if args.secret_id_num_uses is not None: payload["secret_id_num_uses"] = args.secret_id_num_uses
+            if args.secret_id_bound_cidrs: payload["secret_id_bound_cidrs"] = [c.strip() for c in args.secret_id_bound_cidrs.split(",")]
             try:
-                client.write(f"auth/{mount}/role/{name}", token_policies=policies, token_ttl=args.ttl)
+                # Ensure the AppRole auth method exists (idempotent, mirrors `jwt configure`)
+                try:
+                    existing = {p.rstrip('/') for p in client.sys.list_auth_methods()['data']}
+                    if mount not in existing:
+                        client.sys.enable_auth_method(method_type="approle", path=mount)
+                        print(f"✅ Enabled AppRole auth method at '{mount}/'.")
+                except Exception as e:
+                    sys.exit(f"❌ Error: AppRole auth method not enabled at '{mount}/' and enabling it failed "
+                             f"({e}). Run 'vault auth enable approle' (or retry) with a token that has sys/auth rights.")
+                client.write(f"auth/{mount}/role/{name}", **payload)
                 print(f"✅ AppRole '{name}' successfully created/updated in '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
                 
@@ -299,7 +330,14 @@ def main():
                 policies = details.get('token_policies', [])
                 print(f"  ├─ Policies: {', '.join(policies) if policies else 'None'}")
                 print(f"  ├─ Token TTL: {details.get('token_ttl', 'System Default')}")
+                print(f"  ├─ Token Max TTL: {details.get('token_max_ttl', 'System Default')}")
                 print(f"  ├─ Bind Secret ID: {details.get('bind_secret_id', True)}")
+                print(f"  ├─ SecretID TTL: {details.get('secret_id_ttl', 0)}")
+                print(f"  ├─ SecretID Max Uses: {details.get('secret_id_num_uses', 0)}")
+                if details.get('secret_id_bound_cidrs'):
+                    print(f"  ├─ SecretID Bound CIDRs: {', '.join(details['secret_id_bound_cidrs'])}")
+                if details.get('token_bound_cidrs'):
+                    print(f"  ├─ Token Bound CIDRs: {', '.join(details['token_bound_cidrs'])}")
             except Exception: print(f"⚠️ AppRole '{name}' not found in '{mount}/'.", file=sys.stderr)
             
         elif action == "delete":
@@ -807,6 +845,94 @@ def main():
             try:
                 client.write(f"auth/{mount}/config", oidc_discovery_url=discovery_url, oidc_client_id=client_id, oidc_client_secret=client_secret, default_role="default")
                 print(f"🎉 SUCCESS! Vault SSO is fully registered with {provider.upper()} at '{mount}/'.")
+            except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
+
+    # -------------------------------------------------------------------------
+    # 8b. JWT AUTH MANAGEMENT (CI/CD machine login)
+    # -------------------------------------------------------------------------
+    elif cmd == "jwt":
+        mount, name = parse_target(args.name_args, "jwt", action)
+
+        if action == "configure":
+            if not args.discovery_url:
+                sys.exit("❌ Error: --discovery-url is required for configure (e.g. https://token.actions.githubusercontent.com).")
+            try:
+                client.sys.enable_auth_method(method_type="jwt", path=mount, description="JWT/OIDC auth for CI/CD machine login")
+                print(f"✅ Enabled JWT auth method at '{mount}/'.")
+            except Exception as e:
+                if "already in use" not in str(e):
+                    print(f"❌ Error enabling JWT auth method: {e}", file=sys.stderr)
+                    sys.exit(1)
+                print(f"ℹ️ JWT auth method already enabled at '{mount}/'.")
+            try:
+                client.write(f"auth/{mount}/config", oidc_discovery_url=args.discovery_url, default_role=args.default_role)
+                print(f"✅ JWT Engine configured at '{mount}/' (discovery: {args.discovery_url}).")
+            except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
+
+        elif action == "list":
+            prefix = mount if args.name_args else ('/' if args.discover else "jwt")
+            mounts = get_auth_mounts(client, 'jwt', discover=args.discover, search_prefix=prefix)
+            found = False
+            for m in mounts:
+                try:
+                    keys = client.list(f"auth/{m}/role")['data']['keys']
+                    if keys:
+                        print(f"🎰 JWT Roles in '{m}/':")
+                        for k in keys: print(f"  ├─ {k}")
+                        found = True
+                except: pass
+            if not found: print(f"ℹ️ No JWT roles found.")
+
+        elif action in ["create", "update"]:
+            if not name: sys.exit("❌ Error: Role name is required.")
+            if not args.audiences:
+                sys.exit("❌ Error: Must provide --audiences (bound_audiences) for the role.")
+            payload = dict(
+                role_type="jwt",
+                user_claim=args.user_claim,
+                bound_audiences=[a.strip() for a in args.audiences.split(",")],
+                token_policies=[p.strip() for p in args.policies.split(",")] if args.policies else [],
+                token_ttl=args.ttl,
+                bound_claims_type=args.bound_claims_type,
+            )
+            if args.issuer: payload["bound_issuer"] = args.issuer
+            if args.bound_claims:
+                try: payload["bound_claims"] = json.loads(args.bound_claims)
+                except Exception: sys.exit("❌ Error: --bound-claims must be valid JSON.")
+            try:
+                client.write(f"auth/{mount}/role/{name}", **payload)
+                print(f"✅ JWT Role '{name}' successfully {action}d in '{mount}/'.")
+            except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
+
+        elif action == "read":
+            if not name: sys.exit("❌ Error: Role name is required.")
+            try:
+                print(json.dumps(client.read(f"auth/{mount}/role/{name}")['data'], indent=2))
+            except Exception:
+                print(f"⚠️ JWT role '{name}' not found in '{mount}/'.", file=sys.stderr)
+
+        elif action == "info":
+            if not name: sys.exit("❌ Error: Role name is required.")
+            try:
+                details = client.read(f"auth/{mount}/role/{name}")['data']
+                print(f"🎰 JWT Role: {name} (Mount: {mount}/)")
+                for field in ("role_type", "user_claim", "bound_issuer", "bound_audiences", "bound_claims_type"):
+                    if details.get(field):
+                        v = json.dumps(details[field], indent=2) if isinstance(details[field], (dict, list)) else details[field]
+                        print(f"  ├─ {field}: {v}")
+                if details.get('bound_claims'):
+                    print("  ├─ Bound Claims:")
+                    for k, v in details['bound_claims'].items(): print(f"  │  ├─ {k}: {v}")
+                print(f"  ├─ Policies: {', '.join(details.get('token_policies', []))}")
+                if details.get('token_ttl'): print(f"  ├─ TTL: {details['token_ttl']}")
+            except Exception:
+                print(f"⚠️ JWT role '{name}' not found in '{mount}/'.", file=sys.stderr)
+
+        elif action == "delete":
+            if not name: sys.exit("❌ Error: Role name is required.")
+            try:
+                client.delete(f"auth/{mount}/role/{name}")
+                print(f"✅ Deleted JWT role '{name}' from '{mount}/'.")
             except Exception as e: print(f"❌ Error: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------------------

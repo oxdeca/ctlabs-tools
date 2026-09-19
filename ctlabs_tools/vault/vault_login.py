@@ -54,7 +54,15 @@ def get_args():
     p_oidc.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
     p_oidc.add_argument("--no-browser", action="store_true", help="Print the auth URL instead of opening a browser (useful for SSH)")
 
-    # 6. EXEC Command (Run a command with JIT/Cached Vault context)
+    # 6. JWT COMMAND (CI/CD machine login)
+    p_jwt = subparsers.add_parser("jwt", help="Login via JWT/OIDC (CI/CD machine login)")
+    p_jwt.add_argument("role", nargs="?", default=None, help="JWT role to assume (overrides VAULT_JWT_ROLE)")
+    p_jwt.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides VAULT_ADDR env var)")
+    p_jwt.add_argument("--mount", dest="mount", default=None, help="JWT auth mount path (overrides VAULT_JWT_MOUNT)")
+    p_jwt.add_argument("--jwt", dest="jwt", default=None, help="The JWT itself (overrides VAULT_JWT)")
+    p_jwt.add_argument("--jwt-file", dest="jwt_file", default=None, help="Path to a file containing the JWT (overrides VAULT_JWT_FILE)")
+
+    # 7. EXEC Command (Run a command with JIT/Cached Vault context)
     p_exec = subparsers.add_parser("exec", help="Run a command wrapped with your active Vault token session")
     p_exec.add_argument("-a", "--addr", dest="addr", help="Vault Server Address (overrides environment)")
     p_exec.add_argument("exec_cmd", nargs=argparse.REMAINDER, help="The command to execute (prefix with '--')")
@@ -208,22 +216,18 @@ def run_cli():
             print("❌ Error: No command provided to execute.", file=sys.stderr)
             sys.exit(1)
 
-        # Try to load secrets from your secure GPG environment file
-        if not vault.load_secrets():
-            print("❌ Error: No active Vault session found. Please log in first using 'vault-login user' or 'vault-login oidc'.", file=sys.stderr)
-            sys.exit(1)
-            
-        is_valid, remaining = vault.check_expiration()
-        if remaining <= 0:
-            print("❌ Error: The locally cached token has expired. Please log in again.", file=sys.stderr)
+        # Auto-refresh: try the cached session first, then automated JWT/OIDC,
+        # then AppRole env. ensure_valid_token() handles the full chain and
+        # exits with a clear message if nothing works.
+        if not vault.ensure_valid_token(interactive=False):
             sys.exit(1)
 
-        # Pull the target configurations out of the environment or cache
-        target_addr = os.environ.get("VAULT_ADDR") or get_cached_vault_server()
-        target_token = os.environ.get("VAULT_TOKEN")
+        # Pull the target configuration from env (GPG-cache path) or memory (fresh re-login path)
+        target_addr = vault._memory_url or os.environ.get("VAULT_ADDR") or get_cached_vault_server()
+        target_token = vault._memory_token or os.environ.get("VAULT_TOKEN")
 
         if not target_token:
-            print("❌ Error: Could not extract VAULT_TOKEN from decrypted cache.", file=sys.stderr)
+            print("❌ Error: Could not extract VAULT_TOKEN from session.", file=sys.stderr)
             sys.exit(1)
 
         # Build clean execution environment
@@ -362,6 +366,41 @@ def run_cli():
             sys.exit(0)
         else:
             sys.exit(1)
+
+    # --- JWT / OIDC Machine Login ---
+    if args.command == "jwt":
+        # Flag-level overrides for the JWT sources (mirrors ensure_valid_token env handling)
+        if args.jwt:          os.environ["VAULT_JWT"] = args.jwt
+        if args.jwt_file:     os.environ["VAULT_JWT_FILE"] = args.jwt_file
+        if args.role:         os.environ["VAULT_JWT_ROLE"] = args.role
+        if args.mount:        os.environ["VAULT_JWT_MOUNT"] = args.mount
+
+        print(f"🚀 Initiating JWT/OIDC login at {vault_addr}...")
+        jwt = vault._load_jwt()
+        if not jwt:
+            print("❌ No JWT found. Set VAULT_JWT / VAULT_JWT_FILE, or run inside a platform that exposes one.", file=sys.stderr)
+            sys.exit(1)
+
+        if not vault.jwt_login(vault_addr, jwt=jwt):
+            sys.exit(1)
+
+        token = vault._memory_token
+        temp_client = hvac.Client(url=vault_addr, token=token, verify=False)
+        try:
+            lookup_res = temp_client.auth.token.lookup_self()
+            info = lookup_res.get('data', {})
+        except Exception:
+            info = {}
+
+        display_name = info.get('display_name', 'Unknown')
+        ttl = info.get('creation_ttl', 3600)
+        policies = info.get('policies', [])
+
+        cache_local_token(vault_addr, token, ttl)
+
+        print(f"🎉 Welcome, {display_name}!")
+        print(f"📜 Policies granted: {', '.join(policies)}")
+        sys.exit(0)
 
     # --- Legacy Login Flows (AppRole & Userpass) ---
     client = hvac.Client(url=vault_addr, verify=False)

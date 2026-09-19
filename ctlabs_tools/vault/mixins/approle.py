@@ -3,6 +3,10 @@
 # License : MIT
 # -----------------------------------------------------------------------------
 
+import hvac
+import time
+
+
 class VaultAppRoleMixin:
     #
     # AppRoles
@@ -111,4 +115,3 @@ class VaultAppRoleMixin:
 
         # 2. Create the AppRole linked to that policy
         return self.create_or_update_approle(role_name, [policy_name])
-

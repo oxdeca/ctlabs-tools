@@ -20,7 +20,11 @@ class VaultKVMixin:
                     return response['data']
                 return None
             else:
-                response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount_point)
+                response = client.secrets.kv.v2.read_secret_version(
+                    path=path,
+                    mount_point=mount_point,
+                    raise_on_deleted_version=True,
+                )
                 return response['data']['data']
         except Exception as e:
             print(f"❌ Error reading {mount_point}/{path}: {e}")
@@ -108,7 +112,11 @@ class VaultKVMixin:
                 secret_exists = True  # 🌟 NEW: Track if it actually exists in Vault!
                 
                 try:
-                    secret_res = client.secrets.kv.v2.read_secret_version(path=current, mount_point=mount_point)
+                    secret_res = client.secrets.kv.v2.read_secret_version(
+                        path=current,
+                        mount_point=mount_point,
+                        raise_on_deleted_version=True,
+                    )
                     secret_data = secret_res.get('data', {}).get('data', {})
                     matched_keys = [sk for sk in secret_data.keys() if regex.search(sk)]
                 except Exception as e:
@@ -140,4 +148,3 @@ class VaultKVMixin:
                 results[name] = None
                 
         return results
-

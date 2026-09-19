@@ -16,12 +16,14 @@ This module strictly separates the pillars of Cloud Security:
 ## 💻 CLI Utilities
 
 ### 1. Authentication & Session Cache (`vault-login`)
-Authenticate to Vault and securely cache a GPG-encrypted session token locally. Supports OIDC headless SSO, AppRole, and Userpass.
+Authenticate to Vault and securely cache a GPG-encrypted session token locally. Supports OIDC headless SSO, AppRole, Userpass, and JWT/OIDC CI/CD machine login.
 ```bash
 vault-login oidc devops
 vault-login oidc devops --no-browser
 vault-login user my-username -a [https://vault.example.com](https://vault.example.com)
 vault-login approle my-role-id
+vault-login jwt cloudflare-ci --jwt "$CI_JOB_JWT_V2"
+vault-login exec -- terraform plan
 vault-login info
 vault-login clear
 ```
@@ -45,6 +47,16 @@ vault-auth gcp create compute-role --sa-emails "vm-identity@ctlabs-prj.iam.gserv
 *Bind K8s Service Accounts to Vault ACL Policies.*
 ```bash
 vault-auth k8s create payment-api-role --sa-names "payment-api-sa" --sa-namespaces "prod" --policies "db-writer"
+```
+
+**🔑 JWT Auth Bindings (CI/CD machine login)**
+*Let pipelines mint short-lived tokens against a CI issuer (GitHub Actions / GitLab) — no static secrets.*
+```bash
+vault-auth jwt configure --discovery-url "https://token.actions.githubusercontent.com"
+vault-auth jwt create cloudflare-ci --audiences "vault" \
+  --issuer "https://token.actions.githubusercontent.com" \
+  --bound-claims '{"repository":"acme/*"}' --policies "cloudflare-ci" --ttl 30m
+vault-auth jwt list
 ```
 
 **📜 Policies (ACLs)**
